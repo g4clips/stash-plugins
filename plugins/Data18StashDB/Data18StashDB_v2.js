@@ -292,9 +292,9 @@
       } else {
         try {
           const data = await runTask("Scrape Data18 Scene",
-            { mode: "scrape_scene", url }, "Scraping scene + searching StashDB…");
+            { mode: "scrape_scene", url }, "Scraping scene…");
           setStatus("");
-          renderResults(sceneId, data.scraped, data.candidates, data.query);
+          renderQuery(sceneId, data.scraped, data.query);
         } catch (e) {
           setError(e.message); btn.disabled = false; btn.textContent = "Go"; setStatus("");
         }
@@ -342,9 +342,9 @@
         try {
           const data = await runTask("Scrape Data18 Scene",
             { mode: "scrape_scene", url: scene.sceneUrl },
-            "Scraping scene + searching StashDB…");
+            "Scraping scene…");
           setStatus("");
-          renderResults(sceneId, data.scraped, data.candidates, data.query);
+          renderQuery(sceneId, data.scraped, data.query);
         } catch (e) {
           setError(e.message); setStatus("");
           card.classList.remove("d18-card-loading");
@@ -354,17 +354,92 @@
     document.getElementById("d18-back-pick").onclick = () => renderInput(sceneId);
   }
 
-  // ── Step 2: StashDB results ────────────────────────────────────────────────
+  // ── Step 2: Query builder ─────────────────────────────────────────────────
+
+  function renderQuery(sceneId, scraped, initialQuery) {
+    setError("");
+    const perfs = scraped.performers || [];
+    const parts = [];
+    if (scraped.studio) parts.push(scraped.studio);
+    parts.push(...perfs.slice(0, 2));
+    const initial = initialQuery || parts.join(" ") || scraped.title || "";
+
+    const pillsHtml = [
+      scraped.studio ? `<span class="d18-pill d18-pill-studio" data-w="${esc(scraped.studio)}">${esc(scraped.studio)}</span>` : "",
+      ...perfs.map(p  => `<span class="d18-pill d18-pill-performer" data-w="${esc(p)}">${esc(p)}</span>`),
+      scraped.title  ? `<span class="d18-pill d18-pill-title"  data-w="${esc(scraped.title)}">${esc(scraped.title)}</span>` : "",
+    ].join("");
+
+    getContent().innerHTML = `
+      <div class="d18-preview">
+        ${scraped.image ? `<img class="d18-thumb" src="${esc(scraped.image)}" alt="">` : ""}
+        <div class="d18-preview-meta">
+          ${scraped.title  ? `<div><strong>Title:</strong> ${esc(scraped.title)}</div>`             : ""}
+          ${scraped.studio ? `<div><strong>Studio:</strong> ${esc(scraped.studio)}</div>`           : ""}
+          ${perfs.length   ? `<div><strong>Performers:</strong> ${esc(perfs.join(", "))}</div>`     : ""}
+          ${scraped.date   ? `<div><strong>Date:</strong> ${esc(scraped.date)}</div>`               : ""}
+        </div>
+      </div>
+      <p class="d18-hint" style="margin-top:.6rem">Click tokens to add/remove from query, or edit freely:</p>
+      <div class="d18-pills">${pillsHtml}</div>
+      <div class="d18-row">
+        <input id="d18-query" class="d18-input" type="text"
+               value="${esc(initial)}" placeholder="Search query…" />
+        <button id="d18-search" class="d18-btn d18-btn-primary">Search StashDB</button>
+      </div>
+      <div class="d18-row" style="margin-top:.3rem">
+        <button id="d18-back1" class="d18-btn d18-btn-secondary">← Back</button>
+      </div>`;
+
+    const qEl = document.getElementById("d18-query");
+
+    document.querySelectorAll(".d18-pill").forEach(pill => {
+      pill.addEventListener("click", () => {
+        const words = pill.dataset.w.trim().split(/\s+/);
+        let parts = qEl.value.trim().split(/\s+/).filter(Boolean);
+        const allIn = words.every(w => parts.includes(w));
+        parts = allIn ? parts.filter(p => !words.includes(p))
+                      : [...parts, ...words.filter(w => !parts.includes(w))];
+        qEl.value = parts.join(" ");
+        pill.classList.toggle("d18-pill-on", !allIn);
+      });
+    });
+
+    async function search() {
+      const q = qEl.value.trim();
+      if (!q) { setError("Enter a search query"); return; }
+      setError("");
+      const btn = document.getElementById("d18-search");
+      btn.disabled = true; btn.textContent = "Searching…";
+      setStatus("Searching StashDB…");
+      document.getElementById("d18-status").style.display = "block";
+      try {
+        const data = await runTask("Scrape Data18 Scene",
+          { mode: "scrape_scene", url: scraped.url, query_override: q },
+          "Searching StashDB…");
+        setStatus("");
+        if (!data.candidates.length) {
+          setError("No results — try a different query");
+          btn.disabled = false; btn.textContent = "Search StashDB";
+          return;
+        }
+        renderResults(sceneId, data.scraped || scraped, data.candidates, data.query || q);
+      } catch (e) {
+        setError(e.message); btn.disabled = false; btn.textContent = "Search StashDB"; setStatus("");
+      }
+    }
+
+    document.getElementById("d18-search").onclick = search;
+    qEl.addEventListener("keydown", e => e.key === "Enter" && search());
+    document.getElementById("d18-back1").onclick = () => renderInput(sceneId);
+  }
+
+  // ── Step 3: StashDB results ────────────────────────────────────────────────
 
   function renderResults(sceneId, scraped, results, query) {
     setError("");
 
-    const changeQueryHtml = `
-      <div class="d18-row" style="margin-bottom:.5rem">
-        <input id="d18-requery-input" class="d18-input" type="text"
-               value="${esc(query)}" placeholder="Search query…" />
-        <button id="d18-requery-btn" class="d18-btn d18-btn-secondary">Re-search</button>
-      </div>`;
+
 
     const cards = results.map((r, i) => `
       <div class="d18-result-card" data-idx="${i}">
@@ -378,36 +453,11 @@
       </div>`).join("");
 
     getContent().innerHTML = `
-      ${changeQueryHtml}
       <p class="d18-hint">${results.length} result${results.length !== 1 ? "s" : ""} — click to select:</p>
       <div class="d18-results">${cards}</div>
       <div class="d18-row" style="margin-top:.5rem">
         <button id="d18-back2" class="d18-btn d18-btn-secondary">← Back</button>
       </div>`;
-
-    // Re-search with custom query
-    document.getElementById("d18-requery-btn").onclick = async () => {
-      const q = document.getElementById("d18-requery-input").value.trim();
-      if (!q) return;
-      const btn = document.getElementById("d18-requery-btn");
-      btn.disabled = true; btn.textContent = "Searching…";
-      setStatus("Searching StashDB…");
-      document.getElementById("d18-status").style.display = "block";
-      try {
-        // Run a search-only task by using scrape_scene with a fake flag
-        // Actually: just re-run the full task with the scene URL and the user can edit again
-        // Simpler: store scraped and call search directly
-        // Since Python does the search, we need to pass a custom query.
-        // We handle this by running scrape_scene with query_override arg:
-        const data = await runTask("Scrape Data18 Scene",
-          { mode: "scrape_scene", url: scraped.url, query_override: q },
-          "Searching StashDB…");
-        setStatus("");
-        renderResults(sceneId, data.scraped || scraped, data.candidates, data.query || q);
-      } catch (e) {
-        setError(e.message); btn.disabled = false; btn.textContent = "Re-search"; setStatus("");
-      }
-    };
 
     document.querySelectorAll(".d18-result-card").forEach(card => {
       card.addEventListener("click", async () => {
@@ -432,7 +482,7 @@
       });
     });
 
-    document.getElementById("d18-back2").onclick = () => renderInput(sceneId);
+    document.getElementById("d18-back2").onclick = () => renderQuery(sceneId, scraped, query);
   }
 
   // ── Step 3: Side-by-side comparison ───────────────────────────────────────
@@ -483,7 +533,7 @@
       </div>` : "";
 
     const scalarFields = [
-      ["title",   "Title",       current.title,                  match.title],
+      ["title",   "Title",       current.title,                  match.title, false],
       ["date",    "Date",        current.date,                   match.date],
       ["details", "Description", current.details,                match.details],
       ["studio",  "Studio",      current.studio?.name,
@@ -493,13 +543,13 @@
         match.image ? "StashDB image" : null],
     ].filter(([,,,inc]) => inc);
 
-    const scalarRowsHtml = scalarFields.map(([field, label, cur, inc]) => `
+    const scalarRowsHtml = scalarFields.map(([field, label, cur, inc, defaultChecked]) => `
       <div class="d18-compare-row">
         <div class="d18-compare-label">${esc(label)}</div>
         <div class="d18-compare-current ${field === "details" ? "d18-trunc" : ""}">${esc(cur || "—")}</div>
         <div class="d18-compare-incoming ${field === "details" ? "d18-trunc" : ""}">${inc}</div>
         <div class="d18-compare-toggle">
-          <input type="checkbox" class="d18-field-chk" data-field="${field}" checked />
+          <input type="checkbox" class="d18-field-chk" data-field="${field}" ${defaultChecked !== false ? "checked" : ""} />
         </div>
       </div>`).join("");
 

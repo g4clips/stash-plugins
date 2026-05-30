@@ -157,7 +157,10 @@ def scrape_movie(url):
     #       <p>Performer1, Performer2</p>
     #     </div>
     #   </div>
-    scene_blocks = index_div.find_all("div", style=re.compile(r"height:\s*150px"))
+    # Match only the outer scene container divs — exclude the inner thumbnail
+    # divs which also have height:150px but additionally have "float: left"
+    all_150 = index_div.find_all("div", style=re.compile(r"height:\s*150px"))
+    scene_blocks = [d for d in all_150 if "float" not in (d.get("style") or "")]
     log(f"Found {len(scene_blocks)} scene blocks in #indexscenes")
 
     if not scene_blocks:
@@ -311,11 +314,16 @@ def scrape_scene(url):
 # ── StashDB search ─────────────────────────────────────────────────────────────
 
 def build_query(scraped):
-    """Build a StashDB search query from scraped scene data."""
-    parts = (scraped.get("performers") or [])[:2]
+    """Build a StashDB search query from scraped scene data.
+    Order: studio first, then performers — gives StashDB the best chance
+    of finding the right scene.
+    """
     studio = scraped.get("studio", "")
+    performers = (scraped.get("performers") or [])[:2]
+    parts = []
     if studio:
         parts.append(studio.split()[0])
+    parts.extend(performers)
     return " ".join(parts) or scraped.get("title", "")
 
 

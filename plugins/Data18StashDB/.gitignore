@@ -1,0 +1,9 @@
+# Local configuration - contains API keys, never commit this
+config.ini
+
+# Temp result file written by plugin tasks
+movie_result.json
+
+# Python cache
+__pycache__/
+*.pyc

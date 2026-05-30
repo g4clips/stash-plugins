@@ -1,0 +1,7 @@
+[StashDB]
+# Your StashDB API key
+# Get it from https://stashdb.org → Profile → API Key
+api_key = your_stashdb_api_key_here
+
+# StashDB GraphQL endpoint - no need to change this
+url = https://stashdb.org/graphql

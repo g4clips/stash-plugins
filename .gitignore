@@ -1,0 +1,9 @@
+# Never commit local config files containing API keys
+**/config.ini
+
+# Build output
+_site/
+
+# Python cache
+__pycache__/
+*.pyc

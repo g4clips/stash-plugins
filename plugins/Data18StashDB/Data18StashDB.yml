@@ -1,0 +1,26 @@
+name: Data18StashDB
+description: Scrape Data18 and match against StashDB. Adds a Data18 button to scene pages.
+version: "2.1"
+
+exec:
+  - python
+  - "{pluginDir}/Data18StashDB.py"
+
+interface: raw
+
+ui:
+  javascript:
+    - Data18StashDB_v2.js
+  css:
+    - Data18StashDB.css
+
+tasks:
+  - name: Scrape Data18 Movie
+    description: Fetches a data18.com/movies/ page and returns the scene list.
+    defaultArgs:
+      mode: scrape_movie
+
+  - name: Scrape Data18 Scene
+    description: Fetches a data18.com/scenes/ page and searches StashDB in one step.
+    defaultArgs:
+      mode: scrape_scene

@@ -474,20 +474,17 @@
     document.querySelectorAll(".d18-result-card").forEach(card => {
       card.addEventListener("click", async () => {
         const match = results[+card.dataset.idx];
-        setStatus("Resolving against local Stash…");
+        setStatus("Loading scene…");
         document.getElementById("d18-status").style.display = "block";
         try {
-          const perfNames = (match.performers || []).map(p => p.name);
-          const tagNames  = (match.tags || []).map(t => t.name);
-          const [current, resolvedPerfs, resolvedStudio, resolvedTags] = await Promise.all([
-            fetchCurrentScene(sceneId),
-            resolveLocally("performer", perfNames),
-            resolveLocally("studio", match.studio?.name ? [match.studio.name] : []),
-            resolveLocally("tag", tagNames),
-          ]);
+          const current = await fetchCurrentScene(sceneId);
           setStatus("");
+          // Use pre-resolved data from Python (includes alias matching)
+          const resolvedPerfs  = match.resolved_performers || [];
+          const resolvedStudio = match.resolved_studio     || null;
+          const resolvedTags   = match.resolved_tags       || [];
           renderApply(sceneId, current, match, scraped, results, query,
-                      resolvedPerfs, resolvedStudio[0] || null, resolvedTags);
+                      resolvedPerfs, resolvedStudio, resolvedTags);
         } catch(e) {
           setError(e.message); setStatus("");
         }

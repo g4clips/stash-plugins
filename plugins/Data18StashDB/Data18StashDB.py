@@ -265,12 +265,17 @@ def scrape_scene(url):
                   or soup.find("a", itemprop="productionCompany"))
     if not studio_tag:
         for b in soup.find_all("b"):
-            if re.search(r"^(Studio|Network)$", b.get_text(strip=True), re.I):
-                a = b.find_next_sibling("a") or (
-                    nb.find("a") if (nb := b.find_next_sibling("b")) else None)
+            if re.search(r"Studio|Network", b.get_text(strip=True), re.I):
+                # Try next sibling <a> first, then look for any <a> in the parent
+                a = b.find_next_sibling("a")
+                if not a:
+                    parent = b.parent
+                    if parent:
+                        a = parent.find("a", href=re.compile(r"/studios/"))
                 if a:
                     studio_tag = a; break
     result["studio"] = studio_tag.get_text(strip=True) if studio_tag else ""
+    log(f"DEBUG studio: {result['studio']!r}")
 
     date_tag = soup.find(itemprop="datePublished")
     if date_tag:
@@ -322,7 +327,7 @@ def build_query(scraped):
     performers = (scraped.get("performers") or [])[:2]
     parts = []
     if studio:
-        parts.append(studio.split()[0])
+        parts.append(studio)
     parts.extend(performers)
     return " ".join(parts) or scraped.get("title", "")
 
@@ -355,6 +360,108 @@ def search_stashdb(query):
             "performers": [{"name": p.get("as") or p["performer"]["name"]}
                            for p in (s.get("performers") or [])],
             "tags":     [{"name": t["name"]} for t in (s.get("tags") or [])],
+        })
+    return results
+
+
+# ── Local Stash resolution with alias support ─────────────────────────────────
+
+def resolve_performers(stash_url, api_key, names):
+    """
+    For each performer name from StashDB, find the matching local Stash performer.
+    Checks name and alias_list (case-insensitive).
+    Returns list of { name, localId, found } dicts.
+    """
+    results = []
+    for name in names:
+        data = local_gql(stash_url, api_key, """
+            query F($q: String) {
+                findPerformers(filter: { q: $q, per_page: 10 }) {
+                    performers { id name alias_list }
+                }
+            }
+        """, {"q": name})
+        performers = data["findPerformers"]["performers"]
+        name_lower = name.lower()
+        found = None
+        # Exact name match first
+        for p in performers:
+            if p["name"].lower() == name_lower:
+                found = p; break
+        # Then alias match
+        if not found:
+            for p in performers:
+                if any(a.lower() == name_lower for a in (p.get("alias_list") or [])):
+                    found = p; break
+        results.append({
+            "name":    name,
+            "localId": found["id"] if found else None,
+            "found":   bool(found),
+        })
+    return results
+
+
+def resolve_studio(stash_url, api_key, name):
+    """
+    Find a matching local Stash studio by name or alias.
+    Returns { name, localId, found }.
+    """
+    if not name:
+        return {"name": "", "localId": None, "found": False}
+
+    data = local_gql(stash_url, api_key, """
+        query F($q: String) {
+            findStudios(filter: { q: $q, per_page: 10 }) {
+                studios { id name aliases }
+            }
+        }
+    """, {"q": name})
+    studios  = data["findStudios"]["studios"]
+    name_lower = name.lower()
+    found = None
+    for s in studios:
+        if s["name"].lower() == name_lower:
+            found = s; break
+    if not found:
+        for s in studios:
+            if any(a.lower() == name_lower for a in (s.get("aliases") or [])):
+                found = s; break
+    return {
+        "name":    name,
+        "localId": found["id"] if found else None,
+        "found":   bool(found),
+    }
+
+
+def resolve_tags(stash_url, api_key, tag_names):
+    """
+    For each tag name from StashDB, find the matching local Stash tag.
+    Checks name and aliases (case-insensitive).
+    Returns list of { name, localId, found } dicts.
+    """
+    results = []
+    for name in tag_names:
+        data = local_gql(stash_url, api_key, """
+            query F($q: String) {
+                findTags(filter: { q: $q, per_page: 10 }) {
+                    tags { id name aliases }
+                }
+            }
+        """, {"q": name})
+        tags = data["findTags"]["tags"]
+        name_lower = name.lower()
+        found = None
+        for t in tags:
+            if t["name"].lower() == name_lower:
+                found = t; break
+        if not found:
+            for t in tags:
+                if any(a.lower() == name_lower for a in (t.get("aliases") or [])):
+                    found = t; break
+        results.append({
+            "name":    name,
+            "localId": found["id"] if found else None,
+            "found":   bool(found),
         })
     return results
 
@@ -409,11 +516,24 @@ def main():
 
         elif mode == "scrape_scene":
             # Scrape scene AND search StashDB in one task
-            scraped   = scrape_scene(url)
+            scraped    = scrape_scene(url)
             # Allow JS to pass a custom query override (for re-search)
-            query     = args.get("query_override", "").strip() or build_query(scraped)
+            query      = args.get("query_override", "").strip() or build_query(scraped)
             candidates = search_stashdb(query)
-            result    = {"output": {"scraped": scraped, "candidates": candidates, "query": query}}
+
+            # Resolve each candidate's performers, studio, and tags against
+            # local Stash (including aliases) so the JS picker can show
+            # match status and pre-check the right items
+            for candidate in candidates:
+                perf_names = [p["name"] for p in (candidate.get("performers") or [])]
+                tag_names  = [t["name"] for t in (candidate.get("tags") or [])]
+                studio_name = (candidate.get("studio") or {}).get("name", "")
+
+                candidate["resolved_performers"] = resolve_performers(stash_url, api_key, perf_names)
+                candidate["resolved_studio"]     = resolve_studio(stash_url, api_key, studio_name)
+                candidate["resolved_tags"]        = resolve_tags(stash_url, api_key, tag_names)
+
+            result = {"output": {"scraped": scraped, "candidates": candidates, "query": query}}
 
         else:
             result = {"error": f"Unknown mode: {mode!r}"}

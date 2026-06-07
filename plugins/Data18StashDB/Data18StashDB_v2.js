@@ -118,6 +118,7 @@
       query FindScene($id: ID!) {
         findScene(id: $id) {
           id title date details urls
+          stash_ids { stash_id endpoint }
           studio { id name }
           performers { id name }
           tags { id name }
@@ -152,7 +153,7 @@
   // ── Apply metadata directly via GraphQL ───────────────────────────────────
 
   async function applyToScene(sceneId, match, fieldChecks, selPerfs, selTags,
-                               resolvedPerfs, studioMatch, resolvedTags) {
+                               resolvedPerfs, studioMatch, resolvedTags, current) {
     setStatus("Applying metadata…");
     const input = { id: sceneId };
 
@@ -178,6 +179,17 @@
         .filter(t => selTags.includes(t.name) && t.localId)
         .map(t => t.localId);
       if (ids.length) input.tag_ids = ids;
+    }
+
+    if (fieldChecks.stash_id && match.remote_site_id) {
+      // Merge with existing stash_ids, replacing any existing stashdb.org entry
+      const existing = (current.stash_ids || [])
+        .filter(s => s.endpoint !== "https://stashdb.org/graphql")
+        .map(s => ({ stash_id: s.stash_id, endpoint: s.endpoint }));
+      input.stash_ids = [
+        ...existing,
+        { stash_id: match.remote_site_id, endpoint: "https://stashdb.org/graphql" },
+      ];
     }
 
     await gql(`mutation U($input:SceneUpdateInput!){sceneUpdate(input:$input){id}}`, { input });
@@ -532,6 +544,10 @@
         </div>
       </div>` : "";
 
+    // Find existing stash_id for this endpoint if any
+    const existingStashId = (current.stash_ids || [])
+      .find(s => s.endpoint === "https://stashdb.org/graphql")?.stash_id || "";
+
     const scalarFields = [
       ["title",   "Title",       current.title,                  match.title, false],
       ["date",    "Date",        current.date,                   match.date],
@@ -541,6 +557,8 @@
       ["urls",    "URLs",        (current.urls||[]).join(", "),  (match.urls||[]).join(", ")],
       ["image",   "Cover Image", current.paths?.screenshot ? "Current image" : "—",
         match.image ? "StashDB image" : null],
+      ["stash_id", "StashDB ID", existingStashId || "—",
+        match.remote_site_id || null],
     ].filter(([,,,inc]) => inc);
 
     const scalarRowsHtml = scalarFields.map(([field, label, cur, inc, defaultChecked]) => `
@@ -596,7 +614,7 @@
 
       try {
         await applyToScene(sceneId, match, fieldChecks, selPerfs, selTags,
-                           resolvedPerfs, studioMatch, resolvedTags);
+                           resolvedPerfs, studioMatch, resolvedTags, current);
         setStatus("");
         renderDone();
       } catch (e) {

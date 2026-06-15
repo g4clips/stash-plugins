@@ -552,6 +552,9 @@
 
 .d18-dupe-msg { margin-top: .15rem; }
 
+.d18-group-link { color: #6ea8fe; text-decoration: none; }
+.d18-group-link:hover { text-decoration: underline; }
+
 .d18-thumb-wrap:hover .d18-thumb-hover {
   display: block;
 }

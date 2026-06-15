@@ -30,6 +30,15 @@
     el.style.display = msg ? "block" : "none";
   }
 
+  function setInfo(html) {
+    const el = document.getElementById("d18-info");
+    if (!el) return;
+    if (!html) { el.style.display = "none"; el.innerHTML = ""; return; }
+    el.innerHTML = `<span>${html}</span><button id="d18-info-dismiss" title="Dismiss">✕</button>`;
+    el.style.display = "flex";
+    document.getElementById("d18-info-dismiss").onclick = () => setInfo("");
+  }
+
   function esc(s) {
     return String(s ?? "")
       .replace(/&/g,"&amp;").replace(/</g,"&lt;")
@@ -123,6 +132,7 @@
           performers { id name }
           tags { id name }
           paths { screenshot }
+          groups { group { id name urls } }
         }
       }
     `, { id: sceneId });
@@ -256,6 +266,7 @@
           <button id="d18-close">✕</button>
         </div>
         <div id="d18-error"  style="display:none"></div>
+        <div id="d18-info"   style="display:none"></div>
         <div id="d18-status" style="display:none"></div>
         <div id="d18-content"></div>
       </div>`;
@@ -300,12 +311,25 @@
     });
     // ── End drag ─────────────────────────────────────────────────────────────
 
-    renderInput(sceneId);
+    // Quick fetch to check for a linked group with a Data18 movie URL
+    setStatus("Loading…");
+    fetchCurrentScene(sceneId).then(scene => {
+      setStatus("");
+      let groupUrl = null, groupName = null;
+      for (const g of (scene?.groups || [])) {
+        const u = (g.group?.urls || []).find(url => url.includes("data18.com/movies/"));
+        if (u) { groupUrl = u; groupName = g.group.name; break; }
+      }
+      renderInput(sceneId, groupUrl, groupName);
+    }).catch(() => {
+      setStatus("");
+      renderInput(sceneId);
+    });
   }
 
   // ── Step 1: URL input ──────────────────────────────────────────────────────
 
-  function renderInput(sceneId) {
+  function renderInput(sceneId, prefillUrl, groupName) {
     setError(""); setStatus("");
     getContent().innerHTML = `
       <p class="d18-hint">
@@ -353,7 +377,14 @@
 
     btn.onclick = go;
     input.addEventListener("keydown", e => e.key === "Enter" && go());
-    input.focus();
+    if (prefillUrl) {
+      input.value = prefillUrl;
+      setInfo(`Auto-filled from linked group: <strong>${esc(groupName || "unknown")}</strong>`);
+      setTimeout(go, 0);
+    } else {
+      setInfo("");
+      input.focus();
+    }
   }
 
   // ── Step 1b: Movie scene picker ────────────────────────────────────────────

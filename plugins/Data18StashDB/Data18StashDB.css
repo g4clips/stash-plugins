@@ -48,6 +48,21 @@
   color: #f8a0a8; font-size: .85rem;
 }
 
+#d18-info {
+  margin: .5rem 1rem 0;
+  padding: .4rem .7rem;
+  border-radius: 4px;
+  background: rgba(13,110,253,.12);
+  border: 1px solid rgba(13,110,253,.3);
+  color: #6ea8fe; font-size: .85rem;
+  display: flex; align-items: center; justify-content: space-between; gap: .5rem;
+}
+#d18-info-dismiss {
+  background: none; border: none; color: #6ea8fe;
+  cursor: pointer; font-size: .9rem; padding: 0 .2rem; opacity: .7; flex-shrink: 0;
+}
+#d18-info-dismiss:hover { opacity: 1; }
+
 #d18-status {
   margin: .4rem 1rem 0;
   color: #aaa; font-size: .82rem; font-style: italic;

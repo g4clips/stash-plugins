@@ -413,3 +413,67 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ── Data18 reference panel ──────────────────────────────────────── */
+.d18-compare-ref {
+  border: 1px solid #3a3a4a;
+  border-radius: 6px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.d18-compare-ref-label {
+  background: #12121a;
+  color: #aaa;
+  font-size: .75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  padding: .35rem .65rem;
+  border-bottom: 1px solid #3a3a4a;
+}
+
+.d18-compare-ref .d18-preview {
+  border-radius: 0;
+  border: none;
+}
+
+/* ── Description snippet ─────────────────────────────────────────── */
+.d18-result-desc {
+  color: #888;
+  font-size: .78rem;
+  margin-top: .15rem;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  line-height: 1.4;
+}
+
+/* ── Thumbnail hover zoom ────────────────────────────────────────── */
+.d18-thumb-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.d18-thumb-hover {
+  display: none;
+  position: fixed;
+  z-index: 99999;
+  pointer-events: none;
+  border: 2px solid #555;
+  border-radius: 4px;
+  box-shadow: 0 4px 24px rgba(0,0,0,.8);
+  overflow: hidden;
+  width: 320px;
+}
+
+.d18-thumb-hover img {
+  width: 320px;
+  height: auto;
+  display: block;
+}
+
+.d18-thumb-wrap:hover .d18-thumb-hover {
+  display: block;
+}

@@ -47,7 +47,7 @@ STASHDB_API_KEY = _cfg.get("StashDB", "api_key", fallback="")
 
 
 def log(msg):
-    print(f"[Data18StashDB] {msg}", file=sys.stderr, flush=True)
+    print(f"time='' level=info msg='[Data18StashDB] {msg}'", flush=True)
 
 
 # ── Sessions ───────────────────────────────────────────────────────────────────
@@ -275,7 +275,6 @@ def scrape_scene(url):
                 if a:
                     studio_tag = a; break
     result["studio"] = studio_tag.get_text(strip=True) if studio_tag else ""
-    log(f"DEBUG studio: {result['studio']!r}")
 
     date_tag = soup.find(itemprop="datePublished")
     if date_tag:
@@ -541,7 +540,7 @@ def main():
     except requests.HTTPError as e:
         result = {"error": f"HTTP {e.response.status_code}: {e.response.url}"}
     except Exception as e:
-        log(f"Error: {e}")
+        print(f"[Data18StashDB] Error: {e}", file=sys.stderr, flush=True)
         result = {"error": str(e)}
 
     store_result(stash_url, api_key, result)

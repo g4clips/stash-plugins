@@ -451,21 +451,45 @@
   function renderResults(sceneId, scraped, results, query) {
     setError("");
 
+    // Helper: truncate description to first ~120 chars for preview
+    function shortDesc(text) {
+      if (!text) return "";
+      return text.length > 120 ? text.slice(0, 117) + "…" : text;
+    }
 
+    // Data18 reference panel shown above results for comparison
+    const d18Html = `
+      <div class="d18-compare-ref">
+        <div class="d18-compare-ref-label">Data18 reference</div>
+        <div class="d18-preview" style="margin:0">
+          ${scraped.image ? `<div class="d18-thumb-wrap"><img class="d18-thumb" src="${esc(scraped.image)}" alt=""><div class="d18-thumb-hover"><img src="${esc(scraped.image)}" alt=""></div></div>` : ""}
+          <div class="d18-preview-meta">
+            ${scraped.title  ? `<div><strong>Title:</strong> ${esc(scraped.title)}</div>` : ""}
+            ${scraped.studio ? `<div><strong>Studio:</strong> ${esc(scraped.studio)}</div>` : ""}
+            ${scraped.performers?.length ? `<div><strong>Performers:</strong> ${esc(scraped.performers.join(", "))}</div>` : ""}
+            ${scraped.date   ? `<div><strong>Date:</strong> ${esc(scraped.date)}</div>` : ""}
+            ${scraped.description ? `<div class="d18-result-desc">${esc(shortDesc(scraped.description))}</div>` : ""}
+          </div>
+        </div>
+      </div>`;
 
     const cards = results.map((r, i) => `
       <div class="d18-result-card" data-idx="${i}">
-        ${r.image ? `<img class="d18-result-thumb" src="${esc(r.image)}" alt="">` : `<div class="d18-result-thumb d18-no-img"></div>`}
+        ${r.image
+          ? `<div class="d18-thumb-wrap"><img class="d18-result-thumb" src="${esc(r.image)}" alt=""><div class="d18-thumb-hover"><img src="${esc(r.image)}" alt=""></div></div>`
+          : `<div class="d18-result-thumb d18-no-img"></div>`}
         <div class="d18-result-info">
           <div class="d18-result-title">${esc(r.title || "(no title)")}</div>
           ${r.studio?.name       ? `<div class="d18-result-sub">${esc(r.studio.name)}</div>` : ""}
           ${r.performers?.length ? `<div class="d18-result-sub">${esc(r.performers.map(p=>p.name).join(", "))}</div>` : ""}
           ${r.date               ? `<div class="d18-result-sub">${esc(r.date)}</div>` : ""}
+          ${r.details            ? `<div class="d18-result-desc">${esc(shortDesc(r.details))}</div>` : ""}
         </div>
       </div>`).join("");
 
     getContent().innerHTML = `
-      <p class="d18-hint">${results.length} result${results.length !== 1 ? "s" : ""} — click to select:</p>
+      ${d18Html}
+      <p class="d18-hint" style="margin-top:.5rem">${results.length} result${results.length !== 1 ? "s" : ""} — click to select:</p>
       <div class="d18-results">${cards}</div>
       <div class="d18-row" style="margin-top:.5rem">
         <button id="d18-back2" class="d18-btn d18-btn-secondary">← Back</button>
@@ -492,6 +516,21 @@
     });
 
     document.getElementById("d18-back2").onclick = () => renderQuery(sceneId, scraped, query);
+
+    // Position hover thumbnails to follow the mouse
+    document.querySelectorAll(".d18-thumb-wrap").forEach(wrap => {
+      const hover = wrap.querySelector(".d18-thumb-hover");
+      if (!hover) return;
+      wrap.addEventListener("mousemove", e => {
+        const x = e.clientX + 16;
+        const y = e.clientY + 16;
+        // Keep within viewport
+        const vw = window.innerWidth;
+        const vh = window.innerHeight;
+        hover.style.left = (x + 320 > vw ? vw - 340 : x) + "px";
+        hover.style.top  = (y + hover.offsetHeight > vh ? y - hover.offsetHeight - 20 : y) + "px";
+      });
+    });
   }
 
   // ── Step 3: Side-by-side comparison ───────────────────────────────────────

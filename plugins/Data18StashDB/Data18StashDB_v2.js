@@ -216,10 +216,10 @@
     const scrapeData = await gql(`
       query($src: ScraperSourceInput!, $input: ScrapeSinglePerformerInput!) {
         scrapeSinglePerformer(source: $src, input: $input) {
-          name gender birthdate death_date urls details
+          name gender birthdate death_date urls details ethnicity
           country hair_color eye_color height weight
-          images
-          remote_site_id
+          measurements fake_tits tattoos piercings aliases
+          career_start career_end images remote_site_id
         }
       }
     `, {
@@ -232,18 +232,25 @@
     const p = list[0];
 
     const input = { name: p.name || name };
-    if (p.gender)          input.gender      = p.gender;
-    if (p.birthdate)       input.birthdate   = p.birthdate;
-    if (p.death_date)      input.death_date  = p.death_date;
-    if (p.urls?.length)    input.url         = p.urls[0];
-    if (p.details)         input.details     = p.details;
-    if (p.country)         input.country     = p.country;
-    if (p.hair_color)      input.hair_color  = p.hair_color;
-    if (p.eye_color)       input.eye_color   = p.eye_color;
-    if (p.height)          input.height      = p.height;
-    if (p.weight)          input.weight      = p.weight;
-    if (p.images?.length)  input.image       = p.images[0];
-    if (p.remote_site_id)  input.stash_ids   = [
+    if (p.gender)       input.gender       = p.gender;
+    if (p.birthdate)    input.birthdate    = p.birthdate;
+    if (p.death_date)   input.death_date   = p.death_date;
+    if (p.details)      input.details      = p.details;
+    if (p.country)      input.country      = p.country;
+    if (p.hair_color)   input.hair_color   = p.hair_color;
+    if (p.eye_color)    input.eye_color    = p.eye_color;
+    if (p.height)       input.height_cm    = parseInt(p.height, 10) || undefined;
+    if (p.weight)       input.weight       = parseInt(p.weight, 10) || undefined;
+    if (p.measurements) input.measurements = p.measurements;
+    if (p.fake_tits)    input.fake_tits    = p.fake_tits;
+    if (p.tattoos)      input.tattoos      = p.tattoos;
+    if (p.piercings)    input.piercings    = p.piercings;
+    if (p.aliases)      input.alias_list   = p.aliases.split(",").map(a => a.trim()).filter(Boolean);
+    if (p.career_start) input.career_start = p.career_start;
+    if (p.career_end)   input.career_end   = p.career_end;
+    if (p.images?.length) input.image      = p.images[0];
+    if (p.urls?.length)   input.urls       = p.urls;
+    if (p.remote_site_id) input.stash_ids  = [
       { stash_id: p.remote_site_id, endpoint: boxes[idx].endpoint },
     ];
 

@@ -216,10 +216,10 @@
     const scrapeData = await gql(`
       query($src: ScraperSourceInput!, $input: ScrapeSinglePerformerInput!) {
         scrapeSinglePerformer(source: $src, input: $input) {
-          name gender birthdate death_date url details
-          country hair_color eye_color height_cm weight_kg
+          name gender birthdate death_date urls details
+          country hair_color eye_color height weight
           images
-          stash_ids { stash_id endpoint }
+          remote_site_id
         }
       }
     `, {
@@ -235,17 +235,17 @@
     if (p.gender)          input.gender      = p.gender;
     if (p.birthdate)       input.birthdate   = p.birthdate;
     if (p.death_date)      input.death_date  = p.death_date;
-    if (p.url)             input.url         = p.url;
+    if (p.urls?.length)    input.url         = p.urls[0];
     if (p.details)         input.details     = p.details;
     if (p.country)         input.country     = p.country;
     if (p.hair_color)      input.hair_color  = p.hair_color;
     if (p.eye_color)       input.eye_color   = p.eye_color;
-    if (p.height_cm)       input.height_cm   = p.height_cm;
-    if (p.weight_kg)       input.weight_kg   = p.weight_kg;
+    if (p.height)          input.height      = p.height;
+    if (p.weight)          input.weight      = p.weight;
     if (p.images?.length)  input.image       = p.images[0];
-    if (p.stash_ids?.length) input.stash_ids = p.stash_ids.map(
-      s => ({ stash_id: s.stash_id, endpoint: s.endpoint })
-    );
+    if (p.remote_site_id)  input.stash_ids   = [
+      { stash_id: p.remote_site_id, endpoint: boxes[idx].endpoint },
+    ];
 
     const result = await gql(`
       mutation($input: PerformerCreateInput!) {

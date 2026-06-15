@@ -487,18 +487,21 @@
 .d18-thumb-wrap {
   position: relative;
   flex-shrink: 0;
+  display: inline-block;
 }
 
 .d18-thumb-hover {
   display: none;
-  position: fixed;
+  position: absolute;
   z-index: 99999;
-  pointer-events: none;
+  top: 0;
+  left: calc(100% + 8px);
   border: 2px solid #555;
   border-radius: 4px;
   box-shadow: 0 4px 24px rgba(0,0,0,.8);
   overflow: hidden;
   width: 320px;
+  pointer-events: none;
 }
 
 .d18-thumb-hover img {

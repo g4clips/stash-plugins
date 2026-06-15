@@ -747,29 +747,29 @@
           </div>
           <div class="d18-dupe-actions">
             ${currentGroup ? `
-              <button class="d18-btn d18-btn-secondary d18-btn-xs d18-dupe-link" data-idx="${i}">Link to group</button>
+              <button class="d18-btn d18-btn-secondary d18-btn-xs d18-dupe-link" data-idx="${i}">Keep existing &amp; link to group</button>
               <div class="d18-dupe-replace-wrap">
-                <button class="d18-btn d18-btn-danger d18-btn-xs d18-dupe-replace" data-idx="${i}">Replace &amp; link</button>
+                <button class="d18-btn d18-btn-danger d18-btn-xs d18-dupe-replace" data-idx="${i}">Keep existing &amp; delete current</button>
                 <label class="d18-dupe-del-label">
                   <input type="checkbox" class="d18-dupe-del-chk" data-idx="${i}" />
-                  <span>delete file</span>
+                  <span>also delete current file from disk</span>
                 </label>
               </div>
             ` : `
-              <button class="d18-btn d18-btn-secondary d18-btn-xs d18-dupe-use" data-idx="${i}">Apply to duplicate</button>
+              <button class="d18-btn d18-btn-secondary d18-btn-xs d18-dupe-use" data-idx="${i}">Apply metadata to existing scene</button>
             `}
-            <button class="d18-btn d18-btn-secondary d18-btn-xs d18-dupe-ignore" data-idx="${i}">Ignore</button>
+            <button class="d18-btn d18-btn-secondary d18-btn-xs d18-dupe-ignore" data-idx="${i}">Keep current scene</button>
             <span class="d18-dupe-msg d18-perf-inline-msg"></span>
           </div>
         </div>`;
     }).join("");
 
     getContent().innerHTML = `
-      <div class="d18-dupe-header">⚠ Potential duplicate scene${dupes.length > 1 ? "s" : ""} found in your library</div>
+      <div class="d18-dupe-header">⚠ This scene may already exist in your library — keep the existing file?</div>
       <div class="d18-dupe-list">${cardsHtml}</div>
       <div class="d18-row" style="margin-top:.5rem;flex-shrink:0">
         <button id="d18-dupe-back" class="d18-btn d18-btn-secondary">← Back</button>
-        <button id="d18-dupe-skip" class="d18-btn d18-btn-secondary">Ignore all — continue</button>
+        <button id="d18-dupe-skip" class="d18-btn d18-btn-secondary">Keep current scene for all</button>
       </div>`;
 
     document.getElementById("d18-dupe-back").onclick = () => renderResults(sceneId, scraped, results, query);
@@ -787,7 +787,7 @@
           const dupeScene = await fetchCurrentScene(dupe.id);
           goApply(dupe.id, dupeScene);
         } catch(e) {
-          btn.disabled = false; btn.textContent = "Apply to duplicate";
+          btn.disabled = false; btn.textContent = "Apply metadata to existing scene";
           if (msg) { msg.className = "d18-dupe-msg d18-perf-inline-msg d18-msg-err"; msg.textContent = `✗ ${e.message}`; }
         }
       });
@@ -807,7 +807,7 @@
           const dupeScene = await fetchCurrentScene(dupe.id);
           goApply(dupe.id, dupeScene);
         } catch(e) {
-          btn.disabled = false; btn.textContent = "Link to group";
+          btn.disabled = false; btn.textContent = "Keep existing & link to group";
           if (msg) { msg.className = "d18-dupe-msg d18-perf-inline-msg d18-msg-err"; msg.textContent = `✗ ${e.message}`; }
         }
       });
@@ -831,7 +831,7 @@
           const dupeScene = await fetchCurrentScene(dupe.id);
           goApply(dupe.id, dupeScene);
         } catch(e) {
-          btn.disabled = false; btn.textContent = "Replace & link";
+          btn.disabled = false; btn.textContent = "Keep existing & delete current";
           if (msg) { msg.className = "d18-dupe-msg d18-perf-inline-msg d18-msg-err"; msg.textContent = `✗ ${e.message}`; }
         }
       });

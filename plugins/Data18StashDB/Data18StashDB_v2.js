@@ -132,7 +132,7 @@
           performers { id name }
           tags { id name }
           paths { screenshot }
-          groups { group { id name urls } }
+          groups { group { id name urls } scene_index }
         }
       }
     `, { id: sceneId });
@@ -626,17 +626,25 @@
     document.querySelectorAll(".d18-result-card").forEach(card => {
       card.addEventListener("click", async () => {
         const match = results[+card.dataset.idx];
-        setStatus("Loading scene…");
+        setStatus("Checking for duplicates…");
         document.getElementById("d18-status").style.display = "block";
         try {
-          const current = await fetchCurrentScene(sceneId);
-          setStatus("");
-          // Use pre-resolved data from Python (includes alias matching)
           const resolvedPerfs  = match.resolved_performers || [];
           const resolvedStudio = match.resolved_studio     || null;
           const resolvedTags   = match.resolved_tags       || [];
-          renderApply(sceneId, current, match, scraped, results, query,
-                      resolvedPerfs, resolvedStudio, resolvedTags);
+          const [current, allDupes] = await Promise.all([
+            fetchCurrentScene(sceneId),
+            findDuplicates(match, resolvedPerfs),
+          ]);
+          setStatus("");
+          const dupes = allDupes.filter(d => d.id !== sceneId);
+          if (dupes.length) {
+            renderDuplicates(sceneId, current, match, scraped, results, query,
+                             resolvedPerfs, resolvedStudio, resolvedTags, dupes);
+          } else {
+            renderApply(sceneId, current, match, scraped, results, query,
+                        resolvedPerfs, resolvedStudio, resolvedTags);
+          }
         } catch(e) {
           setError(e.message); setStatus("");
         }
@@ -644,6 +652,190 @@
     });
 
     document.getElementById("d18-back2").onclick = () => renderQuery(sceneId, scraped, query);
+  }
+
+  // ── Duplicate detection ───────────────────────────────────────────────────
+
+  async function findDuplicates(match, resolvedPerfs) {
+    if (match.remote_site_id) {
+      const d = await gql(`
+        query($stash_id: String!) {
+          findScenes(
+            scene_filter: {
+              stash_id_endpoint: {
+                stash_id: $stash_id
+                endpoint: "https://stashdb.org/graphql"
+                modifier: EQUALS
+              }
+            }
+            filter: { per_page: 5 }
+          ) {
+            scenes {
+              id title date
+              paths { screenshot }
+              files { size }
+              performers { id name }
+              groups { group { id name } scene_index }
+            }
+          }
+        }
+      `, { stash_id: match.remote_site_id });
+      const scenes = d.findScenes?.scenes || [];
+      if (scenes.length) return scenes;
+    }
+
+    const perfIds = (resolvedPerfs || []).filter(p => p.localId).map(p => p.localId);
+    if (!perfIds.length || !match.date) return [];
+
+    const d2 = await gql(`
+      query($ids: [ID!], $date: String!) {
+        findScenes(
+          scene_filter: {
+            performers: { value: $ids, modifier: INCLUDES }
+            date: { value: $date, modifier: EQUALS }
+          }
+          filter: { per_page: 5 }
+        ) {
+          scenes {
+            id title date
+            paths { screenshot }
+            files { size }
+            performers { id name }
+            groups { group { id name } scene_index }
+          }
+        }
+      }
+    `, { ids: perfIds, date: match.date });
+    return d2.findScenes?.scenes || [];
+  }
+
+  // ── Step 2b: Duplicate scene warning ─────────────────────────────────────
+
+  function renderDuplicates(sceneId, current, match, scraped, results, query,
+                            resolvedPerfs, studioMatch, resolvedTags, dupes) {
+    setError("");
+
+    function fmtSize(bytes) {
+      if (!bytes) return null;
+      return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(2)} GB` : `${(bytes / 1e6).toFixed(1)} MB`;
+    }
+
+    const currentGroup = (current.groups || [])[0] || null;
+
+    const goApply = (targetId, targetCurrent) =>
+      renderApply(targetId, targetCurrent, match, scraped, results, query,
+                  resolvedPerfs, studioMatch, resolvedTags);
+
+    const cardsHtml = dupes.map((d, i) => {
+      const groupLabels = (d.groups || [])
+        .map(g => g.group.name + (g.scene_index ? ` #${g.scene_index}` : ""))
+        .join(", ");
+      const size  = fmtSize((d.files || [])[0]?.size);
+      const thumb = d.paths?.screenshot;
+      return `
+        <div class="d18-dupe-card">
+          <div class="d18-thumb-wrap">
+            ${thumb
+              ? `<img class="d18-result-thumb" src="${esc(thumb)}" alt=""><div class="d18-thumb-hover"><img src="${esc(thumb)}" alt=""></div>`
+              : `<div class="d18-result-thumb d18-no-img"></div>`}
+          </div>
+          <div class="d18-result-info" style="flex:1">
+            <div class="d18-result-title">${esc(d.title || "(no title)")}</div>
+            ${d.date      ? `<div class="d18-result-sub">${esc(d.date)}</div>` : ""}
+            ${groupLabels ? `<div class="d18-result-sub">Group: ${esc(groupLabels)}</div>` : ""}
+            ${size        ? `<div class="d18-result-sub">Size: ${size}</div>` : ""}
+          </div>
+          <div class="d18-dupe-actions">
+            ${currentGroup ? `
+              <button class="d18-btn d18-btn-secondary d18-btn-xs d18-dupe-link" data-idx="${i}">Link to group</button>
+              <div class="d18-dupe-replace-wrap">
+                <button class="d18-btn d18-btn-danger d18-btn-xs d18-dupe-replace" data-idx="${i}">Replace &amp; link</button>
+                <label class="d18-dupe-del-label">
+                  <input type="checkbox" class="d18-dupe-del-chk" data-idx="${i}" />
+                  <span>delete file</span>
+                </label>
+              </div>
+            ` : `
+              <button class="d18-btn d18-btn-secondary d18-btn-xs d18-dupe-use" data-idx="${i}">Apply to duplicate</button>
+            `}
+            <button class="d18-btn d18-btn-secondary d18-btn-xs d18-dupe-ignore" data-idx="${i}">Ignore</button>
+            <span class="d18-dupe-msg d18-perf-inline-msg"></span>
+          </div>
+        </div>`;
+    }).join("");
+
+    getContent().innerHTML = `
+      <div class="d18-dupe-header">⚠ Potential duplicate scene${dupes.length > 1 ? "s" : ""} found in your library</div>
+      <div class="d18-dupe-list">${cardsHtml}</div>
+      <div class="d18-row" style="margin-top:.5rem;flex-shrink:0">
+        <button id="d18-dupe-back" class="d18-btn d18-btn-secondary">← Back</button>
+        <button id="d18-dupe-skip" class="d18-btn d18-btn-secondary">Ignore all — continue</button>
+      </div>`;
+
+    document.getElementById("d18-dupe-back").onclick = () => renderResults(sceneId, scraped, results, query);
+    document.getElementById("d18-dupe-skip").onclick = () => goApply(sceneId, current);
+
+    document.querySelectorAll(".d18-dupe-ignore").forEach(btn =>
+      btn.addEventListener("click", () => goApply(sceneId, current)));
+
+    document.querySelectorAll(".d18-dupe-use").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const dupe = dupes[+btn.dataset.idx];
+        const msg  = btn.closest(".d18-dupe-actions")?.querySelector(".d18-dupe-msg");
+        btn.disabled = true; btn.textContent = "Loading…";
+        try {
+          const dupeScene = await fetchCurrentScene(dupe.id);
+          goApply(dupe.id, dupeScene);
+        } catch(e) {
+          btn.disabled = false; btn.textContent = "Apply to duplicate";
+          if (msg) { msg.className = "d18-dupe-msg d18-perf-inline-msg d18-msg-err"; msg.textContent = `✗ ${e.message}`; }
+        }
+      });
+    });
+
+    document.querySelectorAll(".d18-dupe-link").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const dupe = dupes[+btn.dataset.idx];
+        const msg  = btn.closest(".d18-dupe-actions")?.querySelector(".d18-dupe-msg");
+        btn.disabled = true; btn.textContent = "Linking…";
+        try {
+          const existing = (dupe.groups || []).map(g => ({ group_id: g.group.id, scene_index: g.scene_index }));
+          const newEntry = { group_id: currentGroup.group.id, scene_index: currentGroup.scene_index };
+          const merged   = existing.some(g => g.group_id === newEntry.group_id) ? existing : [...existing, newEntry];
+          await gql(`mutation($input: SceneUpdateInput!) { sceneUpdate(input: $input) { id } }`,
+            { input: { id: dupe.id, groups: merged } });
+          const dupeScene = await fetchCurrentScene(dupe.id);
+          goApply(dupe.id, dupeScene);
+        } catch(e) {
+          btn.disabled = false; btn.textContent = "Link to group";
+          if (msg) { msg.className = "d18-dupe-msg d18-perf-inline-msg d18-msg-err"; msg.textContent = `✗ ${e.message}`; }
+        }
+      });
+    });
+
+    document.querySelectorAll(".d18-dupe-replace").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const dupe    = dupes[+btn.dataset.idx];
+        const delChk  = document.querySelector(`.d18-dupe-del-chk[data-idx="${btn.dataset.idx}"]`);
+        const delFile = delChk?.checked || false;
+        const msg     = btn.closest(".d18-dupe-actions")?.querySelector(".d18-dupe-msg");
+        btn.disabled = true; btn.textContent = "Replacing…";
+        try {
+          const existing = (dupe.groups || []).map(g => ({ group_id: g.group.id, scene_index: g.scene_index }));
+          const newEntry = { group_id: currentGroup.group.id, scene_index: currentGroup.scene_index };
+          const merged   = existing.some(g => g.group_id === newEntry.group_id) ? existing : [...existing, newEntry];
+          await gql(`mutation($input: SceneUpdateInput!) { sceneUpdate(input: $input) { id } }`,
+            { input: { id: dupe.id, groups: merged } });
+          await gql(`mutation($input: ScenesDestroyInput!) { scenesDestroy(input: $input) }`,
+            { input: { ids: [sceneId], delete_file: delFile } });
+          const dupeScene = await fetchCurrentScene(dupe.id);
+          goApply(dupe.id, dupeScene);
+        } catch(e) {
+          btn.disabled = false; btn.textContent = "Replace & link";
+          if (msg) { msg.className = "d18-dupe-msg d18-perf-inline-msg d18-msg-err"; msg.textContent = `✗ ${e.message}`; }
+        }
+      });
+    });
   }
 
   // ── Step 3: Side-by-side comparison ───────────────────────────────────────
@@ -771,7 +963,7 @@
         await applyToScene(sceneId, match, fieldChecks, selPerfs, selTags,
                            resolvedPerfs, studioMatch, resolvedTags, current);
         setStatus("");
-        renderDone();
+        renderDone(sceneId);
       } catch (e) {
         setError(e.message);
         btn.disabled = false; btn.textContent = "Apply to Scene";
@@ -817,16 +1009,20 @@
 
   // ── Step 4: Done ───────────────────────────────────────────────────────────
 
-  function renderDone() {
+  function renderDone(appliedSceneId) {
     setError(""); setStatus("");
+    const sameScene = !appliedSceneId || appliedSceneId === getSceneId();
     getContent().innerHTML = `
-      <div class="d18-success">✓ Scene updated! Reload the page to see changes.</div>
+      <div class="d18-success">✓ Scene updated! ${sameScene
+        ? "Reload the page to see changes."
+        : "Original scene deleted — navigate to the updated scene to confirm."}</div>
       <div class="d18-row" style="margin-top:.75rem">
-        <button id="d18-reload" class="d18-btn d18-btn-primary">Reload Page</button>
+        <button id="d18-reload" class="d18-btn d18-btn-primary">${sameScene ? "Reload Page" : "Go to updated scene"}</button>
         <button id="d18-again"  class="d18-btn d18-btn-secondary">Scrape Another</button>
       </div>`;
-    document.getElementById("d18-reload").onclick = () => window.location.reload();
-    document.getElementById("d18-again").onclick  = () => renderInput(getSceneId());
+    document.getElementById("d18-reload").onclick = () =>
+      sameScene ? window.location.reload() : (window.location.href = `/scenes/${appliedSceneId}`);
+    document.getElementById("d18-again").onclick = () => renderInput(getSceneId());
   }
 
   // ── Boot ───────────────────────────────────────────────────────────────────

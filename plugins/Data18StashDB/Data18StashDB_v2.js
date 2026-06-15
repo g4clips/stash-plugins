@@ -262,6 +262,44 @@
     document.body.appendChild(overlay);
     document.getElementById("d18-close").onclick = closeModal;
     overlay.addEventListener("click", e => { if (e.target === overlay) closeModal(); });
+
+    // ── Drag to move ────────────────────────────────────────────────────────
+    const box    = document.getElementById("d18-box");
+    const header = document.getElementById("d18-header");
+    let dragging = false, ox = 0, oy = 0;
+
+    function onDragMove(e) {
+      if (!dragging) return;
+      let x = Math.max(0, Math.min(window.innerWidth  - box.offsetWidth,  e.clientX - ox));
+      let y = Math.max(0, Math.min(window.innerHeight - box.offsetHeight, e.clientY - oy));
+      box.style.left = x + "px";
+      box.style.top  = y + "px";
+    }
+
+    function onDragEnd() {
+      dragging = false;
+      header.style.cursor = "grab";
+      document.removeEventListener("mousemove", onDragMove);
+      document.removeEventListener("mouseup",   onDragEnd);
+    }
+
+    header.addEventListener("mousedown", e => {
+      if (e.button !== 0) return;
+      // Resolve current pixel position before dropping the CSS transform
+      const rect = box.getBoundingClientRect();
+      box.style.transform = "none";
+      box.style.left = rect.left + "px";
+      box.style.top  = rect.top  + "px";
+      ox = e.clientX - rect.left;
+      oy = e.clientY - rect.top;
+      dragging = true;
+      header.style.cursor = "grabbing";
+      e.preventDefault();
+      document.addEventListener("mousemove", onDragMove);
+      document.addEventListener("mouseup",   onDragEnd);
+    });
+    // ── End drag ─────────────────────────────────────────────────────────────
+
     renderInput(sceneId);
   }
 

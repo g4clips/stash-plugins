@@ -50,10 +50,11 @@ Get your API key from [stashdb.org](https://stashdb.org) → Profile → API Key
 
 1. Open any scene in Stash
 2. Click the **Data18** button in the scene toolbar
-3. Paste a `data18.com/scenes/` or `data18.com/movies/` URL
+3. If the scene is linked to a Group in stash, and the Group has a URL configured that uses data 18 you will automatically be brought to the scene selection, otherwise:
+  1. Paste a `data18.com/scenes/` or `data18.com/movies/` URL
 4. For movie URLs: pick the matching scene from the list
-5. Review the StashDB candidates and select the best match
-6. Check which fields to apply in the comparison table
+5. Review the StashDB candidates and select the best match (note there may not always be one)
+6. Check which fields to apply in the comparison table, and add any performers to your local stash if you so desire
 7. Click **Apply to Scene**
 
 ## License

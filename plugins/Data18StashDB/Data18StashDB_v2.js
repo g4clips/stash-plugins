@@ -644,21 +644,6 @@
     });
 
     document.getElementById("d18-back2").onclick = () => renderQuery(sceneId, scraped, query);
-
-    // Position hover thumbnails to follow the mouse
-    document.querySelectorAll(".d18-thumb-wrap").forEach(wrap => {
-      const hover = wrap.querySelector(".d18-thumb-hover");
-      if (!hover) return;
-      wrap.addEventListener("mousemove", e => {
-        const x = e.clientX + 16;
-        const y = e.clientY + 16;
-        // Keep within viewport
-        const vw = window.innerWidth;
-        const vh = window.innerHeight;
-        hover.style.left = (x + 320 > vw ? vw - 340 : x) + "px";
-        hover.style.top  = (y + hover.offsetHeight > vh ? y - hover.offsetHeight - 20 : y) + "px";
-      });
-    });
   }
 
   // ── Step 3: Side-by-side comparison ───────────────────────────────────────

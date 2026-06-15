@@ -100,6 +100,21 @@
 .d18-btn-primary:hover:not(:disabled) { background: #0a58ca; }
 .d18-btn-secondary{ background: #444; color: #ddd; }
 .d18-btn-secondary:hover:not(:disabled){ background: #555; }
+.d18-btn-xs { padding: .1rem .4rem; font-size: .73rem; }
+
+.d18-perf-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .4rem;
+  margin-bottom: .25rem;
+}
+.d18-perf-row:last-child { margin-bottom: 0; }
+.d18-perf-row .d18-item-label { margin-bottom: 0; }
+
+.d18-perf-inline-msg              { font-size: .75rem; }
+.d18-perf-inline-msg.d18-msg-ok  { color: #75b798; }
+.d18-perf-inline-msg.d18-msg-err { color: #f8a0a8; }
 
 /* ── Preview card ────────────────────────────────────────────── */
 .d18-preview {

@@ -1,6 +1,6 @@
 name: Data18StashDB
 description: Scrape Data18 and match against StashDB. Adds a Data18 button to scene pages.
-version: "2.4"
+version: "2.5"
 
 exec:
   - python

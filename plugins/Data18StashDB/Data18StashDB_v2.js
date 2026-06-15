@@ -205,6 +205,58 @@
     await gql(`mutation U($input:SceneUpdateInput!){sceneUpdate(input:$input){id}}`, { input });
   }
 
+  // ── Create performer in local Stash from StashDB ──────────────────────────
+
+  async function createPerformerInStash(name) {
+    const cfg   = await gql(`query { configuration { general { stashBoxes { endpoint } } } }`);
+    const boxes = cfg.configuration.general.stashBoxes || [];
+    const idx   = boxes.findIndex(b => b.endpoint.includes("stashdb.org"));
+    if (idx === -1) throw new Error("StashDB not configured in Stash-Box settings");
+
+    const scrapeData = await gql(`
+      query($src: ScraperSourceInput!, $input: ScrapeSinglePerformerInput!) {
+        scrapeSinglePerformer(source: $src, input: $input) {
+          name gender birthdate death_date url details
+          country hair_color eye_color height_cm weight_kg
+          images
+          stash_ids { stash_id endpoint }
+        }
+      }
+    `, {
+      src:   { stash_box_index: idx },
+      input: { query: name },
+    });
+
+    const list = [].concat(scrapeData.scrapeSinglePerformer || []).filter(Boolean);
+    if (!list.length) throw new Error(`Not found on StashDB: ${name}`);
+    const p = list[0];
+
+    const input = { name: p.name || name };
+    if (p.gender)          input.gender      = p.gender;
+    if (p.birthdate)       input.birthdate   = p.birthdate;
+    if (p.death_date)      input.death_date  = p.death_date;
+    if (p.url)             input.url         = p.url;
+    if (p.details)         input.details     = p.details;
+    if (p.country)         input.country     = p.country;
+    if (p.hair_color)      input.hair_color  = p.hair_color;
+    if (p.eye_color)       input.eye_color   = p.eye_color;
+    if (p.height_cm)       input.height_cm   = p.height_cm;
+    if (p.weight_kg)       input.weight_kg   = p.weight_kg;
+    if (p.images?.length)  input.image       = p.images[0];
+    if (p.stash_ids?.length) input.stash_ids = p.stash_ids.map(
+      s => ({ stash_id: s.stash_id, endpoint: s.endpoint })
+    );
+
+    const result = await gql(`
+      mutation($input: PerformerCreateInput!) {
+        performerCreate(input: $input) { id name }
+      }
+    `, { input });
+
+    if (!result.performerCreate) throw new Error(`Create mutation returned no result`);
+    return result.performerCreate;
+  }
+
   // ── Button injection ───────────────────────────────────────────────────────
 
   function injectButton() {
@@ -623,10 +675,16 @@
         <div class="d18-compare-current">${esc(currentPerfs.join(", ") || "—")}</div>
         <div class="d18-compare-incoming">
           ${resolvedPerfs.map(p => `
-            <label class="d18-item-label">
-              <input type="checkbox" class="d18-perf-chk" data-name="${esc(p.name)}" ${p.found ? "checked" : ""} />
-              <span>${esc(p.name)} ${matchBadge(p.found)}</span>
-            </label>`).join("")}
+            <div class="d18-perf-row">
+              <label class="d18-item-label">
+                <input type="checkbox" class="d18-perf-chk" data-name="${esc(p.name)}" ${p.found ? "checked" : ""} />
+                <span>${esc(p.name)} <span class="d18-perf-badge">${matchBadge(p.found)}</span></span>
+              </label>
+              ${!p.found ? `
+                <button class="d18-btn d18-btn-secondary d18-btn-xs d18-perf-create"
+                        data-name="${esc(p.name)}" type="button">Create in Stash</button>
+                <span class="d18-perf-inline-msg"></span>` : ""}
+            </div>`).join("")}
         </div>
         <div class="d18-compare-toggle">
           <input type="checkbox" class="d18-field-chk" data-field="performers" checked />
@@ -728,6 +786,41 @@
         setStatus("");
       }
     };
+
+    document.querySelectorAll(".d18-perf-create").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const name  = btn.dataset.name;
+        const row   = btn.closest(".d18-perf-row");
+        const msgEl = row?.querySelector(".d18-perf-inline-msg");
+        btn.disabled    = true;
+        btn.textContent = "Creating…";
+        if (msgEl) { msgEl.className = "d18-perf-inline-msg"; msgEl.textContent = ""; }
+
+        try {
+          const created = await createPerformerInStash(name);
+
+          const entry = resolvedPerfs.find(p => p.name === name);
+          if (entry) { entry.localId = created.id; entry.found = true; }
+
+          const chk   = row?.querySelector(".d18-perf-chk");
+          const badge = row?.querySelector(".d18-perf-badge");
+          if (chk)   chk.checked    = true;
+          if (badge) badge.innerHTML = matchBadge(true);
+          btn.style.display = "none";
+          if (msgEl) {
+            msgEl.className   = "d18-perf-inline-msg d18-msg-ok";
+            msgEl.textContent = "✓ Created";
+          }
+        } catch (e) {
+          btn.disabled    = false;
+          btn.textContent = "Create in Stash";
+          if (msgEl) {
+            msgEl.className   = "d18-perf-inline-msg d18-msg-err";
+            msgEl.textContent = `✗ ${e.message}`;
+          }
+        }
+      });
+    });
   }
 
   // ── Step 4: Done ───────────────────────────────────────────────────────────

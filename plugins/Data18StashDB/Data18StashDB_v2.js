@@ -828,8 +828,26 @@
             { input: { id: dupe.id, groups: merged } });
           await gql(`mutation($input: ScenesDestroyInput!) { scenesDestroy(input: $input) }`,
             { input: { ids: [sceneId], delete_file: delFile } });
-          const dupeScene = await fetchCurrentScene(dupe.id);
-          goApply(dupe.id, dupeScene);
+          getContent().innerHTML = `
+            <div class="d18-success">
+              ✓ Current scene deleted. Existing scene kept and linked to group.
+            </div>
+            ${merged.length ? `
+              <div style="margin-top:.75rem">
+                <strong>Linked to:</strong>
+                ${merged.map(g => `
+                  <div style="margin-top:.25rem">
+                    <a href="/groups/${esc(g.group_id)}" class="d18-group-link">
+                      ${esc((dupe.groups || []).find(og => og.group.id === g.group_id)?.group.name
+                            || currentGroup?.group.name
+                            || g.group_id)}${g.scene_index ? ` — Scene ${g.scene_index}` : ""}
+                    </a>
+                  </div>`).join("")}
+              </div>` : ""}
+            <div class="d18-row" style="margin-top:.75rem">
+              <button id="d18-close-done" class="d18-btn d18-btn-primary">Close</button>
+            </div>`;
+          document.getElementById("d18-close-done").onclick = closeModal;
         } catch(e) {
           btn.disabled = false; btn.textContent = "Keep existing & delete current";
           if (msg) { msg.className = "d18-dupe-msg d18-perf-inline-msg d18-msg-err"; msg.textContent = `✗ ${e.message}`; }

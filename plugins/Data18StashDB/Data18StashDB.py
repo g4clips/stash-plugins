@@ -10,7 +10,7 @@ Two modes:
 Result is stored in a __d18_result__ Stash tag for the JS to read.
 
 Dependencies:
-    pip install requests beautifulsoup4
+    pip install requests beautifulsoup4 certifi
 """
 
 import json
@@ -18,6 +18,7 @@ import re
 import sys
 from datetime import datetime
 
+import certifi
 import requests
 from bs4 import BeautifulSoup
 
@@ -61,6 +62,7 @@ def data18_session():
         "Referer": "https://www.google.com/",
     })
     s.cookies.set("data_user_captcha", "1", domain=".data18.com", path="/")
+    s.verify = certifi.where()
     return s
 
 

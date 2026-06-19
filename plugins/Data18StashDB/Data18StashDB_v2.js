@@ -893,21 +893,34 @@
         </div>
       </div>` : "";
 
-    const tagsRowHtml = resolvedTags.length ? `
-      <div class="d18-compare-row">
-        <div class="d18-compare-label">Tags</div>
-        <div class="d18-compare-current">${esc(currentTags.join(", ") || "—")}</div>
-        <div class="d18-compare-incoming">
-          ${resolvedTags.map(t => `
-            <label class="d18-item-label">
-              <input type="checkbox" class="d18-tag-chk" data-name="${esc(t.name)}" ${t.found ? "checked" : ""} />
-              <span>${esc(t.name)} ${matchBadge(t.found)}</span>
-            </label>`).join("")}
-        </div>
-        <div class="d18-compare-toggle">
-          <input type="checkbox" class="d18-field-chk" data-field="tags" checked />
-        </div>
-      </div>` : "";
+    const tagsRowHtml = resolvedTags.length ? (() => {
+      const matched   = resolvedTags.filter(t =>  t.found);
+      const unmatched = resolvedTags.filter(t => !t.found);
+      return `
+        <div class="d18-compare-row">
+          <div class="d18-compare-label">Tags</div>
+          <div class="d18-compare-current">${esc(currentTags.join(", ") || "—")}</div>
+          <div class="d18-compare-incoming">
+            ${matched.map(t => `
+              <label class="d18-item-label">
+                <input type="checkbox" class="d18-tag-chk" data-name="${esc(t.name)}" checked />
+                <span>${esc(t.name)} ${matchBadge(true)}</span>
+              </label>`).join("")}
+            ${unmatched.length ? `
+              <details>
+                <summary class="d18-unmatched-toggle">${unmatched.length} not found in Stash</summary>
+                ${unmatched.map(t => `
+                  <label class="d18-item-label">
+                    <input type="checkbox" class="d18-tag-chk" data-name="${esc(t.name)}" />
+                    <span>${esc(t.name)} ${matchBadge(false)}</span>
+                  </label>`).join("")}
+              </details>` : ""}
+          </div>
+          <div class="d18-compare-toggle">
+            <input type="checkbox" class="d18-field-chk" data-field="tags" checked />
+          </div>
+        </div>`;
+    })() : "";
 
     // Find existing stash_id for this endpoint if any
     const existingStashId = (current.stash_ids || [])
@@ -1031,16 +1044,11 @@
     setError(""); setStatus("");
     const sameScene = !appliedSceneId || appliedSceneId === getSceneId();
     getContent().innerHTML = `
-      <div class="d18-success">✓ Scene updated! ${sameScene
-        ? "Reload the page to see changes."
-        : "Original scene deleted — navigate to the updated scene to confirm."}</div>
-      <div class="d18-row" style="margin-top:.75rem">
-        <button id="d18-reload" class="d18-btn d18-btn-primary">${sameScene ? "Reload Page" : "Go to updated scene"}</button>
-        <button id="d18-again"  class="d18-btn d18-btn-secondary">Scrape Another</button>
-      </div>`;
-    document.getElementById("d18-reload").onclick = () =>
-      sameScene ? window.location.reload() : (window.location.href = `/scenes/${appliedSceneId}`);
-    document.getElementById("d18-again").onclick = () => renderInput(getSceneId());
+      <div class="d18-success">✓ Scene updated! Reloading…</div>`;
+    setTimeout(() => {
+      if (sameScene) window.location.reload();
+      else window.location.href = `/scenes/${appliedSceneId}`;
+    }, 1500);
   }
 
   // ── Boot ───────────────────────────────────────────────────────────────────

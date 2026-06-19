@@ -558,3 +558,16 @@
 .d18-thumb-wrap:hover .d18-thumb-hover {
   display: block;
 }
+
+/* ── Unmatched tags collapsible ───────────────────────────────────── */
+.d18-unmatched-toggle {
+  cursor: pointer;
+  color: #aaa;
+  font-size: .78rem;
+  padding: .2rem 0;
+  user-select: none;
+  list-style: none;
+}
+.d18-unmatched-toggle::-webkit-details-marker { display: none; }
+details[open] .d18-unmatched-toggle::before        { content: "▼ "; }
+details:not([open]) .d18-unmatched-toggle::before  { content: "▶ "; }

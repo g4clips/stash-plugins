@@ -1,6 +1,6 @@
 name: FindDuplicates
 description: Find and manage duplicate scenes and groups based on normalized title, shared performers, and identical synopsis.
-version: "1.0.0"
+version: "1.1.0"
 
 interface: raw
 

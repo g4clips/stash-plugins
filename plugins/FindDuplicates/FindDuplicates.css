@@ -328,13 +328,3 @@
   color: #aaa;
   padding: 2rem 0;
 }
-
-/* ── Nav link ──────────────────────────────────────────────────────────── */
-#fd-nav-item .nav-link {
-  color: #adb5bd;
-  padding: .5rem 1rem;
-  display: block;
-  text-decoration: none;
-  font-size: .875rem;
-}
-#fd-nav-item .nav-link:hover { color: #fff; }

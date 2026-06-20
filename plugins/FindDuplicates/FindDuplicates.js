@@ -8,7 +8,6 @@
 (function () {
   "use strict";
 
-  const NAV_ID    = "fd-nav-item";
   const PAGE_ID   = "fd-page";
   const HASH      = "findduplicates";
   const PAGE_SIZE = 20;
@@ -563,35 +562,6 @@
     }
   }
 
-  // ── Nav link injection ─────────────────────────────────────────────────────
-
-  function injectNav() {
-    if (document.getElementById(NAV_ID)) return true;
-    const nav =
-      document.querySelector(".navbar-nav") ||
-      document.querySelector("nav.sidebar ul") ||
-      document.querySelector(".main-sidebar .nav");
-    if (!nav) return false;
-
-    const li = document.createElement("li");
-    li.id = NAV_ID;
-    li.className = "nav-item";
-
-    const a = document.createElement("a");
-    a.className = "nav-link";
-    a.href = "#" + HASH;
-    a.textContent = "Find Dupes";
-    a.title = "Metadata Duplicate Checker";
-    a.addEventListener("click", e => {
-      e.preventDefault();
-      window.location.hash = HASH;
-    });
-
-    li.appendChild(a);
-    nav.appendChild(li);
-    return true;
-  }
-
   // ── Routing ────────────────────────────────────────────────────────────────
 
   function checkRoute() {
@@ -600,30 +570,97 @@
     else hidePage();
   }
 
-  function onLocationChange() {
-    injectNav();
-    checkRoute();
+  // ── Settings → Tools page injection ───────────────────────────────────────
+
+  function isToolsPage() {
+    const p = new URL(window.location.href);
+    return p.pathname === "/settings" && p.searchParams.get("tab") === "tools";
   }
 
+  function injectToolsEntry() {
+    if (document.getElementById("fd-tools-entry")) return true;
+
+    // Both anchors come from SettingsToolsPanel.tsx and are reliably rendered
+    // when the Tools tab is active. Using two lets us locate the shared parent
+    // (the SettingsToolsSection div) without guessing at class names.
+    const dupeLink   = document.querySelector('a[href="/sceneDuplicateChecker"]');
+    const parserLink = document.querySelector('a[href="/sceneFilenameParser"]');
+    if (!dupeLink || !parserLink) return false;
+
+    // Walk up from dupeLink to the nearest ancestor that also contains parserLink
+    // — that is the rendered SettingsToolsSection container.
+    let container = dupeLink.parentElement;
+    while (container && !container.contains(parserLink)) {
+      container = container.parentElement;
+    }
+    if (!container) return false;
+
+    // The direct child of that container wrapping dupeLink = one rendered <Setting>.
+    let settingEl = dupeLink.parentElement;
+    while (settingEl && settingEl.parentElement !== container) {
+      settingEl = settingEl.parentElement;
+    }
+    if (!settingEl) return false;
+
+    // Deep-clone so our entry inherits the exact DOM structure and classes.
+    const entry = settingEl.cloneNode(true);
+    entry.id = "fd-tools-entry";
+
+    // Build the replacement button.
+    const clonedAnchor = entry.querySelector("a");
+    const clonedBtn    = clonedAnchor?.querySelector("button") ?? entry.querySelector("button");
+    const targetEl     = clonedAnchor ?? clonedBtn;
+
+    const btn = document.createElement("button");
+    btn.className = clonedBtn?.className ?? "btn btn-primary";
+    btn.textContent = "Find Dupes";
+    btn.title = "Metadata Duplicate Checker — find duplicate scenes and groups";
+    btn.addEventListener("click", () => { window.location.hash = HASH; });
+
+    if (targetEl) {
+      // Normal path: swap the cloned <a> (or bare <button>) for our button.
+      targetEl.replaceWith(btn);
+    } else {
+      // Fallback: structure didn't match expectations; append directly so
+      // something always renders even if it isn't perfectly styled.
+      entry.appendChild(btn);
+    }
+
+    container.appendChild(entry);
+    return true;
+  }
+
+  // ── Boot ───────────────────────────────────────────────────────────────────
+
   function boot() {
+    // Hash-based routing — #findduplicates opens the overlay (bookmarkable).
+    // Primary entry point is the Settings → Tools page button.
+    window.addEventListener("hashchange", checkRoute);
+    window.addEventListener("popstate",   checkRoute);
+    checkRoute();
+
+    // Re-inject the tools entry whenever React re-renders the Tools page.
+    const mo = new MutationObserver(() => {
+      if (isToolsPage() && !document.getElementById("fd-tools-entry")) {
+        injectToolsEntry();
+      }
+    });
+    mo.observe(document.body, { childList: true, subtree: true });
+
+    function onNavigation() {
+      checkRoute();
+      if (isToolsPage()) injectToolsEntry();
+    }
+
     if (window.PluginApi?.Event) {
-      window.PluginApi.Event.addEventListener("stash:location", onLocationChange);
+      window.PluginApi.Event.addEventListener("stash:location", onNavigation);
     } else {
       let last = "";
       setInterval(() => {
         const cur = window.location.href;
-        if (cur !== last) { last = cur; onLocationChange(); }
+        if (cur !== last) { last = cur; onNavigation(); }
       }, 500);
     }
-
-    // Re-inject nav whenever React clears it during re-renders
-    const mo = new MutationObserver(() => {
-      if (!document.getElementById(NAV_ID)) injectNav();
-    });
-    mo.observe(document.body, { childList: true, subtree: true });
-
-    window.addEventListener("hashchange", checkRoute);
-    onLocationChange();
   }
 
   boot();

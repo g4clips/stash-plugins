@@ -1,0 +1,340 @@
+/* FindDuplicates Plugin — plain CSS adapted from MetadataDuplicateChecker.scss */
+
+/* ── Full-page overlay ────────────────────────────────────────────────── */
+#fd-page {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  background: #0f0f17;
+  display: flex;
+  flex-direction: column;
+  font-family: inherit;
+  color: #eee;
+}
+
+/* ── Header ───────────────────────────────────────────────────────────── */
+#fd-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: .75rem 1.25rem;
+  border-bottom: 1px solid #2a2a3a;
+  background: #16161e;
+  flex-shrink: 0;
+}
+
+#fd-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+#fd-tab-bar {
+  display: flex;
+  gap: .4rem;
+  flex: 1;
+}
+
+.fd-tab {
+  padding: .35rem .85rem;
+  border: 1px solid #3a3a4a;
+  border-radius: 4px;
+  background: transparent;
+  color: #aaa;
+  font-size: .875rem;
+  cursor: pointer;
+  transition: background .15s, color .15s;
+}
+.fd-tab:hover          { background: #2a2a3a; color: #eee; }
+.fd-tab.fd-tab-active  { background: #0d6efd; border-color: #0d6efd; color: #fff; }
+
+/* Count badge inside tab button — mirrors Bootstrap <Badge variant="secondary"> */
+.fd-badge {
+  display: inline-block;
+  background: rgba(255,255,255,.2);
+  color: #fff;
+  font-size: .7rem;
+  font-weight: 700;
+  padding: .1rem .4rem;
+  border-radius: 10px;
+  margin-left: .35rem;
+  vertical-align: middle;
+}
+
+#fd-close {
+  background: none;
+  border: none;
+  color: #aaa;
+  font-size: 1.1rem;
+  cursor: pointer;
+  padding: .2rem .5rem;
+  border-radius: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+#fd-close:hover { background: #333; color: #fff; }
+
+/* ── Content area & panels ────────────────────────────────────────────── */
+#fd-content {
+  flex: 1 1 0;
+  min-height: 0;
+  position: relative;
+}
+
+.fd-panel {
+  display: none;
+  flex-direction: column;
+  gap: .75rem;
+  padding: 1.25rem;
+  height: 100%;
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+.fd-panel.fd-panel-active { display: flex; }
+
+/* ── Status / Error ───────────────────────────────────────────────────── */
+.fd-status {
+  color: #aaa;
+  font-size: .9rem;
+  font-style: italic;
+  padding: .5rem 0;
+}
+
+.fd-error {
+  padding: .6rem .85rem;
+  border-radius: 4px;
+  background: rgba(220,53,69,.15);
+  border: 1px solid rgba(220,53,69,.4);
+  color: #f8a0a8;
+  font-size: .875rem;
+}
+
+/* ── Description text & criteria list ────────────────────────────────── */
+.fd-lead {
+  font-size: 1rem;
+  color: #ccc;
+  margin: 0;
+}
+
+.fd-description {
+  display: flex;
+  flex-direction: column;
+  gap: .35rem;
+  font-size: .9rem;
+  color: #ccc;
+}
+.fd-description p  { margin: 0; }
+.fd-description ul { margin: 0; padding-left: 1.4rem; color: #aaa; }
+
+/* ── Pagination ───────────────────────────────────────────────────────── */
+.fd-pagination-wrap {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+
+/* Mirrors TSX <h6 className="mr-auto align-self-center"> */
+.fd-set-count {
+  font-size: .9rem;
+  font-weight: 600;
+  color: #ccc;
+  margin: 0;
+}
+
+.fd-pagination {
+  display: flex;
+  align-items: center;
+  gap: .3rem;
+  flex-wrap: wrap;
+}
+
+.fd-page-btn {
+  padding: .3rem .65rem;
+  border: 1px solid #3a3a4a;
+  border-radius: 4px;
+  background: #1a1a28;
+  color: #ccc;
+  font-size: .82rem;
+  cursor: pointer;
+  min-width: 2rem;
+  transition: background .15s, border-color .15s;
+}
+.fd-page-btn:hover:not(:disabled)  { background: #2a2a3a; border-color: #555; }
+.fd-page-btn.fd-page-btn-active    { background: #0d6efd; border-color: #0d6efd; color: #fff; cursor: default; }
+.fd-page-btn:disabled              { opacity: .4; cursor: not-allowed; }
+
+.fd-page-ellipsis {
+  color: #666;
+  font-size: .82rem;
+  padding: 0 .2rem;
+}
+
+/* ── Table ────────────────────────────────────────────────────────────── */
+.fd-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: .875rem;
+  flex-shrink: 0;
+}
+
+.fd-table th,
+.fd-table td {
+  padding: .55rem .75rem;
+  vertical-align: middle;
+  border-bottom: 1px solid #2a2a3a;
+  color: #ddd;
+}
+
+.fd-table thead th {
+  background: #16161e;
+  font-weight: 600;
+  font-size: .8rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: #aaa;
+  border-bottom: 2px solid #3a3a4a;
+}
+
+.fd-table tbody tr:hover td { background: rgba(255,255,255,.03); }
+
+/* ── Separator row between duplicate groups ───────────────────────────── */
+/* Mirrors SCSS .metadata-duplicate-checker-separator */
+.fd-separator-row td {
+  border-top: 1px solid rgba(255,255,255,.5);
+  height: 10px;
+  background: transparent;
+  padding: 0;
+  border-bottom: none;
+}
+
+/* ── First row of each duplicate group ───────────────────────────────── */
+/* Mirrors SCSS .duplicate-group td */
+.fd-group-first td {
+  border-top: 2px solid rgba(255,255,255,.3);
+}
+
+/* ── Column widths ────────────────────────────────────────────────────── */
+.fd-th-cover,
+.fd-td-thumb  { width: 116px; }
+.fd-td-size   { width: 90px; white-space: nowrap; }
+.fd-td-action { width: 80px; }
+.fd-td-studio { width: 180px; }
+.fd-td-popover { width: 200px; }
+
+/* ── Thumbnail cell ───────────────────────────────────────────────────── */
+.fd-thumb-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.fd-thumb {
+  width: 100px;
+  height: 67px;
+  object-fit: cover;
+  border-radius: 3px;
+  display: block;
+}
+
+.fd-no-img {
+  width: 100px;
+  height: 67px;
+  background: #2a2a3a;
+  border-radius: 3px;
+  display: block;
+}
+
+/* Hover zoom — mirrors TSX <HoverPopover>; width is set inline per tab (600px scenes, 300px groups) */
+.fd-thumb-zoom {
+  display: none;
+  position: absolute;
+  z-index: 99999;
+  top: 0;
+  left: calc(100% + 8px);
+  border: 2px solid #555;
+  border-radius: 4px;
+  box-shadow: 0 4px 24px rgba(0,0,0,.8);
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.fd-thumb-zoom img { display: block; height: auto; }
+
+.fd-thumb-wrap:hover .fd-thumb-zoom { display: block; }
+
+/* ── Details cell ─────────────────────────────────────────────────────── */
+.fd-td-details          { max-width: 300px; }
+.fd-td-details p        { margin: 0; }
+
+/* Mirrors SCSS .metadata-duplicate-checker-description */
+.fd-meta-desc {
+  font-size: .88em;
+  color: rgba(255,255,255,.6);
+  margin-bottom: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 280px;
+}
+
+/* ── Studio cell ──────────────────────────────────────────────────────── */
+.fd-td-studio p { margin: 0; }
+
+/* ── Popover cell (tags + performer names) ────────────────────────────── */
+.fd-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .25rem;
+  margin-bottom: .2rem;
+}
+
+.fd-tag {
+  font-size: .72rem;
+  padding: .1rem .4rem;
+  border-radius: 10px;
+  background: rgba(13,110,253,.15);
+  color: #6ea8fe;
+  border: 1px solid rgba(13,110,253,.3);
+  white-space: nowrap;
+}
+
+.fd-performers-list {
+  font-size: .8rem;
+  color: #aaa;
+}
+
+/* ── Links ────────────────────────────────────────────────────────────── */
+.fd-link { color: #6ea8fe; text-decoration: none; font-weight: 500; }
+.fd-link:hover { text-decoration: underline; }
+
+/* ── Buttons ──────────────────────────────────────────────────────────── */
+.fd-btn {
+  padding: .35rem .8rem;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: .82rem;
+  white-space: nowrap;
+  transition: background .15s;
+}
+.fd-btn:disabled              { opacity: .45; cursor: not-allowed; }
+.fd-btn-danger                { background: #dc3545; color: #fff; }
+.fd-btn-danger:hover:not(:disabled) { background: #bb2d3b; }
+
+/* ── Empty state ──────────────────────────────────────────────────────── */
+.fd-empty {
+  text-align: center;
+  color: #aaa;
+  padding: 2rem 0;
+}
+
+/* ── Nav link ──────────────────────────────────────────────────────────── */
+#fd-nav-item .nav-link {
+  color: #adb5bd;
+  padding: .5rem 1rem;
+  display: block;
+  text-decoration: none;
+  font-size: .875rem;
+}
+#fd-nav-item .nav-link:hover { color: #fff; }

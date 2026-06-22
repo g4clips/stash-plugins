@@ -67,25 +67,6 @@ def data18_session():
     return s
 
 
-def evilangel_session():
-    s = requests.Session()
-    s.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:79.0) Gecko/20100101 Firefox/79.0)",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.google.com/",
-    })
-    for name, value in {
-        "ageConfirmed":   "true",
-        "ml_confirmed":   "true",
-        "adultconfirmed": "1",
-    }.items():
-        s.cookies.set(name, value, domain=".evilangelvideo.com", path="/")
-        s.cookies.set(name, value, domain=".adultempire.com",    path="/")
-    s.verify = False
-    return s
-
-
 def stashdb_gql(query, variables=None):
     resp = requests.post(
         STASHDB_URL,
@@ -140,9 +121,9 @@ def parse_date(text):
 
 # ── Data18 scrapers ────────────────────────────────────────────────────────────
 
-def scrape_data18_movie(url):
+def scrape_movie(url):
     session = data18_session()
-    log(f"Fetching Data18 movie: {url}")
+    log(f"Fetching movie: {url}")
     resp = session.get(url, timeout=15)
     resp.raise_for_status()
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -248,150 +229,7 @@ def scrape_data18_movie(url):
     return {"movieTitle": movie_title, "movieImage": movie_image, "scenes": scenes}
 
 
-def scrape_evilangel(url):
-    session = evilangel_session()
-    log(f"Fetching Evil Angel movie: {url}")
-    result = {"movieTitle": "", "movieImage": "", "scenes": []}
-    try:
-        resp = session.get(url, timeout=15)
-        resp.raise_for_status()
-    except Exception as e:
-        log(f"Evil Angel movie fetch failed: {e}")
-        return result
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-
-    title_el = soup.select_one("div.video-title h1.description")
-    result["movieTitle"] = title_el.get_text(strip=True) if title_el else ""
-    if not result["movieTitle"]:
-        log("Evil Angel: could not find movie title (div.video-title h1.description)")
-
-    cover_img = soup.select_one('img[alt*="Cover"]')
-    if not cover_img:
-        for sel in ("div.movie-info", "div.product-info", "section.movie"):
-            sec = soup.select_one(sel)
-            if sec:
-                imgs = sec.find_all("img")
-                if imgs:
-                    cover_img = imgs[0]
-                    break
-    if cover_img:
-        src = cover_img.get("src") or cover_img.get("data-src", "")
-        result["movieImage"] = src if src.startswith("http") else (f"https:{src}" if src else "")
-
-    scene_anchors = soup.select('a[data-Label="Scene Preview Title"]')
-    log(f"Evil Angel: found {len(scene_anchors)} scene anchors")
-
-    scenes = []
-    for idx, anchor in enumerate(scene_anchors):
-        href = anchor.get("href", "")
-        scene_url = (href if href.startswith("http")
-                     else ("https://store.evilangelvideo.com" + href if href else ""))
-
-        h6 = anchor.find("h6")
-        title = h6.get_text(strip=True) if h6 else ""
-
-        container = anchor.parent
-        for _ in range(8):
-            if container is None:
-                break
-            if container.select_one("p.scene-performer-names") or container.find("noscript"):
-                break
-            container = container.parent
-
-        performers, image = [], ""
-        if container:
-            perf_el = container.select_one("p.scene-performer-names")
-            if perf_el:
-                performers = [a.get_text(strip=True) for a in perf_el.find_all("a")
-                              if a.get_text(strip=True)]
-            noscript = container.find("noscript")
-            if noscript:
-                ns_img = BeautifulSoup(str(noscript), "html.parser").find("img")
-                if ns_img:
-                    src = ns_img.get("src", "")
-                    image = src if src.startswith("http") else (f"https:{src}" if src else "")
-
-        scenes.append({
-            "sceneIndex": idx + 1,
-            "sceneUrl":   scene_url,
-            "title":      title or f"Scene {idx + 1}",
-            "performers": performers,
-            "date":       "",
-            "image":      image,
-        })
-
-    result["scenes"] = scenes
-    return result
-
-
-def scrape_evilangel_scene(url):
-    session = evilangel_session()
-    log(f"Fetching Evil Angel scene: {url}")
-    result = {"url": url, "title": "", "performers": [], "studio": "",
-              "date": "", "description": "", "tags": [], "image": ""}
-    try:
-        resp = session.get(url, timeout=15)
-        resp.raise_for_status()
-    except Exception as e:
-        log(f"Evil Angel scene fetch failed: {e}")
-        return result
-
-    soup = BeautifulSoup(resp.text, "html.parser")
-
-    title_el = soup.select_one("div.video-title h1.description")
-    if title_el:
-        result["title"] = title_el.get_text(strip=True)
-    elif soup.title:
-        result["title"] = soup.title.get_text(strip=True)
-
-    studio_el = soup.select_one('div.studio a[data-Label="Studio"]')
-    if studio_el:
-        result["studio"] = studio_el.get_text(strip=True)
-
-    performers = []
-    for a in soup.select("p.scene-performer-names a"):
-        name = a.get_text(strip=True)
-        if name and name not in performers:
-            performers.append(name)
-    result["performers"] = performers
-
-    tags = []
-    for a in soup.select("div.categories a"):
-        if a.get("data-Label", "").startswith("Category"):
-            text = a.get_text(strip=True)
-            if text:
-                tags.append(text)
-    result["tags"] = tags
-
-    for sel in ("span.release-date", "div.release-date",
-                "span[itemprop='datePublished']", "[itemprop='datePublished']"):
-        el = soup.select_one(sel)
-        if el:
-            result["date"] = parse_date(el.get("content") or el.get_text()) or ""
-            break
-
-    cover_img = soup.select_one('img[alt*="Cover"]')
-    if not cover_img:
-        noscript = soup.find("noscript")
-        if noscript:
-            cover_img = BeautifulSoup(str(noscript), "html.parser").find("img")
-    if cover_img:
-        src = cover_img.get("src") or cover_img.get("data-src", "")
-        result["image"] = src if src.startswith("http") else (f"https:{src}" if src else "")
-
-    return result
-
-
-def scrape_movie(url):
-    if "evilangelvideo.com" in url or "adultempire.com" in url:
-        return scrape_evilangel(url)
-    return scrape_data18_movie(url)
-
-
 def scrape_scene(url):
-    if "evilangelvideo.com" in url or "adultempire.com" in url:
-        return scrape_evilangel_scene(url)
     session = data18_session()
     log(f"Fetching scene: {url}")
     resp = session.get(url, timeout=15)

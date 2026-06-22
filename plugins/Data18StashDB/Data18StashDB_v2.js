@@ -45,14 +45,6 @@
       .replace(/>/g,"&gt;").replace(/"/g,"&quot;");
   }
 
-  function urlType(url) {
-    if (url.includes("data18.com/movies/"))       return "movie";
-    if (url.includes("data18.com/scenes/"))       return "scene";
-    if (url.includes("store.evilangelvideo.com")) return "movie";
-    if (url.includes("store.adultempire.com"))    return "movie";
-    return null;
-  }
-
   // ── GraphQL (local Stash) ──────────────────────────────────────────────────
 
   async function gql(query, variables = {}) {
@@ -384,7 +376,7 @@
       setStatus("");
       let groupUrl = null, groupName = null;
       for (const g of (scene?.groups || [])) {
-        const u = (g.group?.urls || []).find(url => urlType(url) === "movie");
+        const u = (g.group?.urls || []).find(url => url.includes("data18.com/movies/"));
         if (u) { groupUrl = u; groupName = g.group.name; break; }
       }
       renderInput(sceneId, groupUrl, groupName);
@@ -400,12 +392,12 @@
     setError(""); setStatus("");
     getContent().innerHTML = `
       <p class="d18-hint">
-        Paste a <strong>data18.com/scenes/</strong>, <strong>data18.com/movies/</strong>,
-        or <strong>store.evilangelvideo.com</strong> URL. Movie URLs show a scene picker first.
+        Paste a <strong>data18.com/scenes/</strong> or <strong>data18.com/movies/</strong> URL.
+        Movie URLs show a scene picker first.
       </p>
       <div class="d18-row">
         <input id="d18-url" class="d18-input" type="url"
-               placeholder="https://www.data18.com/movies/... or https://store.evilangelvideo.com/..." />
+               placeholder="https://www.data18.com/movies/1259710-horny-hotwife" />
         <button id="d18-go" class="d18-btn d18-btn-primary">Go</button>
       </div>`;
 
@@ -414,13 +406,14 @@
 
     async function go() {
       const url = input.value.trim();
-      const type = urlType(url);
-      if (!type) {
-        setError("Please enter a data18.com/scenes/, data18.com/movies/, or store.evilangelvideo.com URL"); return;
+      const isMovie = url.includes("data18.com/movies/");
+      const isScene = url.includes("data18.com/scenes/");
+      if (!isMovie && !isScene) {
+        setError("Please enter a data18.com/scenes/ or data18.com/movies/ URL"); return;
       }
       setError(""); btn.disabled = true; btn.textContent = "Loading…";
 
-      if (type === "movie") {
+      if (isMovie) {
         try {
           const movie = await runTask("Scrape Data18 Movie",
             { mode: "scrape_movie", url }, "Scraping movie page…");

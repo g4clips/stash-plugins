@@ -1,9 +1,16 @@
-// FindDuplicates Plugin v1.1.0
+// FindDuplicates Plugin v1.2.0
 // Port of MetadataDuplicateChecker.tsx — plain JS, fetch() to /graphql only.
 //
-// Scene duplicates  : connected-components within (normalizedTitle + normalizedDetails) buckets,
-//                     where two scenes are connected when they share ≥1 performer.
-// Group duplicates  : exact match on (normalizedName + normalizedSynopsis).
+// Matching criteria are user-configurable via a filter bar on each tab (AND logic).
+// Toggling a checkbox recomputes duplicates from the already-fetched data — no refetch.
+//
+// Scene duplicates  : bucket by the checked exact-match fields (title / details / studio),
+//                     then (if Performer is checked) connected-components within each bucket
+//                     where two scenes are linked when they share ≥1 performer.
+// Group duplicates  : exact match on the checked fields (name / synopsis).
+//
+// Final view also shows the date each file was added (created_at) and supports
+// multi-select deletion across all duplicate sets.
 
 (function () {
   "use strict";
@@ -38,6 +45,12 @@
       : `${(bytes / 1e6).toFixed(1)} MB`;
   }
 
+  // Date the file/scene was added to Stash (created_at). Shows YYYY-MM-DD.
+  function fmtDate(s) {
+    if (!s) return null;
+    return String(s).slice(0, 10);
+  }
+
   // ── GraphQL ────────────────────────────────────────────────────────────────
 
   async function gql(query, variables = {}) {
@@ -60,10 +73,12 @@
         findScenes(filter: { per_page: -1 }) {
           scenes {
             id title details
+            studio      { id name }
             performers { id name }
             tags        { id name }
-            files       { size }
+            files       { size created_at }
             paths       { screenshot }
+            created_at
           }
         }
       }
@@ -95,15 +110,36 @@
     return (b.performers || []).some(p => aIds.has(p.id));
   }
 
-  // Matches TSX computeSceneDuplicates: connected-components within each
-  // (normalizedTitle + "\0" + normalizedDetails) bucket.
-  function buildSceneDupeSets(scenes) {
+  // Dynamic scene duplicate detection driven by `criteria` (AND logic — every
+  // checked field must match). Exact-match fields (title / details / studio) are
+  // combined into a bucket key; performer is an "overlap" criterion applied as a
+  // connected-components pass within each bucket. A scene missing a value for a
+  // checked exact-match field is skipped (can't be confidently matched).
+  function computeSceneDuplicates(scenes, criteria) {
+    if (!criteria.title && !criteria.details && !criteria.studio && !criteria.performer) {
+      return [];
+    }
+
     const keyMap = new Map();
     for (const scene of scenes) {
-      const title   = normalize(scene.title);
-      const details = normalize(scene.details);
-      if (!title || !details) continue;
-      const key = `${title}\x00${details}`;
+      const parts = [];
+      let skip = false;
+
+      if (criteria.title) {
+        const t = normalize(scene.title);
+        if (!t) skip = true; else parts.push("t:" + t);
+      }
+      if (criteria.details) {
+        const d = normalize(scene.details);
+        if (!d) skip = true; else parts.push("d:" + d);
+      }
+      if (criteria.studio) {
+        const s = scene.studio?.id;
+        if (!s) skip = true; else parts.push("s:" + s);
+      }
+      if (skip) continue;
+
+      const key = parts.join("\x00");
       if (!keyMap.has(key)) keyMap.set(key, []);
       keyMap.get(key).push(scene);
     }
@@ -111,32 +147,51 @@
     const result = [];
     for (const bucket of keyMap.values()) {
       if (bucket.length < 2) continue;
-      const remaining = [...bucket];
-      while (remaining.length > 1) {
-        const seed  = remaining.shift();
-        const group = [seed];
-        let i = 0;
-        while (i < remaining.length) {
-          if (group.some(s => hasPerformerOverlap(s, remaining[i]))) {
-            group.push(...remaining.splice(i, 1));
-          } else {
-            i++;
+
+      if (criteria.performer) {
+        // Connected components: two scenes are linked when they share ≥1 performer.
+        const remaining = [...bucket];
+        while (remaining.length > 1) {
+          const seed  = remaining.shift();
+          const group = [seed];
+          let i = 0;
+          while (i < remaining.length) {
+            if (group.some(s => hasPerformerOverlap(s, remaining[i]))) {
+              group.push(...remaining.splice(i, 1));
+            } else {
+              i++;
+            }
           }
+          if (group.length > 1) result.push(group);
         }
-        if (group.length > 1) result.push(group);
+      } else {
+        result.push(bucket);
       }
     }
     return result;
   }
 
-  // Matches TSX computeGroupDuplicates: exact key match on normalizedName + "\0" + normalizedSynopsis.
-  function buildGroupDupeSets(groups) {
+  // Dynamic group duplicate detection driven by `criteria` (AND logic). Exact
+  // match on the checked fields. A group missing its name is skipped when name is
+  // checked; an empty synopsis still participates (matches prior behaviour).
+  function computeGroupDuplicates(groups, criteria) {
+    if (!criteria.name && !criteria.synopsis) return [];
+
     const keyMap = new Map();
     for (const group of groups) {
-      const name = normalize(group.name);
-      if (!name) continue;
-      const synopsis = normalize(group.synopsis);
-      const key = `${name}\x00${synopsis}`;
+      const parts = [];
+      let skip = false;
+
+      if (criteria.name) {
+        const n = normalize(group.name);
+        if (!n) skip = true; else parts.push("n:" + n);
+      }
+      if (criteria.synopsis) {
+        parts.push("y:" + normalize(group.synopsis));
+      }
+      if (skip) continue;
+
+      const key = parts.join("\x00");
       if (!keyMap.has(key)) keyMap.set(key, []);
       keyMap.get(key).push(group);
     }
@@ -151,11 +206,31 @@
   // ── Page state ─────────────────────────────────────────────────────────────
 
   const state = {
-    sceneDupeSets: null,  // null = not yet loaded
+    allScenes: null,      // null = not yet fetched
+    allGroups: null,
+    sceneDupeSets: null,  // recomputed from allScenes whenever criteria change
     groupDupeSets: null,
     scenePage: 1,
     groupPage: 1,
+    // Matching criteria (AND logic). Defaults mirror the prior hardcoded behaviour.
+    sceneCriteria: { title: true, details: true, performer: true, studio: false },
+    groupCriteria: { name: true, synopsis: true },
+    // Ids checked for multi-delete; persists across pages, cleared on recompute/delete.
+    selectedScenes: new Set(),
+    selectedGroups: new Set(),
   };
+
+  // Labels for the filter-bar checkboxes, in display order.
+  const SCENE_CRITERIA = [
+    { key: "title",     label: "Title" },
+    { key: "details",   label: "Synopsis / Details" },
+    { key: "performer", label: "Performer overlap" },
+    { key: "studio",    label: "Studio" },
+  ];
+  const GROUP_CRITERIA = [
+    { key: "name",     label: "Name" },
+    { key: "synopsis", label: "Synopsis" },
+  ];
 
   // ── Page skeleton ──────────────────────────────────────────────────────────
 
@@ -282,23 +357,89 @@
       </td>`;
   }
 
+  // ── Filter bar (matching criteria + multi-delete) ──────────────────────────
+
+  // Collect every id that currently appears in a duplicate set — used to prune
+  // stale selections after the criteria change or a delete reshuffles the sets.
+  function collectIds(sets) {
+    const ids = new Set();
+    (sets || []).forEach(set => set.forEach(item => ids.add(item.id)));
+    return ids;
+  }
+
+  function buildFilterBar(tab) {
+    const criteria   = tab === "scenes" ? state.sceneCriteria  : state.groupCriteria;
+    const defs       = tab === "scenes" ? SCENE_CRITERIA       : GROUP_CRITERIA;
+    const selected   = tab === "scenes" ? state.selectedScenes : state.selectedGroups;
+    const onRecompute = tab === "scenes" ? recomputeScenes     : recomputeGroups;
+    const onBatch     = tab === "scenes" ? deleteSelectedScenes : deleteSelectedGroups;
+
+    const bar = document.createElement("div");
+    bar.className = "fd-filter-bar";
+
+    const label = document.createElement("span");
+    label.className = "fd-filter-label";
+    label.textContent = "Must match:";
+    bar.appendChild(label);
+
+    defs.forEach(def => {
+      const lbl = document.createElement("label");
+      lbl.className = "fd-filter-check";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = !!criteria[def.key];
+      cb.addEventListener("change", () => {
+        criteria[def.key] = cb.checked;
+        onRecompute();
+      });
+      lbl.appendChild(cb);
+      lbl.appendChild(document.createTextNode(" " + def.label));
+      bar.appendChild(lbl);
+    });
+
+    const batchBtn = document.createElement("button");
+    batchBtn.className = "fd-btn fd-btn-danger fd-filter-batch";
+    batchBtn.textContent = selected.size > 0
+      ? `Delete selected (${selected.size})`
+      : "Delete selected";
+    batchBtn.disabled = selected.size === 0;
+    batchBtn.addEventListener("click", () => onBatch());
+    bar.appendChild(batchBtn);
+
+    return bar;
+  }
+
+  // Build a list of criteria descriptions for the prose summary.
+  function criteriaSummary(defs, criteria) {
+    return defs.filter(d => criteria[d.key]).map(d => d.label);
+  }
+
   // ── Scenes tab ─────────────────────────────────────────────────────────────
 
   async function loadScenes() {
-    if (state.sceneDupeSets !== null) { renderScenes(); return; }
+    if (state.allScenes !== null) { recomputeScenes(); return; }
 
     const panel = getPanel("scenes");
     panel.innerHTML = `<div class="fd-status">Loading scenes…</div>`;
 
     try {
-      const all = await fetchAllScenes();
-      state.sceneDupeSets = buildSceneDupeSets(all);
-      state.scenePage = 1;
-      updateTabBadge("scenes", state.sceneDupeSets.length);
-      renderScenes();
+      state.allScenes = await fetchAllScenes();
+      recomputeScenes();
     } catch (e) {
       panel.innerHTML = `<div class="fd-error">Error loading scenes: ${esc(e.message)}</div>`;
     }
+  }
+
+  // Recompute duplicate sets from the already-loaded scenes (no GraphQL fetch).
+  function recomputeScenes() {
+    if (state.allScenes === null) return;
+    state.sceneDupeSets = computeSceneDuplicates(state.allScenes, state.sceneCriteria);
+    // Drop any selected ids that are no longer part of a duplicate set.
+    const valid = collectIds(state.sceneDupeSets);
+    state.selectedScenes.forEach(id => { if (!valid.has(id)) state.selectedScenes.delete(id); });
+    state.scenePage = 1;
+    updateTabBadge("scenes", state.sceneDupeSets.length);
+    renderScenes();
   }
 
   function renderScenes() {
@@ -312,20 +453,23 @@
 
     panel.innerHTML = "";
 
-    // Description + criteria list (matches TSX renderSceneTab prose)
+    // Description + criteria list (reflects the live filter selection)
+    const checked = criteriaSummary(SCENE_CRITERIA, state.sceneCriteria);
+    const critList = checked.length
+      ? `<p>With the current filter, scenes are duplicates when they share all of:</p>
+         <ul>${checked.map(c => `<li>${esc(c)}</li>`).join("")}</ul>`
+      : `<p>Select at least one criterion below to detect duplicates.</p>`;
     const descEl = document.createElement("div");
     descEl.className = "fd-description";
     descEl.innerHTML = `
       <p class="fd-lead">This page helps detect duplicate scenes based on metadata.
         For phash matching please use the
         <a class="fd-link" href="/sceneDuplicateChecker">Scene Duplicate Checker</a>.</p>
-      <p>Scenes are considered duplicates when they share all of the following criteria:</p>
-      <ul>
-        <li>Identical normalized title</li>
-        <li>At least one shared performer</li>
-        <li>Identical synopsis</li>
-      </ul>`;
+      ${critList}`;
     panel.appendChild(descEl);
+
+    // Filter bar (matching criteria + multi-delete)
+    panel.appendChild(buildFilterBar("scenes"));
 
     // Pagination above
     panel.appendChild(renderPaginationEl(total, state.scenePage, p => {
@@ -340,10 +484,12 @@
       table.innerHTML = `
         <thead>
           <tr>
+            <th class="fd-th-select"></th>
             <th class="fd-th-cover">Cover</th>
             <th>Details</th>
             <th></th>
             <th>File Size</th>
+            <th>Date Added</th>
             <th>Delete</th>
           </tr>
         </thead>`;
@@ -355,7 +501,7 @@
           if (i === 0 && groupIndex !== 0) {
             const sep = document.createElement("tr");
             sep.className = "fd-separator-row";
-            sep.innerHTML = `<td colspan="5"></td>`;
+            sep.innerHTML = `<td colspan="7"></td>`;
             tbody.appendChild(sep);
           }
 
@@ -364,10 +510,15 @@
 
           const thumb = scene.paths?.screenshot ?? "";
           const size  = fmtSize((scene.files || [])[0]?.size);
+          const added = fmtDate((scene.files || [])[0]?.created_at ?? scene.created_at);
           const tags  = (scene.tags || []).map(t => `<span class="fd-tag">${esc(t.name)}</span>`).join("");
           const perfs = (scene.performers || []).map(p => esc(p.name)).join(", ");
+          const isSel = state.selectedScenes.has(scene.id);
 
           tr.innerHTML = `
+            <td class="fd-td-select">
+              <input type="checkbox" class="fd-select" data-type="scene" data-id="${esc(scene.id)}" ${isSel ? "checked" : ""}>
+            </td>
             ${thumbCellHtml(thumb, 600)}
             <td class="fd-td-details">
               <p><a class="fd-link" href="/scenes/${esc(scene.id)}" target="_blank" rel="noopener">${esc(scene.title || scene.id)}</a></p>
@@ -378,6 +529,7 @@
               ${perfs ? `<div class="fd-performers-list">${perfs}</div>` : ""}
             </td>
             <td class="fd-td-size">${size ? esc(size) : "—"}</td>
+            <td class="fd-td-date">${added ? esc(added) : "—"}</td>
             <td class="fd-td-action">
               <button class="fd-btn fd-btn-danger fd-delete" data-type="scene" data-id="${esc(scene.id)}">Delete</button>
             </td>`;
@@ -390,7 +542,9 @@
     } else {
       const empty = document.createElement("h4");
       empty.className = "fd-empty";
-      empty.textContent = "No duplicates found.";
+      empty.textContent = checked.length
+        ? "No duplicates found."
+        : "Select at least one matching criterion above.";
       panel.appendChild(empty);
     }
 
@@ -404,6 +558,23 @@
     panel.querySelectorAll(".fd-delete[data-type='scene']").forEach(btn => {
       btn.addEventListener("click", () => deleteScene(btn.dataset.id, btn));
     });
+    panel.querySelectorAll(".fd-select[data-type='scene']").forEach(cb => {
+      cb.addEventListener("change", () => {
+        if (cb.checked) state.selectedScenes.add(cb.dataset.id);
+        else            state.selectedScenes.delete(cb.dataset.id);
+        refreshBatchButton("scenes");
+      });
+    });
+  }
+
+  // Update just the batch-delete button label/disabled state without a full
+  // re-render — keeps checkbox toggles snappy.
+  function refreshBatchButton(tab) {
+    const selected = tab === "scenes" ? state.selectedScenes : state.selectedGroups;
+    const btn = getPanel(tab)?.querySelector(".fd-filter-batch");
+    if (!btn) return;
+    btn.textContent = selected.size > 0 ? `Delete selected (${selected.size})` : "Delete selected";
+    btn.disabled = selected.size === 0;
   }
 
   async function deleteScene(id, btn) {
@@ -416,7 +587,8 @@
         { input: { ids: [id], delete_file: false } }
       );
       // Re-fetch to mirror TSX refetchScenes() — picks up any other changes too
-      state.sceneDupeSets = null;
+      state.selectedScenes.delete(id);
+      state.allScenes = null;
       loadScenes();
     } catch (e) {
       btn.disabled = false;
@@ -425,23 +597,53 @@
     }
   }
 
+  async function deleteSelectedScenes() {
+    const ids = [...state.selectedScenes];
+    if (ids.length === 0) return;
+    if (!confirm(`Delete ${ids.length} selected scene${ids.length === 1 ? "" : "s"}? This cannot be undone.`)) return;
+
+    const btn = getPanel("scenes")?.querySelector(".fd-filter-batch");
+    if (btn) { btn.disabled = true; btn.textContent = "Deleting…"; }
+    try {
+      await gql(
+        `mutation($input: ScenesDestroyInput!) { scenesDestroy(input: $input) }`,
+        { input: { ids, delete_file: false } }
+      );
+      state.selectedScenes.clear();
+      state.allScenes = null;
+      loadScenes();
+    } catch (e) {
+      if (btn) { btn.disabled = false; }
+      refreshBatchButton("scenes");
+      alert(`Delete failed: ${e.message}`);
+    }
+  }
+
   // ── Groups tab ─────────────────────────────────────────────────────────────
 
   async function loadGroups() {
-    if (state.groupDupeSets !== null) { renderGroups(); return; }
+    if (state.allGroups !== null) { recomputeGroups(); return; }
 
     const panel = getPanel("groups");
     panel.innerHTML = `<div class="fd-status">Loading groups…</div>`;
 
     try {
-      const all = await fetchAllGroups();
-      state.groupDupeSets = buildGroupDupeSets(all);
-      state.groupPage = 1;
-      updateTabBadge("groups", state.groupDupeSets.length);
-      renderGroups();
+      state.allGroups = await fetchAllGroups();
+      recomputeGroups();
     } catch (e) {
       panel.innerHTML = `<div class="fd-error">Error loading groups: ${esc(e.message)}</div>`;
     }
+  }
+
+  // Recompute duplicate sets from the already-loaded groups (no GraphQL fetch).
+  function recomputeGroups() {
+    if (state.allGroups === null) return;
+    state.groupDupeSets = computeGroupDuplicates(state.allGroups, state.groupCriteria);
+    const valid = collectIds(state.groupDupeSets);
+    state.selectedGroups.forEach(id => { if (!valid.has(id)) state.selectedGroups.delete(id); });
+    state.groupPage = 1;
+    updateTabBadge("groups", state.groupDupeSets.length);
+    renderGroups();
   }
 
   function renderGroups() {
@@ -455,11 +657,16 @@
 
     panel.innerHTML = "";
 
+    const checked = criteriaSummary(GROUP_CRITERIA, state.groupCriteria);
     const descEl = document.createElement("p");
     descEl.className = "fd-lead";
-    descEl.textContent =
-      "Detects duplicates based on Group Name, and Synopsis. Use this to detect and delete duplicate groups.";
+    descEl.textContent = checked.length
+      ? `Detects duplicate groups that share all of: ${checked.join(", ")}.`
+      : "Select at least one criterion below to detect duplicate groups.";
     panel.appendChild(descEl);
+
+    // Filter bar (matching criteria + multi-delete)
+    panel.appendChild(buildFilterBar("groups"));
 
     panel.appendChild(renderPaginationEl(total, state.groupPage, p => {
       state.groupPage = p;
@@ -473,6 +680,7 @@
       table.innerHTML = `
         <thead>
           <tr>
+            <th class="fd-th-select"></th>
             <th class="fd-th-cover">Cover</th>
             <th>Details</th>
             <th>Studio</th>
@@ -487,7 +695,7 @@
           if (i === 0 && groupIndex !== 0) {
             const sep = document.createElement("tr");
             sep.className = "fd-separator-row";
-            sep.innerHTML = `<td colspan="5"></td>`;
+            sep.innerHTML = `<td colspan="6"></td>`;
             tbody.appendChild(sep);
           }
 
@@ -502,8 +710,12 @@
           const dateStr = item.date
             ? `<p class="fd-meta-desc">Released ${esc(item.date)}</p>`
             : "";
+          const isSel = state.selectedGroups.has(item.id);
 
           tr.innerHTML = `
+            <td class="fd-td-select">
+              <input type="checkbox" class="fd-select" data-type="group" data-id="${esc(item.id)}" ${isSel ? "checked" : ""}>
+            </td>
             ${thumbCellHtml(thumb, 300)}
             <td class="fd-td-details">
               <p><a class="fd-link" href="/groups/${esc(item.id)}" target="_blank" rel="noopener">${esc(item.name || item.id)}</a></p>
@@ -528,7 +740,9 @@
     } else {
       const empty = document.createElement("h4");
       empty.className = "fd-empty";
-      empty.textContent = "No duplicates found.";
+      empty.textContent = checked.length
+        ? "No duplicates found."
+        : "Select at least one matching criterion above.";
       panel.appendChild(empty);
     }
 
@@ -540,6 +754,13 @@
 
     panel.querySelectorAll(".fd-delete[data-type='group']").forEach(btn => {
       btn.addEventListener("click", () => deleteGroup(btn.dataset.id, btn));
+    });
+    panel.querySelectorAll(".fd-select[data-type='group']").forEach(cb => {
+      cb.addEventListener("change", () => {
+        if (cb.checked) state.selectedGroups.add(cb.dataset.id);
+        else            state.selectedGroups.delete(cb.dataset.id);
+        refreshBatchButton("groups");
+      });
     });
   }
 
@@ -553,11 +774,34 @@
         { id }
       );
       // Re-fetch to mirror TSX refetchGroups()
-      state.groupDupeSets = null;
+      state.selectedGroups.delete(id);
+      state.allGroups = null;
       loadGroups();
     } catch (e) {
       btn.disabled = false;
       btn.textContent = "Delete";
+      alert(`Delete failed: ${e.message}`);
+    }
+  }
+
+  async function deleteSelectedGroups() {
+    const ids = [...state.selectedGroups];
+    if (ids.length === 0) return;
+    if (!confirm(`Delete ${ids.length} selected group${ids.length === 1 ? "" : "s"}? This cannot be undone.`)) return;
+
+    const btn = getPanel("groups")?.querySelector(".fd-filter-batch");
+    if (btn) { btn.disabled = true; btn.textContent = "Deleting…"; }
+    try {
+      await gql(
+        `mutation($ids: [ID!]!) { groupsDestroy(ids: $ids) }`,
+        { ids }
+      );
+      state.selectedGroups.clear();
+      state.allGroups = null;
+      loadGroups();
+    } catch (e) {
+      if (btn) { btn.disabled = false; }
+      refreshBatchButton("groups");
       alert(`Delete failed: ${e.message}`);
     }
   }

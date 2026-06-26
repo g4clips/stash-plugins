@@ -1,4 +1,4 @@
-// FindDuplicates Plugin v1.2.0
+// FindDuplicates Plugin v1.3.0
 // Port of MetadataDuplicateChecker.tsx — plain JS, fetch() to /graphql only.
 //
 // Matching criteria are user-configurable via a filter bar on each tab (AND logic).
@@ -51,6 +51,17 @@
     return String(s).slice(0, 10);
   }
 
+  // "1920x1080 · 8.5 Mbps" from a Stash file object.
+  // bit_rate is in bits/sec (integer); width/height are pixels.
+  function fmtQuality(file) {
+    if (!file) return null;
+    const dim = (file.width && file.height) ? `${file.width}x${file.height}` : null;
+    const mbps = file.bit_rate ? `${(file.bit_rate / 1_000_000).toFixed(1)} Mbps` : null;
+    if (!dim && !mbps) return null;
+    if (dim && mbps) return `${dim} · ${mbps}`;
+    return dim || mbps;
+  }
+
   // ── GraphQL ────────────────────────────────────────────────────────────────
 
   async function gql(query, variables = {}) {
@@ -76,7 +87,7 @@
             studio      { id name }
             performers { id name }
             tags        { id name }
-            files       { size created_at }
+            files       { size created_at width height bit_rate }
             paths       { screenshot }
             created_at
           }
@@ -488,6 +499,7 @@
             <th class="fd-th-cover">Cover</th>
             <th>Details</th>
             <th></th>
+            <th>Quality</th>
             <th>File Size</th>
             <th>Date Added</th>
             <th>Delete</th>
@@ -501,19 +513,21 @@
           if (i === 0 && groupIndex !== 0) {
             const sep = document.createElement("tr");
             sep.className = "fd-separator-row";
-            sep.innerHTML = `<td colspan="7"></td>`;
+            sep.innerHTML = `<td colspan="8"></td>`;
             tbody.appendChild(sep);
           }
 
           const tr = document.createElement("tr");
           tr.className = i === 0 ? "fd-group-first" : "";
 
-          const thumb = scene.paths?.screenshot ?? "";
-          const size  = fmtSize((scene.files || [])[0]?.size);
-          const added = fmtDate((scene.files || [])[0]?.created_at ?? scene.created_at);
-          const tags  = (scene.tags || []).map(t => `<span class="fd-tag">${esc(t.name)}</span>`).join("");
-          const perfs = (scene.performers || []).map(p => esc(p.name)).join(", ");
-          const isSel = state.selectedScenes.has(scene.id);
+          const file0  = (scene.files || [])[0];
+          const thumb   = scene.paths?.screenshot ?? "";
+          const quality = fmtQuality(file0);
+          const size    = fmtSize(file0?.size);
+          const added   = fmtDate(file0?.created_at ?? scene.created_at);
+          const tags    = (scene.tags || []).map(t => `<span class="fd-tag">${esc(t.name)}</span>`).join("");
+          const perfs   = (scene.performers || []).map(p => esc(p.name)).join(", ");
+          const isSel   = state.selectedScenes.has(scene.id);
 
           tr.innerHTML = `
             <td class="fd-td-select">
@@ -528,6 +542,7 @@
               ${tags  ? `<div class="fd-card-tags">${tags}</div>` : ""}
               ${perfs ? `<div class="fd-performers-list">${perfs}</div>` : ""}
             </td>
+            <td class="fd-td-quality">${quality ? esc(quality) : "—"}</td>
             <td class="fd-td-size">${size ? esc(size) : "—"}</td>
             <td class="fd-td-date">${added ? esc(added) : "—"}</td>
             <td class="fd-td-action">

@@ -257,6 +257,7 @@
 .fd-td-select input { cursor: pointer; margin: 0; }
 .fd-th-cover,
 .fd-td-thumb  { width: 116px; }
+.fd-td-quality { width: 160px; white-space: nowrap; color: #bbb; font-size: .82rem; }
 .fd-td-size   { width: 90px; white-space: nowrap; }
 .fd-td-date   { width: 104px; white-space: nowrap; color: #bbb; }
 .fd-td-action { width: 80px; }

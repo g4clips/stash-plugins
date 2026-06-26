@@ -386,7 +386,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 1rem;
+  padding: 1.5rem;
+  box-sizing: border-box;
 }
 
 .fd-merge-modal {
@@ -395,6 +396,7 @@
   border-radius: 8px;
   width: 100%;
   max-width: 920px;
+  min-height: 70vh;
   max-height: 90vh;
   display: flex;
   flex-direction: column;
@@ -424,6 +426,7 @@
   gap: 1rem;
   overflow-y: auto;
   flex: 1 1 0;
+  min-height: 300px;
 }
 
 .fd-modal-footer {
@@ -446,10 +449,12 @@
   display: flex;
   gap: 1rem;
   flex-wrap: wrap;
+  flex-shrink: 0;
 }
 
 .fd-merge-scene-card {
   flex: 1 1 240px;
+  min-height: 280px;
   border-radius: 6px;
   padding: .85rem;
   transition: filter .15s;

@@ -1,6 +1,6 @@
 name: FindDuplicates
 description: Find and manage duplicate scenes and groups with configurable match criteria, file-added dates, and multi-select deletion.
-version: "1.4.0"
+version: "1.4.1"
 
 interface: raw
 

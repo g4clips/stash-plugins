@@ -866,7 +866,8 @@
         <p class="fd-merge-meta">${[quality, size, added].filter(Boolean).map(esc).join(" · ")}</p>
         ${grpHtml}
         ${perfs ? `<p class="fd-merge-perfs">${perfs}</p>` : ""}
-        ${tags  ? `<div class="fd-card-tags">${tags}</div>` : ""}`;
+        ${tags  ? `<div class="fd-card-tags">${tags}</div>` : ""}
+        ${scene.details ? `<p class="fd-merge-meta" style="margin-top:.35rem">${esc(truncate(scene.details))}</p>` : ""}`;
 
       if (!isSurvivor) {
         card.addEventListener("click", e => {

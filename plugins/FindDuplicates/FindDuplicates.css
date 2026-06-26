@@ -126,6 +126,42 @@
 .fd-description p  { margin: 0; }
 .fd-description ul { margin: 0; padding-left: 1.4rem; color: #aaa; }
 
+/* ── Filter bar (matching criteria + multi-delete) ────────────────────── */
+.fd-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem 1.25rem;
+  flex-wrap: wrap;
+  padding: .6rem .9rem;
+  background: #16161e;
+  border: 1px solid #3a3a4a;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+
+.fd-filter-label {
+  font-size: .78rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: #aaa;
+}
+
+.fd-filter-check {
+  display: inline-flex;
+  align-items: center;
+  gap: .35rem;
+  font-size: .85rem;
+  color: #ddd;
+  cursor: pointer;
+  user-select: none;
+  margin: 0;
+}
+.fd-filter-check input { cursor: pointer; margin: 0; }
+
+/* Push the batch-delete button to the far right of the bar */
+.fd-filter-batch { margin-left: auto; }
+
 /* ── Pagination ───────────────────────────────────────────────────────── */
 .fd-pagination-wrap {
   display: flex;
@@ -216,9 +252,13 @@
 }
 
 /* ── Column widths ────────────────────────────────────────────────────── */
+.fd-th-select,
+.fd-td-select { width: 34px; text-align: center; }
+.fd-td-select input { cursor: pointer; margin: 0; }
 .fd-th-cover,
 .fd-td-thumb  { width: 116px; }
 .fd-td-size   { width: 90px; white-space: nowrap; }
+.fd-td-date   { width: 104px; white-space: nowrap; color: #bbb; }
 .fd-td-action { width: 80px; }
 .fd-td-studio { width: 180px; }
 .fd-td-popover { width: 200px; }

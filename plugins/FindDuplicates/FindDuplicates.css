@@ -257,10 +257,13 @@
 .fd-td-select input { cursor: pointer; margin: 0; }
 .fd-th-cover,
 .fd-td-thumb  { width: 116px; }
+.fd-th-group,
+.fd-td-group  { width: 116px; vertical-align: top; padding-top: .45rem; }
+.fd-td-group p { margin: .2rem 0 0; font-size: .8rem; }
 .fd-td-quality { width: 160px; white-space: nowrap; color: #bbb; font-size: .82rem; }
 .fd-td-size   { width: 90px; white-space: nowrap; }
 .fd-td-date   { width: 104px; white-space: nowrap; color: #bbb; }
-.fd-td-action { width: 80px; }
+.fd-td-action { width: 155px; white-space: nowrap; }
 .fd-td-studio { width: 180px; }
 .fd-td-popover { width: 200px; }
 
@@ -363,9 +366,163 @@
 .fd-btn-danger                { background: #dc3545; color: #fff; }
 .fd-btn-danger:hover:not(:disabled) { background: #bb2d3b; }
 
+/* ── Primary button (Merge) ───────────────────────────────────────────── */
+.fd-btn-primary { background: #0d6efd; color: #fff; }
+.fd-btn-primary:hover:not(:disabled) { background: #0b5ed7; }
+
 /* ── Empty state ──────────────────────────────────────────────────────── */
 .fd-empty {
   text-align: center;
   color: #aaa;
   padding: 2rem 0;
 }
+
+/* ── Merge modal overlay ──────────────────────────────────────────────── */
+#fd-merge-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  background: rgba(0,0,0,.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.fd-merge-modal {
+  background: #1a1a28;
+  border: 1px solid #3a3a4a;
+  border-radius: 8px;
+  width: 100%;
+  max-width: 920px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Modal header / footer ────────────────────────────────────────────── */
+.fd-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: .85rem 1.25rem;
+  border-bottom: 1px solid #2a2a3a;
+  flex-shrink: 0;
+}
+.fd-modal-title { margin: 0; font-size: 1rem; font-weight: 700; }
+.fd-modal-close {
+  background: none; border: none; color: #aaa;
+  font-size: 1.1rem; cursor: pointer; padding: .2rem .5rem; border-radius: 4px;
+}
+.fd-modal-close:hover { background: #333; color: #fff; }
+
+.fd-modal-body {
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  overflow-y: auto;
+  flex: 1 1 0;
+}
+
+.fd-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: .75rem;
+  padding: .85rem 1.25rem;
+  border-top: 1px solid #2a2a3a;
+  flex-shrink: 0;
+}
+.fd-btn-secondary {
+  background: #2a2a3a;
+  color: #ddd;
+  border: 1px solid #3a3a4a;
+}
+.fd-btn-secondary:hover { background: #3a3a4a; }
+
+/* ── Scene cards ──────────────────────────────────────────────────────── */
+.fd-merge-scenes {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.fd-merge-scene-card {
+  flex: 1 1 240px;
+  border-radius: 6px;
+  padding: .85rem;
+  transition: filter .15s;
+}
+.fd-merge-deleted { cursor: pointer; }
+.fd-merge-scene-card:hover { filter: brightness(1.08); }
+.fd-merge-survivor { border: 2px solid #198754; background: rgba(25,135,84,.08); }
+.fd-merge-deleted  { border: 2px solid #6c4040;  background: rgba(220,53,69,.06); }
+
+.fd-merge-badge {
+  font-size: .72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  margin-bottom: .5rem;
+}
+.fd-merge-survivor .fd-merge-badge { color: #4dbb8f; }
+.fd-merge-deleted  .fd-merge-badge { color: #c97878; }
+
+.fd-merge-thumb {
+  width: 100%;
+  height: 120px;
+  object-fit: cover;
+  border-radius: 4px;
+  display: block;
+  margin-bottom: .5rem;
+}
+.fd-merge-thumb.fd-no-img { background: #2a2a3a; }
+
+.fd-merge-title { font-size: .9rem; font-weight: 600; margin: 0 0 .25rem; }
+.fd-merge-meta  { font-size: .78rem; color: #999; margin: 0 0 .25rem; }
+.fd-merge-group { font-size: .8rem; margin: 0 0 .25rem; }
+.fd-merge-perfs { font-size: .8rem; color: #aaa; margin: 0 0 .25rem; }
+
+/* ── Checklist section inside modal ──────────────────────────────────── */
+.fd-merge-checklist { display: flex; flex-direction: column; gap: .4rem; }
+.fd-merge-section-title {
+  font-size: .78rem; font-weight: 700; color: #aaa;
+  text-transform: uppercase; letter-spacing: .04em; margin: 0 0 .35rem;
+}
+.fd-merge-check-item { font-size: .85rem; }
+
+/* ── Plain-English summary ────────────────────────────────────────────── */
+.fd-merge-summary {
+  font-size: .85rem;
+  color: #ccc;
+  background: #16161e;
+  border: 1px solid #2a2a3a;
+  border-radius: 4px;
+  padding: .65rem .9rem;
+  line-height: 1.55;
+}
+
+/* ── Confirm Merge button ─────────────────────────────────────────────── */
+.fd-btn-confirm { background: #198754; color: #fff; }
+.fd-btn-confirm:hover:not(:disabled) { background: #157347; }
+.fd-btn-confirm:disabled { opacity: .5; }
+
+/* ── Toast notification ───────────────────────────────────────────────── */
+.fd-toast {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  z-index: 99999;
+  background: #198754;
+  color: #fff;
+  padding: .65rem 1.1rem;
+  border-radius: 6px;
+  font-size: .875rem;
+  box-shadow: 0 4px 16px rgba(0,0,0,.5);
+  opacity: 0;
+  transform: translateY(.4rem);
+  transition: opacity .25s, transform .25s;
+  pointer-events: none;
+}
+.fd-toast.fd-toast-show { opacity: 1; transform: translateY(0); }

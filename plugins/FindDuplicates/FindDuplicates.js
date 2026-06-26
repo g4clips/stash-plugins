@@ -1,4 +1,4 @@
-// FindDuplicates Plugin v1.3.0
+// FindDuplicates Plugin v1.4.0
 // Port of MetadataDuplicateChecker.tsx — plain JS, fetch() to /graphql only.
 //
 // Matching criteria are user-configurable via a filter bar on each tab (AND logic).
@@ -88,6 +88,7 @@
             performers { id name }
             tags        { id name }
             files       { size created_at width height bit_rate }
+            groups      { group { id name front_image_path } scene_index }
             paths       { screenshot }
             created_at
           }
@@ -368,6 +369,36 @@
       </td>`;
   }
 
+  // ── Group column cell (scenes table) ──────────────────────────────────────
+
+  // Returns a full <td> showing the scene's first group cover + name link +
+  // optional scene index, with the same hover-zoom logic as the cover column.
+  function groupCellHtml(scene) {
+    const sg = (scene.groups || [])[0];
+    if (!sg) return `<td class="fd-td-group"></td>`;
+
+    const img  = sg.group.front_image_path ?? "";
+    const href = `/groups/${esc(sg.group.id)}`;
+    const name = esc(sg.group.name || sg.group.id);
+    const idx  = sg.scene_index ? `<p class="fd-meta-desc">Scene #${sg.scene_index}</p>` : "";
+
+    const imgHtml = img
+      ? `<div class="fd-thumb-wrap">
+           <img class="fd-thumb" src="${esc(img)}" alt="">
+           <div class="fd-thumb-zoom" style="width:600px">
+             <img src="${esc(img)}" alt="" style="width:600px">
+           </div>
+         </div>`
+      : `<div class="fd-thumb fd-no-img"></div>`;
+
+    return `
+      <td class="fd-td-group">
+        ${imgHtml}
+        <p style="margin:.2rem 0 0"><a class="fd-link" href="${href}" target="_blank" rel="noopener">${name}</a></p>
+        ${idx}
+      </td>`;
+  }
+
   // ── Filter bar (matching criteria + multi-delete) ──────────────────────────
 
   // Collect every id that currently appears in a duplicate set — used to prune
@@ -498,11 +529,12 @@
             <th class="fd-th-select"></th>
             <th class="fd-th-cover">Cover</th>
             <th>Details</th>
+            <th class="fd-th-group">Group</th>
             <th></th>
             <th>Quality</th>
             <th>File Size</th>
             <th>Date Added</th>
-            <th>Delete</th>
+            <th>Actions</th>
           </tr>
         </thead>`;
 
@@ -513,7 +545,7 @@
           if (i === 0 && groupIndex !== 0) {
             const sep = document.createElement("tr");
             sep.className = "fd-separator-row";
-            sep.innerHTML = `<td colspan="8"></td>`;
+            sep.innerHTML = `<td colspan="9"></td>`;
             tbody.appendChild(sep);
           }
 
@@ -538,6 +570,7 @@
               <p><a class="fd-link" href="/scenes/${esc(scene.id)}" target="_blank" rel="noopener">${esc(scene.title || scene.id)}</a></p>
               <p class="fd-meta-desc">${esc(truncate(scene.details))}</p>
             </td>
+            ${groupCellHtml(scene)}
             <td class="fd-td-popover">
               ${tags  ? `<div class="fd-card-tags">${tags}</div>` : ""}
               ${perfs ? `<div class="fd-performers-list">${perfs}</div>` : ""}
@@ -547,6 +580,7 @@
             <td class="fd-td-date">${added ? esc(added) : "—"}</td>
             <td class="fd-td-action">
               <button class="fd-btn fd-btn-danger fd-delete" data-type="scene" data-id="${esc(scene.id)}">Delete</button>
+              <button class="fd-btn fd-btn-primary fd-merge" data-type="scene" data-id="${esc(scene.id)}" data-group-index="${groupIndex}">Merge</button>
             </td>`;
           tbody.appendChild(tr);
         });
@@ -579,6 +613,10 @@
         else            state.selectedScenes.delete(cb.dataset.id);
         refreshBatchButton("scenes");
       });
+    });
+    panel.querySelectorAll(".fd-merge[data-type='scene']").forEach(btn => {
+      const gi = parseInt(btn.dataset.groupIndex, 10);
+      btn.addEventListener("click", () => openMergeModal(pageSets[gi], btn.dataset.id));
     });
   }
 
@@ -632,6 +670,369 @@
       refreshBatchButton("scenes");
       alert(`Delete failed: ${e.message}`);
     }
+  }
+
+  // ── Merge modal ────────────────────────────────────────────────────────────
+
+  const mergeModal = { set: null, survivorId: null, overlay: null };
+
+  function openMergeModal(set, clickedId) {
+    closeMergeModal();
+    mergeModal.set = set;
+    mergeModal.survivorId = autoSuggestSurvivor(set);
+
+    const overlay = document.createElement("div");
+    overlay.id = "fd-merge-overlay";
+    overlay.addEventListener("click", e => { if (e.target === overlay) closeMergeModal(); });
+    overlay._esc = e => { if (e.key === "Escape") closeMergeModal(); };
+    document.addEventListener("keydown", overlay._esc);
+    mergeModal.overlay = overlay;
+
+    rebuildMergeModal();
+    getPage().appendChild(overlay);
+  }
+
+  function closeMergeModal() {
+    if (!mergeModal.overlay) return;
+    document.removeEventListener("keydown", mergeModal.overlay._esc);
+    mergeModal.overlay.remove();
+    mergeModal.overlay = null;
+    mergeModal.set = null;
+    mergeModal.survivorId = null;
+  }
+
+  function autoSuggestSurvivor(set) {
+    return set.reduce((best, scene) => {
+      const bF = (best.files  || [])[0];
+      const sF = (scene.files || [])[0];
+      const bR = bF?.bit_rate || 0;
+      const sR = sF?.bit_rate || 0;
+      if (sR > bR) return scene;
+      if (sR === bR && (sF?.size || 0) > (bF?.size || 0)) return scene;
+      return best;
+    }).id;
+  }
+
+  // Build the list of metadata checklist items given the current survivorId.
+  function buildCheckItems(set, survivorId) {
+    const survivor = set.find(s => s.id === survivorId);
+    const deleted  = set.filter(s => s.id !== survivorId);
+
+    const sTagIds  = new Set((survivor.tags      || []).map(t => t.id));
+    const sPerfIds = new Set((survivor.performers || []).map(p => p.id));
+    const sGrpIds  = new Set((survivor.groups    || []).map(g => g.group.id));
+
+    const items = [];
+
+    // Groups from deleted scenes not already on the survivor
+    for (const del of deleted) {
+      for (const sg of (del.groups || [])) {
+        if (!sGrpIds.has(sg.group.id)) {
+          sGrpIds.add(sg.group.id);
+          const idxStr = sg.scene_index ? ` (Scene #${sg.scene_index})` : "";
+          items.push({
+            id:      `group-${sg.group.id}`,
+            type:    "group",
+            label:   `Add group "${sg.group.name}"${idxStr} to survivor`,
+            checked: true,
+            data:    { group_id: sg.group.id, scene_index: sg.scene_index || null, name: sg.group.name },
+          });
+        }
+      }
+    }
+
+    // Missing tags
+    const missingTags = [];
+    const seenTags = new Set([...sTagIds]);
+    for (const del of deleted) {
+      for (const t of (del.tags || [])) {
+        if (!seenTags.has(t.id)) { seenTags.add(t.id); missingTags.push(t); }
+      }
+    }
+    if (missingTags.length) {
+      items.push({
+        id: "copy-tags", type: "tags",
+        label:   `Copy missing tags: ${missingTags.map(t => t.name).join(", ")}`,
+        checked: true,
+        data:    missingTags,
+      });
+    }
+
+    // Missing performers
+    const missingPerfs = [];
+    const seenPerfs = new Set([...sPerfIds]);
+    for (const del of deleted) {
+      for (const p of (del.performers || [])) {
+        if (!seenPerfs.has(p.id)) { seenPerfs.add(p.id); missingPerfs.push(p); }
+      }
+    }
+    if (missingPerfs.length) {
+      items.push({
+        id: "copy-performers", type: "performers",
+        label:   `Copy missing performers: ${missingPerfs.map(p => p.name).join(", ")}`,
+        checked: true,
+        data:    missingPerfs,
+      });
+    }
+
+    // Synopsis
+    const survivorHasSynopsis = !!(survivor.details?.trim());
+    const synopsisSource = deleted.find(d => d.details?.trim());
+    if (synopsisSource) {
+      items.push({
+        id: "copy-synopsis", type: "synopsis",
+        label:   survivorHasSynopsis
+          ? "Copy synopsis (will overwrite survivor's synopsis)"
+          : "Copy synopsis",
+        checked: !survivorHasSynopsis,
+        data:    { synopsis: synopsisSource.details },
+      });
+    }
+
+    // Title (unchecked by default)
+    const titleSource = deleted[0];
+    if (titleSource?.title) {
+      items.push({
+        id: "copy-title", type: "title",
+        label:   `Copy title: "${titleSource.title}"`,
+        checked: false,
+        data:    { title: titleSource.title },
+      });
+    }
+
+    return items;
+  }
+
+  function rebuildMergeModal() {
+    const overlay = mergeModal.overlay;
+    overlay.querySelector(".fd-merge-modal")?.remove();
+
+    const { set, survivorId } = mergeModal;
+    const survivor = set.find(s => s.id === survivorId);
+    const deleted  = set.filter(s => s.id !== survivorId);
+    const checkItems = buildCheckItems(set, survivorId);
+    // Map from item.id → checkbox element (populated while building UI)
+    const checkMap = new Map();
+
+    const modal = document.createElement("div");
+    modal.className = "fd-merge-modal";
+
+    // ── Header ──
+    const header = document.createElement("div");
+    header.className = "fd-modal-header";
+    const titleEl = document.createElement("h4");
+    titleEl.className = "fd-modal-title";
+    titleEl.textContent = "Merge Duplicate Scenes";
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "fd-modal-close";
+    closeBtn.textContent = "✕";
+    closeBtn.addEventListener("click", closeMergeModal);
+    header.appendChild(titleEl);
+    header.appendChild(closeBtn);
+    modal.appendChild(header);
+
+    // ── Body ──
+    const body = document.createElement("div");
+    body.className = "fd-modal-body";
+
+    // Scene cards
+    const cardsWrap = document.createElement("div");
+    cardsWrap.className = "fd-merge-scenes";
+    set.forEach(scene => {
+      const isSurvivor = scene.id === survivorId;
+      const card = document.createElement("div");
+      card.className = "fd-merge-scene-card " + (isSurvivor ? "fd-merge-survivor" : "fd-merge-deleted");
+
+      const file0   = (scene.files || [])[0];
+      const quality = fmtQuality(file0);
+      const size    = fmtSize(file0?.size);
+      const added   = fmtDate(file0?.created_at ?? scene.created_at);
+      const thumb   = scene.paths?.screenshot ?? "";
+      const perfs   = (scene.performers || []).map(p => esc(p.name)).join(", ");
+      const tags    = (scene.tags || []).map(t => `<span class="fd-tag">${esc(t.name)}</span>`).join("");
+      const sg0     = (scene.groups || [])[0];
+      const grpHtml = sg0
+        ? `<p class="fd-merge-group"><a class="fd-link" href="/groups/${esc(sg0.group.id)}" target="_blank">${esc(sg0.group.name)}</a>${sg0.scene_index ? ` <small class="fd-meta-desc">Scene #${sg0.scene_index}</small>` : ""}</p>`
+        : "";
+
+      const imgHtml = thumb
+        ? `<img class="fd-merge-thumb" src="${esc(thumb)}" alt="">`
+        : `<div class="fd-merge-thumb fd-no-img"></div>`;
+
+      card.innerHTML = `
+        <div class="fd-merge-badge">${isSurvivor ? "★ Survivor" : "✕ Will be deleted"}</div>
+        ${imgHtml}
+        <p class="fd-merge-title"><a class="fd-link" href="/scenes/${esc(scene.id)}" target="_blank" rel="noopener">${esc(scene.title || scene.id)}</a></p>
+        <p class="fd-merge-meta">${[quality, size, added].filter(Boolean).map(esc).join(" · ")}</p>
+        ${grpHtml}
+        ${perfs ? `<p class="fd-merge-perfs">${perfs}</p>` : ""}
+        ${tags  ? `<div class="fd-card-tags">${tags}</div>` : ""}`;
+
+      if (!isSurvivor) {
+        card.addEventListener("click", e => {
+          if (e.target.tagName === "A") return;
+          mergeModal.survivorId = scene.id;
+          rebuildMergeModal();
+        });
+      }
+      cardsWrap.appendChild(card);
+    });
+    body.appendChild(cardsWrap);
+
+    // Checklist
+    if (checkItems.length) {
+      const clSection = document.createElement("div");
+      clSection.className = "fd-merge-checklist";
+      const clTitle = document.createElement("p");
+      clTitle.className = "fd-merge-section-title";
+      clTitle.textContent = "Metadata to copy to survivor:";
+      clSection.appendChild(clTitle);
+      checkItems.forEach(item => {
+        const lbl = document.createElement("label");
+        lbl.className = "fd-filter-check fd-merge-check-item";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = item.checked;
+        checkMap.set(item.id, { item, cb });
+        cb.addEventListener("change", () => updateMergeSummary(summaryEl, set, survivorId, checkMap));
+        lbl.appendChild(cb);
+        lbl.appendChild(document.createTextNode(" " + item.label));
+        clSection.appendChild(lbl);
+      });
+      body.appendChild(clSection);
+    }
+
+    // Summary
+    const summaryEl = document.createElement("div");
+    summaryEl.className = "fd-merge-summary";
+    body.appendChild(summaryEl);
+    updateMergeSummary(summaryEl, set, survivorId, checkMap);
+
+    modal.appendChild(body);
+
+    // ── Footer ──
+    const footer = document.createElement("div");
+    footer.className = "fd-modal-footer";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.className = "fd-btn fd-btn-secondary";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.addEventListener("click", closeMergeModal);
+    const confirmBtn = document.createElement("button");
+    confirmBtn.className = "fd-btn fd-btn-confirm";
+    confirmBtn.textContent = "Confirm Merge";
+    confirmBtn.addEventListener("click", () => executeMerge(set, survivorId, checkMap, confirmBtn));
+    footer.appendChild(cancelBtn);
+    footer.appendChild(confirmBtn);
+    modal.appendChild(footer);
+
+    overlay.appendChild(modal);
+  }
+
+  function updateMergeSummary(el, set, survivorId, checkMap) {
+    const survivor = set.find(s => s.id === survivorId);
+    const deleted  = set.filter(s => s.id !== survivorId);
+
+    const addParts = [];
+    for (const [, { item, cb }] of checkMap) {
+      if (!cb.checked) continue;
+      if (item.type === "group") {
+        const idxStr = item.data.scene_index ? ` (Scene #${item.data.scene_index})` : "";
+        addParts.push(`group "${item.data.name}"${idxStr}`);
+      } else if (item.type === "tags") {
+        addParts.push(`tags: ${item.data.map(t => t.name).join(", ")}`);
+      } else if (item.type === "performers") {
+        addParts.push(`performers: ${item.data.map(p => p.name).join(", ")}`);
+      } else if (item.type === "synopsis") {
+        addParts.push("synopsis");
+      } else if (item.type === "title") {
+        addParts.push(`title "${item.data.title}"`);
+      }
+    }
+
+    const survivorTitle  = survivor.title || survivor.id;
+    const deletedTitles  = deleted.map(d => d.title || d.id).join(", ");
+    let text = `"${survivorTitle}" will be kept. "${deletedTitles}" will be deleted.`;
+    if (addParts.length) {
+      text += ` The following will be added to the survivor: ${addParts.join("; ")}.`;
+    } else {
+      text += " No metadata will be copied.";
+    }
+    el.textContent = text;
+  }
+
+  async function executeMerge(set, survivorId, checkMap, confirmBtn) {
+    const survivor = set.find(s => s.id === survivorId);
+    const deleted  = set.filter(s => s.id !== survivorId);
+
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = "Merging…";
+
+    try {
+      // Start with survivor's existing ids/groups
+      let tagIds  = (survivor.tags      || []).map(t => t.id);
+      let perfIds = (survivor.performers || []).map(p => p.id);
+      let groups  = (survivor.groups    || []).map(sg => ({
+        group_id:    sg.group.id,
+        scene_index: sg.scene_index || null,
+      }));
+      const input = { id: survivorId };
+
+      for (const [, { item, cb }] of checkMap) {
+        if (!cb.checked) continue;
+        if (item.type === "tags") {
+          const newIds = item.data.map(t => t.id);
+          tagIds = [...new Set([...tagIds, ...newIds])];
+        } else if (item.type === "performers") {
+          const newIds = item.data.map(p => p.id);
+          perfIds = [...new Set([...perfIds, ...newIds])];
+        } else if (item.type === "group") {
+          groups.push({ group_id: item.data.group_id, scene_index: item.data.scene_index });
+        } else if (item.type === "synopsis") {
+          input.details = item.data.synopsis;
+        } else if (item.type === "title") {
+          input.title = item.data.title;
+        }
+      }
+
+      input.tag_ids      = tagIds;
+      input.performer_ids = perfIds;
+      input.groups       = groups;
+
+      await gql(
+        `mutation($input: SceneUpdateInput!) { sceneUpdate(input: $input) { id } }`,
+        { input }
+      );
+
+      const deleteIds = deleted.map(s => s.id);
+      await gql(
+        `mutation($input: ScenesDestroyInput!) { scenesDestroy(input: $input) }`,
+        { input: { ids: deleteIds, delete_file: false } }
+      );
+
+      closeMergeModal();
+      showToast(`Merged. ${deleteIds.length} scene${deleteIds.length === 1 ? "" : "s"} deleted.`);
+      deleteIds.forEach(id => state.selectedScenes.delete(id));
+      state.allScenes = null;
+      loadScenes();
+    } catch (e) {
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = "Confirm Merge";
+      alert(`Merge failed: ${e.message}`);
+    }
+  }
+
+  // ── Toast notification ──────────────────────────────────────────────────────
+
+  function showToast(message) {
+    const toast = document.createElement("div");
+    toast.className = "fd-toast";
+    toast.textContent = message;
+    getPage().appendChild(toast);
+    requestAnimationFrame(() => requestAnimationFrame(() => toast.classList.add("fd-toast-show")));
+    setTimeout(() => {
+      toast.classList.remove("fd-toast-show");
+      toast.addEventListener("transitionend", () => toast.remove(), { once: true });
+    }, 3000);
   }
 
   // ── Groups tab ─────────────────────────────────────────────────────────────

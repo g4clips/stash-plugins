@@ -126,19 +126,97 @@ if (window._markerScenesLoaded) {
     console.log(`[${PLUGIN_ID}] ${summary}`);
   }
 
-  function makeButton(onClick) {
-    const btn = document.createElement("button");
-    btn.id = BUTTON_ID;
-    btn.className = "btn btn-secondary";
-    btn.style.marginLeft = "8px";
-    btn.textContent = "Split Scene by Markers";
-    btn.addEventListener("click", onClick);
-    return btn;
+  // ── Button injection ──────────────────────────────────────────────────────
+
+  function isScenePage() {
+    return /^\/scenes\/\d+/.test(window.location.pathname);
   }
 
+  function injectButton(scene) {
+    if (!isScenePage() || document.getElementById(BUTTON_ID)) return;
+
+    const tryInsert = () => {
+      const target =
+        document.querySelector(".scene-toolbar") ||
+        document.querySelector(".details-edit .buttons-container") ||
+        document.querySelector(".scene-header .d-flex") ||
+        document.querySelector(".VideoPlayer");
+      if (!target) return false;
+
+      const btn = document.createElement("button");
+      btn.id = BUTTON_ID;
+      btn.className = "btn btn-secondary";
+      btn.textContent = "Split Scene by Markers";
+      btn.style.cssText = "margin-left:8px;font-size:.85rem;";
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        btn.textContent = "Working...";
+        try {
+          await createMarkerScenes(scene);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "Split Scene by Markers";
+        }
+      });
+
+      target.appendChild(btn);
+      console.log(`[${PLUGIN_ID}] Button injected for scene ${scene.id}.`);
+      return true;
+    };
+
+    if (!tryInsert()) {
+      const deadline = Date.now() + 15000;
+      const obs = new MutationObserver(() => {
+        if (tryInsert() || Date.now() > deadline) obs.disconnect();
+      });
+      obs.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+
+  async function onLocationChange() {
+    const old = document.getElementById(BUTTON_ID);
+    if (old) old.remove();
+
+    if (!isScenePage()) return;
+
+    const sceneId = window.location.pathname.match(/^\/scenes\/(\d+)/)[1];
+
+    let scene;
+    try {
+      const data = await gql(FIND_SCENE, { id: sceneId });
+      scene = data.findScene;
+    } catch (err) {
+      console.error(`[${PLUGIN_ID}] Failed to fetch scene:`, err);
+      return;
+    }
+
+    if (!scene.groups || scene.groups.length === 0) {
+      console.log(`[${PLUGIN_ID}] Scene ${sceneId} has no group - skipping button.`);
+      return;
+    }
+
+    setTimeout(() => injectButton(scene), 800);
+  }
+
+  function startListening() {
+    if (window.PluginApi?.Event) {
+      window.PluginApi.Event.addEventListener("stash:location", onLocationChange);
+    } else {
+      let last = "";
+      setInterval(() => {
+        if (window.location.pathname !== last) {
+          last = window.location.pathname;
+          onLocationChange();
+        }
+      }, 500);
+    }
+    onLocationChange();
+  }
+
+  // Wait for PluginApi then start
   function waitForPluginApi(callback, attempts = 0) {
     if (window.PluginApi) {
-      callback(window.PluginApi);
+      callback();
     } else if (attempts < 50) {
       setTimeout(() => waitForPluginApi(callback, attempts + 1), 200);
     } else {
@@ -146,44 +224,9 @@ if (window._markerScenesLoaded) {
     }
   }
 
-  waitForPluginApi((PluginApi) => {
-    console.log(`[${PLUGIN_ID}] PluginApi found, registering...`);
-
-    PluginApi.register.component("ScenePage.Tabs", ({ scene }) => {
-      console.log(`[${PLUGIN_ID}] ScenePage.Tabs fired, scene id=${scene?.id}`);
-
-      if (!scene || !scene.groups || scene.groups.length === 0) {
-        console.log(`[${PLUGIN_ID}] Scene has no group - skipping button.`);
-        return null;
-      }
-
-      const existing = document.getElementById(BUTTON_ID);
-      if (existing) existing.remove();
-
-      setTimeout(() => {
-        const editBtn = document.querySelector("a[href$='/edit']");
-        if (!editBtn) {
-          console.log(`[${PLUGIN_ID}] Edit button not found in DOM yet.`);
-          return;
-        }
-
-        const btn = makeButton(async () => {
-          btn.disabled = true;
-          btn.textContent = "Working...";
-          try {
-            await createMarkerScenes(scene);
-          } finally {
-            btn.disabled = false;
-            btn.textContent = "Split Scene by Markers";
-          }
-        });
-
-        editBtn.parentNode.insertBefore(btn, editBtn.nextSibling);
-        console.log(`[${PLUGIN_ID}] Button injected for scene ${scene.id}.`);
-      }, 500);
-
-      return null;
-    });
+  waitForPluginApi(() => {
+    console.log(`[${PLUGIN_ID}] PluginApi found, starting...`);
+    startListening();
   });
 
 })();

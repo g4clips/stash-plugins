@@ -1,0 +1,9 @@
+
+name: Marker Scenes
+description: Creates virtual scenes from scene markers, one per marker segment.
+version: 0.1.0
+url: ""
+
+ui:
+  javascript:
+    - marker-scenes.js

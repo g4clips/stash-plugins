@@ -69,6 +69,26 @@ if (window._markerScenesLoaded) {
     }
   `;
 
+  // If this is a virtual marker scene (no files, has a ?t= URL), redirect to the original scene
+  async function maybeRedirectVirtualScene(sceneId) {
+    let data;
+    try {
+      data = await gql(FIND_SCENE, { id: sceneId });
+    } catch (err) {
+      return;
+    }
+    const scene = data.findScene;
+    if (scene.files && scene.files.length > 0) return; // has a real file, not virtual
+    const markerUrl = (scene.urls || []).find(u => u.match(/\/scenes\/\d+\?t=\d/));
+    if (!markerUrl) return;
+
+    // Extract the path+query from the full URL so it works on any host
+    const target = new URL(markerUrl);
+    const redirect = target.pathname + target.search;
+    console.log(`[${PLUGIN_ID}] Virtual scene detected, redirecting to ${redirect}`);
+    window.location.replace(redirect);
+  }
+
   async function createMarkerScenes(scene) {
     const markers = scene.scene_markers;
     if (!markers || markers.length === 0) {
@@ -181,7 +201,9 @@ if (window._markerScenesLoaded) {
 
     if (!isScenePage()) return;
 
+    // Check if this is a virtual marker scene and redirect if so
     const sceneId = window.location.pathname.match(/^\/scenes\/(\d+)/)[1];
+    await maybeRedirectVirtualScene(sceneId);
 
     let scene;
     try {

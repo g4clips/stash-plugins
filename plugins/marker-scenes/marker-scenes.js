@@ -70,8 +70,9 @@ if (window._markerScenesLoaded) {
     }
   `;
 
-  // If this is a virtual marker scene (no files, has a ?t= URL), redirect to the original scene
-  async function maybeRedirectVirtualScene(sceneId) {
+  // If this is a virtual marker scene (no files, has a ?t= URL), intercept
+  // clicks on the empty player area and redirect to the original scene
+  async function maybeHandleVirtualScene(sceneId) {
     let data;
     try {
       data = await gql(FIND_SCENE, { id: sceneId });
@@ -79,15 +80,38 @@ if (window._markerScenesLoaded) {
       return;
     }
     const scene = data.findScene;
-    if (scene.files && scene.files.length > 0) return; // has a real file, not virtual
+    if (scene.files && scene.files.length > 0) return;
     const markerUrl = (scene.urls || []).find(u => u.match(/\/scenes\/\d+\?t=\d/));
     if (!markerUrl) return;
 
-    // Extract the path+query from the full URL so it works on any host
     const target = new URL(markerUrl);
     const redirect = target.pathname + target.search;
-    console.log(`[${PLUGIN_ID}] Virtual scene detected, redirecting to ${redirect}`);
-    window.location.replace(redirect);
+
+    console.log(`[${PLUGIN_ID}] Virtual scene detected, waiting for player click...`);
+
+    // Wait for the no-file player to appear then intercept clicks on it
+    const tryAttach = () => {
+      const player = document.querySelector(".VideoPlayer.no-file");
+      if (!player) return false;
+
+      player.style.cursor = "pointer";
+      player.title = "Click to play original scene at marker timestamp";
+      player.addEventListener("click", () => {
+        console.log(`[${PLUGIN_ID}] Player clicked, redirecting to ${redirect}`);
+        window.location.replace(redirect);
+      }, { once: true });
+
+      console.log(`[${PLUGIN_ID}] Click handler attached to empty player.`);
+      return true;
+    };
+
+    if (!tryAttach()) {
+      const deadline = Date.now() + 10000;
+      const obs = new MutationObserver(() => {
+        if (tryAttach() || Date.now() > deadline) obs.disconnect();
+      });
+      obs.observe(document.body, { childList: true, subtree: true });
+    }
   }
 
   async function createMarkerScenes(scene) {
@@ -204,7 +228,7 @@ if (window._markerScenesLoaded) {
 
     // Check if this is a virtual marker scene and redirect if so
     const sceneId = window.location.pathname.match(/^\/scenes\/(\d+)/)[1];
-    await maybeRedirectVirtualScene(sceneId);
+    await maybeHandleVirtualScene(sceneId);
 
     let scene;
     try {

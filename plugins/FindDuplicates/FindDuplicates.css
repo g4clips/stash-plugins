@@ -260,7 +260,8 @@
 .fd-th-group,
 .fd-td-group  { width: 116px; vertical-align: top; padding-top: .45rem; }
 .fd-td-group p { margin: .2rem 0 0; font-size: .8rem; }
-.fd-td-quality { width: 160px; white-space: nowrap; color: #bbb; font-size: .82rem; }
+.fd-td-quality { width: 160px; color: #bbb; font-size: .82rem; }
+.fd-quality-codec { font-size: .75rem; color: #888; }
 .fd-td-size   { width: 90px; white-space: nowrap; }
 .fd-td-date   { width: 104px; white-space: nowrap; color: #bbb; }
 .fd-td-action { width: 155px; white-space: nowrap; }
@@ -488,6 +489,20 @@
 .fd-merge-meta  { font-size: .78rem; color: #999; margin: 0 0 .25rem; }
 .fd-merge-group { font-size: .8rem; margin: 0 0 .25rem; }
 .fd-merge-perfs { font-size: .8rem; color: #aaa; margin: 0 0 .25rem; }
+
+/* ── Studio picker (merge modal) ─────────────────────────────────────── */
+.fd-merge-studio-picker { display: flex; flex-direction: column; gap: .4rem; }
+.fd-merge-studio-select {
+  background: #16161e;
+  color: #ddd;
+  border: 1px solid #3a3a4a;
+  border-radius: 4px;
+  padding: .3rem .55rem;
+  font-size: .85rem;
+  cursor: pointer;
+  max-width: 280px;
+}
+.fd-merge-studio-select:focus { outline: none; border-color: #0d6efd; }
 
 /* ── Tag picker (merge modal) ─────────────────────────────────────────── */
 .fd-merge-tag-picker { display: flex; flex-direction: column; gap: .4rem; }

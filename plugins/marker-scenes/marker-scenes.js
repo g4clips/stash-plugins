@@ -121,8 +121,10 @@ if (window._markerScenesLoaded) {
   }
 
   function getCurrentTimestamp() {
+    const player = document.querySelector("video-js")?.player;
+    if (player) return player.currentTime();
     const video = document.querySelector("video.vjs-tech");
-    return video ? Math.floor(video.currentTime) : 0;
+    return video ? video.currentTime : 0;
   }
 
   function removeModal() {

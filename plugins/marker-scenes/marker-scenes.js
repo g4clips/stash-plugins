@@ -484,49 +484,31 @@ if (window._markerScenesLoaded) {
     if (!isScenePage() || document.getElementById(BUTTON_ID)) return;
 
     const tryInsert = () => {
-      const target =
-        document.querySelector(".scene-toolbar") ||
-        document.querySelector(".details-edit .buttons-container") ||
-        document.querySelector(".scene-header .d-flex") ||
-        document.querySelector(".VideoPlayer");
-      if (!target) return false;
+      const anchor = document.getElementById("d18-open-btn") ||
+                     document.querySelector(".scene-toolbar");
+      if (!anchor) return false;
 
       const btn = document.createElement("button");
       btn.id = BUTTON_ID;
-      btn.className = "btn btn-secondary";
-      btn.textContent = "Split Scene by Markers";
+      btn.className = "btn btn-primary";
+      btn.textContent = "Virtual scenes";
       btn.style.cssText = "margin-left:8px;font-size:.85rem;";
       btn.addEventListener("click", async () => {
         btn.disabled = true;
-        btn.textContent = "Working...";
-        try {
-          const sceneId = window.location.pathname.match(/^\/scenes\/(\d+)/)[1];
-          const fresh = await gql(FIND_SCENE, { id: sceneId });
-          await createMarkerScenes(fresh.findScene);
-        } finally {
-          btn.disabled = false;
-          btn.textContent = "Split Scene by Markers";
-        }
-      });
-
-      target.appendChild(btn);
-
-      const btn2 = document.createElement("button");
-      btn2.id = BUTTON_ID + "-create";
-      btn2.className = "btn btn-primary";
-      btn2.textContent = "Create virtual scene";
-      btn2.style.cssText = "margin-left:8px;font-size:.85rem;";
-      btn2.addEventListener("click", async () => {
-        btn2.disabled = true;
         try {
           const sceneId = window.location.pathname.match(/^\/scenes\/(\d+)/)[1];
           const fresh = await gql(FIND_SCENE, { id: sceneId });
           await openVirtualSceneModal(fresh.findScene);
         } finally {
-          btn2.disabled = false;
+          btn.disabled = false;
         }
       });
-      target.appendChild(btn2);
+
+      if (anchor.id === "d18-open-btn") {
+        anchor.parentNode.insertBefore(btn, anchor);
+      } else {
+        anchor.appendChild(btn);
+      }
 
       console.log(`[${PLUGIN_ID}] Button injected for scene ${scene.id}.`);
       return true;
@@ -544,8 +526,6 @@ if (window._markerScenesLoaded) {
   async function onLocationChange() {
     const old = document.getElementById(BUTTON_ID);
     if (old) old.remove();
-    const old2 = document.getElementById(BUTTON_ID + "-create");
-    if (old2) old2.remove();
 
     if (!isScenePage()) return;
 

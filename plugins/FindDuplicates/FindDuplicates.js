@@ -1,4 +1,4 @@
-// FindDuplicates Plugin v1.4.0
+// FindDuplicates Plugin v1.5.0
 // Port of MetadataDuplicateChecker.tsx — plain JS, fetch() to /graphql only.
 //
 // Matching criteria are user-configurable via a filter bar on each tab (AND logic).
@@ -31,6 +31,11 @@
   // No special-char stripping — punctuation in titles/synopsis must match exactly.
   function normalize(s) {
     return (s ?? "").trim().toLowerCase().replace(/\s+/g, " ");
+  }
+
+  // Punctuation-insensitive normalization: strip everything except a-z0-9.
+  function normalizePunct(s) {
+    return (s ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
   }
 
   function truncate(s, max = 150) {
@@ -114,6 +119,8 @@
             studio          { id name }
             date
             front_image_path
+            back_image_path
+            scene_count
             tags            { id name }
           }
         }
@@ -202,7 +209,7 @@
       let skip = false;
 
       if (criteria.name) {
-        const n = normalize(group.name);
+        const n = criteria.punct ? normalizePunct(group.name) : normalize(group.name);
         if (!n) skip = true; else parts.push("n:" + n);
       }
       if (criteria.synopsis) {
@@ -233,7 +240,7 @@
     groupPage: 1,
     // Matching criteria (AND logic). Defaults mirror the prior hardcoded behaviour.
     sceneCriteria: { title: true, details: true, performer: true, studio: false },
-    groupCriteria: { name: true, synopsis: true },
+    groupCriteria: { name: true, synopsis: true, punct: false },
     // Ids checked for multi-delete; persists across pages, cleared on recompute/delete.
     selectedScenes: new Set(),
     selectedGroups: new Set(),
@@ -445,6 +452,21 @@
       lbl.appendChild(document.createTextNode(" " + def.label));
       bar.appendChild(lbl);
     });
+
+    if (tab === "groups") {
+      const punctLbl = document.createElement("label");
+      punctLbl.className = "fd-filter-check";
+      const punctCb = document.createElement("input");
+      punctCb.type = "checkbox";
+      punctCb.checked = !!state.groupCriteria.punct;
+      punctCb.addEventListener("change", () => {
+        state.groupCriteria.punct = punctCb.checked;
+        recomputeGroups();
+      });
+      punctLbl.appendChild(punctCb);
+      punctLbl.appendChild(document.createTextNode(" Punctuation-insensitive name match"));
+      bar.appendChild(punctLbl);
+    }
 
     const batchBtn = document.createElement("button");
     batchBtn.className = "fd-btn fd-btn-danger fd-filter-batch";
@@ -1241,8 +1263,9 @@
             <th class="fd-th-cover">Cover</th>
             <th>Details</th>
             <th>Studio</th>
+            <th>Scenes</th>
             <th></th>
-            <th>Delete</th>
+            <th>Actions</th>
           </tr>
         </thead>`;
 
@@ -1252,7 +1275,7 @@
           if (i === 0 && groupIndex !== 0) {
             const sep = document.createElement("tr");
             sep.className = "fd-separator-row";
-            sep.innerHTML = `<td colspan="6"></td>`;
+            sep.innerHTML = `<td colspan="7"></td>`;
             tbody.appendChild(sep);
           }
 
@@ -1267,6 +1290,9 @@
           const dateStr = item.date
             ? `<p class="fd-meta-desc">Released ${esc(item.date)}</p>`
             : "";
+          const scCnt   = item.scene_count > 0
+            ? `${item.scene_count} scene${item.scene_count === 1 ? "" : "s"}`
+            : "—";
           const isSel = state.selectedGroups.has(item.id);
 
           tr.innerHTML = `
@@ -1282,11 +1308,13 @@
               ${studio}
               ${dateStr}
             </td>
+            <td class="fd-td-date">${esc(scCnt)}</td>
             <td class="fd-td-popover">
               ${tags ? `<div class="fd-card-tags">${tags}</div>` : ""}
             </td>
             <td class="fd-td-action">
               <button class="fd-btn fd-btn-danger fd-delete" data-type="group" data-id="${esc(item.id)}">Delete</button>
+              <button class="fd-btn fd-btn-primary fd-merge" data-type="group" data-id="${esc(item.id)}" data-group-index="${groupIndex}">Merge</button>
             </td>`;
           tbody.appendChild(tr);
         });
@@ -1318,6 +1346,10 @@
         else            state.selectedGroups.delete(cb.dataset.id);
         refreshBatchButton("groups");
       });
+    });
+    panel.querySelectorAll(".fd-merge[data-type='group']").forEach(btn => {
+      const gi = parseInt(btn.dataset.groupIndex, 10);
+      btn.addEventListener("click", () => openGroupMergeModal(pageSets[gi]));
     });
   }
 
@@ -1360,6 +1392,355 @@
       if (btn) { btn.disabled = false; }
       refreshBatchButton("groups");
       alert(`Delete failed: ${e.message}`);
+    }
+  }
+
+  // ── Group merge modal ──────────────────────────────────────────────────────
+
+  const groupMergeModal = {
+    set: null, survivorId: null, overlay: null,
+    _summaryEl: null,
+    _checkMap: new Map(),
+  };
+
+  function openGroupMergeModal(set) {
+    closeMergeModal();
+    closeGroupMergeModal();
+    groupMergeModal.set = set;
+    groupMergeModal.survivorId = autoSuggestGroupSurvivor(set);
+
+    const overlay = document.createElement("div");
+    overlay.id = "fd-merge-overlay";
+    overlay.addEventListener("click", e => { if (e.target === overlay) closeGroupMergeModal(); });
+    overlay._esc = e => { if (e.key === "Escape") closeGroupMergeModal(); };
+    document.addEventListener("keydown", overlay._esc);
+    groupMergeModal.overlay = overlay;
+
+    rebuildGroupMergeModal();
+    getPage().appendChild(overlay);
+  }
+
+  function closeGroupMergeModal() {
+    if (!groupMergeModal.overlay) return;
+    document.removeEventListener("keydown", groupMergeModal.overlay._esc);
+    groupMergeModal.overlay.remove();
+    groupMergeModal.overlay = null;
+    groupMergeModal.set = null;
+    groupMergeModal.survivorId = null;
+  }
+
+  function autoSuggestGroupSurvivor(set) {
+    return set.reduce((best, g) => {
+      const bc = best.scene_count || 0;
+      const gc = g.scene_count   || 0;
+      if (gc > bc) return g;
+      if (gc === bc && g.front_image_path && !best.front_image_path) return g;
+      return best;
+    }).id;
+  }
+
+  function buildGroupCheckItems(set, survivorId) {
+    const survivor = set.find(g => g.id === survivorId);
+    const deleted  = set.filter(g => g.id !== survivorId);
+    const items = [];
+
+    const synopsisSource = deleted.find(d => d.synopsis?.trim());
+    if (synopsisSource) {
+      items.push({
+        id: "copy-synopsis", type: "synopsis",
+        label: "Copy synopsis",
+        checked: !survivor.synopsis?.trim(),
+        data: { synopsis: synopsisSource.synopsis },
+      });
+    }
+
+    const frontImgSource = deleted.find(d => d.front_image_path);
+    if (frontImgSource) {
+      items.push({
+        id: "copy-front-image", type: "front_image",
+        label: "Copy front image",
+        checked: !survivor.front_image_path,
+        data: { url: frontImgSource.front_image_path },
+      });
+    }
+
+    const backImgSource = deleted.find(d => d.back_image_path);
+    if (backImgSource) {
+      items.push({
+        id: "copy-back-image", type: "back_image",
+        label: "Copy back image",
+        checked: !survivor.back_image_path,
+        data: { url: backImgSource.back_image_path },
+      });
+    }
+
+    const dateSource = deleted.find(d => d.date);
+    if (dateSource) {
+      items.push({
+        id: "copy-date", type: "date",
+        label: "Copy date",
+        checked: !survivor.date,
+        data: { date: dateSource.date },
+      });
+    }
+
+    const studioSource = deleted.find(d => d.studio);
+    if (studioSource) {
+      items.push({
+        id: "copy-studio", type: "studio",
+        label: `Copy studio (${studioSource.studio.name})`,
+        checked: !survivor.studio,
+        data: { studio_id: studioSource.studio.id },
+      });
+    }
+
+    return items;
+  }
+
+  async function fetchImageAsBase64(url) {
+    const resp = await fetch(url, { credentials: "include" });
+    const blob = await resp.blob();
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload  = () => resolve(reader.result);
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  function rebuildGroupMergeModal() {
+    const overlay = groupMergeModal.overlay;
+    overlay.querySelector(".fd-merge-modal")?.remove();
+
+    const { set, survivorId } = groupMergeModal;
+    const checkItems = buildGroupCheckItems(set, survivorId);
+    groupMergeModal._checkMap = new Map();
+    const checkMap = groupMergeModal._checkMap;
+
+    const modal = document.createElement("div");
+    modal.className = "fd-merge-modal";
+
+    // ── Header ──
+    const header = document.createElement("div");
+    header.className = "fd-modal-header";
+    const titleEl = document.createElement("h4");
+    titleEl.className = "fd-modal-title";
+    titleEl.textContent = "Merge Duplicate Groups";
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "fd-modal-close";
+    closeBtn.textContent = "✕";
+    closeBtn.addEventListener("click", closeGroupMergeModal);
+    header.appendChild(titleEl);
+    header.appendChild(closeBtn);
+    modal.appendChild(header);
+
+    // ── Body ──
+    const body = document.createElement("div");
+    body.className = "fd-modal-body";
+
+    // Group cards
+    const cardsWrap = document.createElement("div");
+    cardsWrap.className = "fd-merge-scenes";
+    set.forEach(group => {
+      const isSurvivor = group.id === survivorId;
+      const card = document.createElement("div");
+      card.className = "fd-merge-scene-card " + (isSurvivor ? "fd-merge-survivor" : "fd-merge-deleted");
+
+      const img   = group.front_image_path ?? "";
+      const scCnt = group.scene_count > 0
+        ? `${group.scene_count} scene${group.scene_count === 1 ? "" : "s"}`
+        : "";
+      const imgHtml = img
+        ? `<div class="fd-thumb-wrap">
+             <img class="fd-thumb" src="${esc(img)}" alt="">
+             <div class="fd-thumb-zoom" style="width:300px">
+               <img src="${esc(img)}" alt="" style="width:300px">
+             </div>
+           </div>`
+        : `<div class="fd-thumb fd-no-img"></div>`;
+
+      card.innerHTML = `
+        <div class="fd-merge-badge">${isSurvivor ? "★ Survivor" : "✕ Will be deleted"}</div>
+        ${imgHtml}
+        <p class="fd-merge-title"><a class="fd-link" href="/groups/${esc(group.id)}" target="_blank" rel="noopener">${esc(group.name || group.id)}</a></p>
+        ${group.studio  ? `<p class="fd-merge-meta">${esc(group.studio.name)}</p>` : ""}
+        ${group.date    ? `<p class="fd-merge-meta">${esc(group.date)}</p>` : ""}
+        ${scCnt         ? `<p class="fd-merge-meta">${scCnt}</p>` : ""}
+        ${group.synopsis ? `<p class="fd-merge-meta" style="margin-top:.35rem">${esc(truncate(group.synopsis))}</p>` : ""}`;
+
+      if (!isSurvivor) {
+        card.addEventListener("click", e => {
+          if (e.target.tagName === "A") return;
+          groupMergeModal.survivorId = group.id;
+          rebuildGroupMergeModal();
+        });
+      }
+      cardsWrap.appendChild(card);
+    });
+    body.appendChild(cardsWrap);
+
+    // Metadata checklist
+    if (checkItems.length) {
+      const clSection = document.createElement("div");
+      clSection.className = "fd-merge-checklist";
+      const clTitle = document.createElement("p");
+      clTitle.className = "fd-merge-section-title";
+      clTitle.textContent = "Metadata to copy to survivor:";
+      clSection.appendChild(clTitle);
+
+      checkItems.forEach(item => {
+        const lbl = document.createElement("label");
+        lbl.className = "fd-filter-check fd-merge-check-item";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = item.checked;
+        checkMap.set(item.id, { item, cb });
+        cb.addEventListener("change", () => {
+          if (groupMergeModal._summaryEl) {
+            updateGroupMergeSummary(
+              groupMergeModal._summaryEl, groupMergeModal.set,
+              groupMergeModal.survivorId, checkMap
+            );
+          }
+        });
+        lbl.appendChild(cb);
+        lbl.appendChild(document.createTextNode(" " + item.label));
+        clSection.appendChild(lbl);
+      });
+
+      body.appendChild(clSection);
+    }
+
+    // Plain-English summary
+    const summaryEl = document.createElement("div");
+    summaryEl.className = "fd-merge-summary";
+    groupMergeModal._summaryEl = summaryEl;
+    body.appendChild(summaryEl);
+    updateGroupMergeSummary(summaryEl, set, survivorId, checkMap);
+
+    modal.appendChild(body);
+
+    // ── Footer ──
+    const footer = document.createElement("div");
+    footer.className = "fd-modal-footer";
+    const cancelBtn = document.createElement("button");
+    cancelBtn.className = "fd-btn fd-btn-secondary";
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.addEventListener("click", closeGroupMergeModal);
+    const confirmBtn = document.createElement("button");
+    confirmBtn.className = "fd-btn fd-btn-confirm";
+    confirmBtn.textContent = "Confirm Merge";
+    confirmBtn.addEventListener("click", () => executeGroupMerge(set, survivorId, checkMap, confirmBtn));
+    footer.appendChild(cancelBtn);
+    footer.appendChild(confirmBtn);
+    modal.appendChild(footer);
+
+    overlay.appendChild(modal);
+  }
+
+  function updateGroupMergeSummary(el, set, survivorId, checkMap) {
+    const survivor = set.find(g => g.id === survivorId);
+    const deleted  = set.filter(g => g.id !== survivorId);
+
+    const survivorName = survivor.name || survivor.id;
+    const deletedNames = deleted.map(g => g.name || g.id).join(", ");
+    let text = `"${survivorName}" will be kept. "${deletedNames}" will be deleted.`;
+
+    const totalScenes = deleted.reduce((sum, g) => sum + (g.scene_count || 0), 0);
+    if (totalScenes > 0) {
+      text += ` All ${totalScenes} scene${totalScenes === 1 ? "" : "s"} from the deleted group${deleted.length === 1 ? "" : "s"} will be moved to "${survivorName}".`;
+    }
+
+    const copyParts = [];
+    for (const [, { item, cb }] of checkMap) {
+      if (cb.checked) {
+        const label = item.type === "front_image" ? "front image"
+                    : item.type === "back_image"  ? "back image"
+                    : item.type;
+        copyParts.push(label);
+      }
+    }
+    if (copyParts.length) {
+      text += ` The following will also be copied: ${copyParts.join(", ")}.`;
+    }
+
+    el.textContent = text;
+  }
+
+  async function executeGroupMerge(set, survivorId, checkMap, confirmBtn) {
+    const deleted = set.filter(g => g.id !== survivorId);
+
+    confirmBtn.disabled = true;
+    confirmBtn.textContent = "Merging…";
+
+    try {
+      // Move scenes from each deleted group onto the survivor
+      for (const del of deleted) {
+        const data = await gql(`
+          query($filter: SceneFilterType) {
+            findScenes(scene_filter: $filter, filter: { per_page: -1 }) {
+              scenes {
+                id
+                groups { group { id } scene_index }
+              }
+            }
+          }
+        `, { filter: { groups: { value: del.id, modifier: "INCLUDES" } } });
+
+        for (const scene of data.findScenes.scenes) {
+          const delEntry  = scene.groups.find(sg => sg.group.id === del.id);
+          const newGroups = scene.groups
+            .filter(sg => sg.group.id !== del.id && sg.group.id !== survivorId)
+            .map(sg => ({ group_id: sg.group.id, scene_index: sg.scene_index || null }));
+          newGroups.push({ group_id: survivorId, scene_index: delEntry?.scene_index || null });
+
+          await gql(
+            `mutation($input: SceneUpdateInput!) { sceneUpdate(input: $input) { id } }`,
+            { input: { id: scene.id, groups: newGroups } }
+          );
+        }
+      }
+
+      // Copy checked metadata onto the survivor
+      const updateInput = { id: survivorId };
+      for (const [, { item, cb }] of checkMap) {
+        if (!cb.checked) continue;
+        if (item.type === "synopsis") {
+          updateInput.synopsis = item.data.synopsis;
+        } else if (item.type === "front_image") {
+          updateInput.front_image = await fetchImageAsBase64(item.data.url);
+        } else if (item.type === "back_image") {
+          updateInput.back_image = await fetchImageAsBase64(item.data.url);
+        } else if (item.type === "date") {
+          updateInput.date = item.data.date;
+        } else if (item.type === "studio") {
+          updateInput.studio_id = item.data.studio_id;
+        }
+      }
+
+      if (Object.keys(updateInput).length > 1) {
+        await gql(
+          `mutation($input: GroupUpdateInput!) { groupUpdate(input: $input) { id } }`,
+          { input: updateInput }
+        );
+      }
+
+      // Destroy deleted groups
+      const deleteIds = deleted.map(g => g.id);
+      await gql(
+        `mutation($ids: [ID!]!) { groupsDestroy(ids: $ids) }`,
+        { ids: deleteIds }
+      );
+
+      closeGroupMergeModal();
+      showToast(`Merged. ${deleteIds.length} group${deleteIds.length === 1 ? "" : "s"} deleted.`);
+      deleteIds.forEach(id => state.selectedGroups.delete(id));
+      state.allGroups = null;
+      loadGroups();
+    } catch (e) {
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = "Confirm Merge";
+      alert(`Merge failed: ${e.message}`);
     }
   }
 

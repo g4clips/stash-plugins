@@ -70,8 +70,6 @@ if (window._markerScenesLoaded) {
     }
   `;
 
-  // If this is a virtual marker scene (no files, has a ?t= URL), intercept
-  // clicks on the empty player area and redirect to the original scene
   async function maybeHandleVirtualScene(sceneId) {
     let data;
     try {
@@ -86,29 +84,31 @@ if (window._markerScenesLoaded) {
 
     const target = new URL(markerUrl);
     const redirect = target.pathname + target.search;
+    console.log(`[${PLUGIN_ID}] Virtual scene detected, redirecting to ${redirect}`);
+    window.location.replace(redirect);
+  }
 
-    console.log(`[${PLUGIN_ID}] Virtual scene detected, waiting for player click...`);
+  function maybeAutoPlay() {
+    if (!isScenePage()) return;
+    if (!window.location.search.includes("t=")) return;
 
-    // Wait for the no-file player to appear then intercept clicks on it
-    const tryAttach = () => {
-      const player = document.querySelector(".VideoPlayer.no-file");
-      if (!player) return false;
+    console.log(`[${PLUGIN_ID}] Landed on timestamped scene, attempting auto-play...`);
 
-      player.style.cursor = "pointer";
-      player.title = "Click to play original scene at marker timestamp";
-      player.addEventListener("click", () => {
-        console.log(`[${PLUGIN_ID}] Player clicked, redirecting to ${redirect}`);
-        window.location.replace(redirect);
-      }, { once: true });
-
-      console.log(`[${PLUGIN_ID}] Click handler attached to empty player.`);
+    const tryPlay = () => {
+      const video = document.querySelector("video.vjs-tech");
+      if (!video) return false;
+      video.play().then(() => {
+        console.log(`[${PLUGIN_ID}] Auto-play succeeded.`);
+      }).catch(err => {
+        console.log(`[${PLUGIN_ID}] Auto-play blocked by browser: ${err.message}`);
+      });
       return true;
     };
 
-    if (!tryAttach()) {
+    if (!tryPlay()) {
       const deadline = Date.now() + 10000;
       const obs = new MutationObserver(() => {
-        if (tryAttach() || Date.now() > deadline) obs.disconnect();
+        if (tryPlay() || Date.now() > deadline) obs.disconnect();
       });
       obs.observe(document.body, { childList: true, subtree: true });
     }
@@ -249,7 +249,10 @@ if (window._markerScenesLoaded) {
 
   function startListening() {
     if (window.PluginApi?.Event) {
-      window.PluginApi.Event.addEventListener("stash:location", onLocationChange);
+      window.PluginApi.Event.addEventListener("stash:location", () => {
+        onLocationChange();
+        maybeAutoPlay();
+      });
     } else {
       let last = "";
       setInterval(() => {
@@ -260,6 +263,7 @@ if (window._markerScenesLoaded) {
       }, 500);
     }
     onLocationChange();
+    maybeAutoPlay();
   }
 
   // Wait for PluginApi then start

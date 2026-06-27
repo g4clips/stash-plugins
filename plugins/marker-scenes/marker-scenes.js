@@ -127,6 +127,32 @@ if (window._markerScenesLoaded) {
     return video ? video.currentTime : 0;
   }
 
+  function maybeAutoPlay() {
+    if (!isScenePage()) return;
+    if (!window.location.search.includes("t=")) return;
+
+    console.log(`[${PLUGIN_ID}] Landed on timestamped scene, attempting auto-play...`);
+
+    const tryPlay = () => {
+      const player = document.querySelector("video-js")?.player;
+      if (!player || player.readyState() === 0) return false;
+      player.play().then(() => {
+        console.log(`[${PLUGIN_ID}] Auto-play succeeded.`);
+      }).catch(err => {
+        console.log(`[${PLUGIN_ID}] Auto-play blocked: ${err.message}`);
+      });
+      return true;
+    };
+
+    if (!tryPlay()) {
+      const deadline = Date.now() + 10000;
+      const obs = new MutationObserver(() => {
+        if (tryPlay() || Date.now() > deadline) obs.disconnect();
+      });
+      obs.observe(document.body, { childList: true, subtree: true });
+    }
+  }
+
   function removeModal() {
     const existing = document.getElementById("ms-modal-overlay");
     if (existing) existing.remove();
@@ -554,7 +580,10 @@ if (window._markerScenesLoaded) {
 
   function startListening() {
     if (window.PluginApi?.Event) {
-      window.PluginApi.Event.addEventListener("stash:location", onLocationChange);
+      window.PluginApi.Event.addEventListener("stash:location", () => {
+        onLocationChange();
+        maybeAutoPlay();
+      });
     } else {
       let last = "";
       setInterval(() => {
@@ -565,6 +594,7 @@ if (window._markerScenesLoaded) {
       }, 500);
     }
     onLocationChange();
+    maybeAutoPlay();
   }
 
   // Wait for PluginApi then start

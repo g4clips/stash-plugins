@@ -135,7 +135,7 @@ if (window._markerScenesLoaded) {
 
     const state = modalState;
     const nextSceneNum = state.scenes.length + 1;
-    const currentTime = getCurrentTimestamp();
+    const currentTime = state.pendingTimestamp !== undefined ? state.pendingTimestamp : getCurrentTimestamp();
 
     const panel = document.createElement("div");
     panel.id = "ms-modal-overlay";
@@ -210,6 +210,40 @@ if (window._markerScenesLoaded) {
 
     document.body.appendChild(panel);
 
+    // Make panel draggable by its header
+    const header = panel.querySelector("div");
+    let isDragging = false;
+    let dragStartX, dragStartY, panelStartX, panelStartY;
+
+    header.style.cursor = "grab";
+
+    header.addEventListener("mousedown", (e) => {
+      if (e.target.id === "ms-close") return;
+      isDragging = true;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      const rect = panel.getBoundingClientRect();
+      panelStartX = rect.left;
+      panelStartY = rect.top;
+      header.style.cursor = "grabbing";
+      e.preventDefault();
+    });
+
+    document.addEventListener("mousemove", (e) => {
+      if (!isDragging) return;
+      const dx = e.clientX - dragStartX;
+      const dy = e.clientY - dragStartY;
+      panel.style.left = (panelStartX + dx) + "px";
+      panel.style.top = (panelStartY + dy) + "px";
+      panel.style.bottom = "auto";
+      panel.style.right = "auto";
+    });
+
+    document.addEventListener("mouseup", () => {
+      isDragging = false;
+      header.style.cursor = "grab";
+    });
+
     document.getElementById("ms-close").addEventListener("click", () => {
       modalState = null;
       removeModal();
@@ -238,7 +272,7 @@ if (window._markerScenesLoaded) {
   async function handleCreateScene(scene, groupName, isLast) {
     setModalBusy(true);
 
-    const timestamp = getCurrentTimestamp();
+    const timestamp = Math.floor(getCurrentTimestamp());
     const sceneIndex = modalState.scenes.length + 1;
     const origin = window.location.origin;
     const group = scene.groups[0].group;
@@ -311,6 +345,7 @@ if (window._markerScenesLoaded) {
       return;
     }
 
+    modalState.pendingTimestamp = getCurrentTimestamp();
     renderModal(scene, groupName);
   }
 
@@ -336,6 +371,7 @@ if (window._markerScenesLoaded) {
       tagId,
       scenes: [],
     };
+    modalState.pendingTimestamp = getCurrentTimestamp();
 
     renderModal(scene, group.name);
   }
@@ -376,32 +412,6 @@ if (window._markerScenesLoaded) {
       const deadline = Date.now() + 10000;
       const obs = new MutationObserver(() => {
         if (tryAttach() || Date.now() > deadline) obs.disconnect();
-      });
-      obs.observe(document.body, { childList: true, subtree: true });
-    }
-  }
-
-  function maybeAutoPlay() {
-    if (!isScenePage()) return;
-    if (!window.location.search.includes("t=")) return;
-
-    console.log(`[${PLUGIN_ID}] Landed on timestamped scene, attempting auto-play...`);
-
-    const tryPlay = () => {
-      const video = document.querySelector("video.vjs-tech");
-      if (!video) return false;
-      video.play().then(() => {
-        console.log(`[${PLUGIN_ID}] Auto-play succeeded.`);
-      }).catch(err => {
-        console.log(`[${PLUGIN_ID}] Auto-play blocked by browser: ${err.message}`);
-      });
-      return true;
-    };
-
-    if (!tryPlay()) {
-      const deadline = Date.now() + 10000;
-      const obs = new MutationObserver(() => {
-        if (tryPlay() || Date.now() > deadline) obs.disconnect();
       });
       obs.observe(document.body, { childList: true, subtree: true });
     }
@@ -542,10 +552,7 @@ if (window._markerScenesLoaded) {
 
   function startListening() {
     if (window.PluginApi?.Event) {
-      window.PluginApi.Event.addEventListener("stash:location", () => {
-        onLocationChange();
-        maybeAutoPlay();
-      });
+      window.PluginApi.Event.addEventListener("stash:location", onLocationChange);
     } else {
       let last = "";
       setInterval(() => {
@@ -556,7 +563,6 @@ if (window._markerScenesLoaded) {
       }, 500);
     }
     onLocationChange();
-    maybeAutoPlay();
   }
 
   // Wait for PluginApi then start

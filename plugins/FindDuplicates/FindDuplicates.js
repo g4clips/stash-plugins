@@ -62,6 +62,13 @@
     return dim || mbps;
   }
 
+  // Raw video codec string from a Stash file object, or null if absent.
+  function fmtCodec(file) {
+    if (!file?.video_codec) return null;
+    const c = String(file.video_codec).trim();
+    return c || null;
+  }
+
   // ── GraphQL ────────────────────────────────────────────────────────────────
 
   async function gql(query, variables = {}) {
@@ -87,7 +94,7 @@
             studio      { id name }
             performers { id name }
             tags        { id name }
-            files       { size created_at width height bit_rate }
+            files       { size created_at width height bit_rate video_codec }
             groups      { group { id name front_image_path } scene_index }
             paths       { screenshot }
             created_at
@@ -555,6 +562,7 @@
           const file0  = (scene.files || [])[0];
           const thumb   = scene.paths?.screenshot ?? "";
           const quality = fmtQuality(file0);
+          const codec   = fmtCodec(file0);
           const size    = fmtSize(file0?.size);
           const added   = fmtDate(file0?.created_at ?? scene.created_at);
           const tags    = (scene.tags || []).map(t => `<span class="fd-tag">${esc(t.name)}</span>`).join("");
@@ -575,7 +583,7 @@
               ${tags  ? `<div class="fd-card-tags">${tags}</div>` : ""}
               ${perfs ? `<div class="fd-performers-list">${perfs}</div>` : ""}
             </td>
-            <td class="fd-td-quality">${quality ? esc(quality) : "—"}</td>
+            <td class="fd-td-quality">${quality ? esc(quality) : "—"}${codec ? `<br><span class="fd-quality-codec">${esc(codec)}</span>` : ""}</td>
             <td class="fd-td-size">${size ? esc(size) : "—"}</td>
             <td class="fd-td-date">${added ? esc(added) : "—"}</td>
             <td class="fd-td-action">
@@ -676,9 +684,10 @@
 
   const mergeModal = {
     set: null, survivorId: null, overlay: null,
-    tagPickerEl: null,   // <div> housing the tag pills
-    _summaryEl:  null,   // summary <div> — shared ref so pills can update it
-    _checkMap:   new Map(), // checklist checkbox refs
+    tagPickerEl:    null,   // <div> housing the tag pills
+    studioPickerEl: null,   // <div> housing the studio <select>
+    _summaryEl:     null,   // summary <div> — shared ref so pickers can update it
+    _checkMap:      new Map(), // checklist checkbox refs
   };
 
   function openMergeModal(set, clickedId) {
@@ -791,6 +800,58 @@
     return items;
   }
 
+  // Studio selector: one <select> listing all unique studios across all scenes in the set.
+  // Pre-selects the survivor's studio; falls back to first studio in deleted scenes.
+  function buildStudioPicker(set, survivorId) {
+    const survivor = set.find(s => s.id === survivorId);
+
+    const studioMap = new Map();
+    for (const scene of set) {
+      if (scene.studio) studioMap.set(scene.studio.id, scene.studio);
+    }
+
+    const section = document.createElement("div");
+    section.className = "fd-merge-studio-picker";
+
+    const title = document.createElement("p");
+    title.className = "fd-merge-section-title";
+    title.textContent = "Studio on surviving scene:";
+    section.appendChild(title);
+
+    const select = document.createElement("select");
+    select.className = "fd-merge-studio-select";
+
+    const noOpt = document.createElement("option");
+    noOpt.value = "";
+    noOpt.textContent = "No studio";
+    select.appendChild(noOpt);
+
+    for (const studio of studioMap.values()) {
+      const opt = document.createElement("option");
+      opt.value = studio.id;
+      opt.textContent = studio.name;
+      select.appendChild(opt);
+    }
+
+    // Default: survivor's studio, or first studio found in deleted scenes
+    const defaultId = survivor.studio?.id
+      ?? set.filter(s => s.id !== survivorId).find(s => s.studio)?.studio?.id
+      ?? "";
+    select.value = defaultId;
+
+    select.addEventListener("change", () => {
+      if (mergeModal._summaryEl) {
+        updateMergeSummary(
+          mergeModal._summaryEl, mergeModal.set,
+          mergeModal.survivorId, mergeModal._checkMap
+        );
+      }
+    });
+
+    section.appendChild(select);
+    return section;
+  }
+
   // Build the inline tag picker: all tags from all scenes in the set, all pre-checked.
   // Each tag is a toggleable pill (fd-tag-pill-on = selected). Returns the section element.
   function buildTagPicker(set) {
@@ -886,6 +947,7 @@
 
       const file0   = (scene.files || [])[0];
       const quality = fmtQuality(file0);
+      const codec   = fmtCodec(file0);
       const size    = fmtSize(file0?.size);
       const added   = fmtDate(file0?.created_at ?? scene.created_at);
       const thumb   = scene.paths?.screenshot ?? "";
@@ -904,7 +966,7 @@
         <div class="fd-merge-badge">${isSurvivor ? "★ Survivor" : "✕ Will be deleted"}</div>
         ${imgHtml}
         <p class="fd-merge-title"><a class="fd-link" href="/scenes/${esc(scene.id)}" target="_blank" rel="noopener">${esc(scene.title || scene.id)}</a></p>
-        <p class="fd-merge-meta">${[quality, size, added].filter(Boolean).map(esc).join(" · ")}</p>
+        <p class="fd-merge-meta">${[quality, size, added].filter(Boolean).map(esc).join(" · ")}${codec ? `<br><span class="fd-quality-codec">${esc(codec)}</span>` : ""}</p>
         ${grpHtml}
         ${perfs ? `<p class="fd-merge-perfs">${perfs}</p>` : ""}
         ${tags  ? `<div class="fd-card-tags">${tags}</div>` : ""}
@@ -925,28 +987,34 @@
     mergeModal.tagPickerEl = buildTagPicker(set);
     body.appendChild(mergeModal.tagPickerEl);
 
-    // Checklist
-    if (checkItems.length) {
-      const clSection = document.createElement("div");
-      clSection.className = "fd-merge-checklist";
-      const clTitle = document.createElement("p");
-      clTitle.className = "fd-merge-section-title";
-      clTitle.textContent = "Metadata to copy to survivor:";
-      clSection.appendChild(clTitle);
-      checkItems.forEach(item => {
-        const lbl = document.createElement("label");
-        lbl.className = "fd-filter-check fd-merge-check-item";
-        const cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.checked = item.checked;
-        checkMap.set(item.id, { item, cb });
-        cb.addEventListener("change", () => updateMergeSummary(summaryEl, set, survivorId, checkMap));
-        lbl.appendChild(cb);
-        lbl.appendChild(document.createTextNode(" " + item.label));
-        clSection.appendChild(lbl);
-      });
-      body.appendChild(clSection);
+    // Checklist (always rendered — studio picker is always shown)
+    const clSection = document.createElement("div");
+    clSection.className = "fd-merge-checklist";
+    const clTitle = document.createElement("p");
+    clTitle.className = "fd-merge-section-title";
+    clTitle.textContent = "Metadata to copy to survivor:";
+    clSection.appendChild(clTitle);
+
+    function addCheckItem(item) {
+      const lbl = document.createElement("label");
+      lbl.className = "fd-filter-check fd-merge-check-item";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = item.checked;
+      checkMap.set(item.id, { item, cb });
+      cb.addEventListener("change", () => updateMergeSummary(summaryEl, set, survivorId, checkMap));
+      lbl.appendChild(cb);
+      lbl.appendChild(document.createTextNode(" " + item.label));
+      clSection.appendChild(lbl);
     }
+
+    // Group items first, then studio picker, then performers / synopsis / title
+    checkItems.filter(i => i.type === "group").forEach(addCheckItem);
+    mergeModal.studioPickerEl = buildStudioPicker(set, survivorId);
+    clSection.appendChild(mergeModal.studioPickerEl);
+    checkItems.filter(i => i.type !== "group").forEach(addCheckItem);
+
+    body.appendChild(clSection);
 
     // Summary (stored on mergeModal so pill click handlers can update it)
     const summaryEl = document.createElement("div");
@@ -981,6 +1049,15 @@
 
     const setParts = [];  // things being explicitly set / replaced
     const addParts = [];  // other metadata being added
+
+    // Studio from picker
+    if (mergeModal.studioPickerEl) {
+      const sel = mergeModal.studioPickerEl.querySelector("select");
+      if (sel) {
+        const opt = sel.options[sel.selectedIndex];
+        setParts.push(`studio: ${opt?.value ? opt.textContent : "none"}`);
+      }
+    }
 
     // Tags come from the picker — show selected names
     if (mergeModal.tagPickerEl) {
@@ -1052,6 +1129,12 @@
       input.tag_ids       = tagIds;
       input.performer_ids = perfIds;
       input.groups        = groups;
+
+      // Studio from picker (empty string → null = remove studio)
+      if (mergeModal.studioPickerEl) {
+        const sel = mergeModal.studioPickerEl.querySelector("select");
+        input.studio_id = sel?.value || null;
+      }
 
       await gql(
         `mutation($input: SceneUpdateInput!) { sceneUpdate(input: $input) { id } }`,

@@ -207,12 +207,18 @@
   padding: 0 .2rem;
 }
 
+/* ── Table scroll container (scenes tab only) ─────────────────────────── */
+.fd-table-scroll {
+  overflow-y: auto;
+  max-height: calc(100vh - 320px);
+  flex-shrink: 0;
+}
+
 /* ── Table ────────────────────────────────────────────────────────────── */
 .fd-table {
   width: 100%;
   border-collapse: collapse;
   font-size: .875rem;
-  flex-shrink: 0;
 }
 
 .fd-table th,
@@ -224,13 +230,16 @@
 }
 
 .fd-table thead th {
-  background: #16161e;
+  background: #1a1a28;
   font-weight: 600;
   font-size: .8rem;
   text-transform: uppercase;
   letter-spacing: .04em;
   color: #aaa;
   border-bottom: 2px solid #3a3a4a;
+  position: sticky;
+  top: 0;
+  z-index: 10;
 }
 
 .fd-table tbody tr:hover td { background: rgba(255,255,255,.03); }

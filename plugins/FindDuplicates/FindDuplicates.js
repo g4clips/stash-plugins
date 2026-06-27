@@ -595,7 +595,10 @@
       });
 
       table.appendChild(tbody);
-      panel.appendChild(table);
+      const tableScroll = document.createElement("div");
+      tableScroll.className = "fd-table-scroll";
+      tableScroll.appendChild(table);
+      panel.appendChild(tableScroll);
     } else {
       const empty = document.createElement("h4");
       empty.className = "fd-empty";

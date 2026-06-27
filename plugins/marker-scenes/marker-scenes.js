@@ -1,3 +1,8 @@
+if (window._markerScenesLoaded) {
+  console.log("[marker-scenes] Already loaded, skipping re-registration.");
+} else {
+  window._markerScenesLoaded = true;
+
 // marker-scenes.js
 // Stash plugin: creates virtual scenes from scene markers.
 // MVP v0.1 — no overwrite detection, no settings UI yet.
@@ -182,3 +187,4 @@
   });
 
 })();
+}

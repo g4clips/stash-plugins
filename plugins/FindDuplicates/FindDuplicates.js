@@ -674,7 +674,12 @@
 
   // ── Merge modal ────────────────────────────────────────────────────────────
 
-  const mergeModal = { set: null, survivorId: null, overlay: null };
+  const mergeModal = {
+    set: null, survivorId: null, overlay: null,
+    tagPickerEl: null,   // <div> housing the tag pills
+    _summaryEl:  null,   // summary <div> — shared ref so pills can update it
+    _checkMap:   new Map(), // checklist checkbox refs
+  };
 
   function openMergeModal(set, clickedId) {
     closeMergeModal();
@@ -741,23 +746,6 @@
       }
     }
 
-    // Missing tags
-    const missingTags = [];
-    const seenTags = new Set([...sTagIds]);
-    for (const del of deleted) {
-      for (const t of (del.tags || [])) {
-        if (!seenTags.has(t.id)) { seenTags.add(t.id); missingTags.push(t); }
-      }
-    }
-    if (missingTags.length) {
-      items.push({
-        id: "copy-tags", type: "tags",
-        label:   `Copy missing tags: ${missingTags.map(t => t.name).join(", ")}`,
-        checked: true,
-        data:    missingTags,
-      });
-    }
-
     // Missing performers
     const missingPerfs = [];
     const seenPerfs = new Set([...sPerfIds]);
@@ -803,6 +791,58 @@
     return items;
   }
 
+  // Build the inline tag picker: all tags from all scenes in the set, all pre-checked.
+  // Each tag is a toggleable pill (fd-tag-pill-on = selected). Returns the section element.
+  function buildTagPicker(set) {
+    const tagMap = new Map();
+    for (const scene of set) {
+      for (const t of (scene.tags || [])) {
+        if (!tagMap.has(t.id)) tagMap.set(t.id, t);
+      }
+    }
+
+    const section = document.createElement("div");
+    section.className = "fd-merge-tag-picker";
+
+    const title = document.createElement("p");
+    title.className = "fd-merge-section-title";
+    title.textContent = "Tags on surviving scene:";
+    section.appendChild(title);
+
+    if (tagMap.size === 0) {
+      const none = document.createElement("span");
+      none.className = "fd-merge-meta";
+      none.style.fontStyle = "italic";
+      none.textContent = "No tags in this duplicate set.";
+      section.appendChild(none);
+      return section;
+    }
+
+    const pillsWrap = document.createElement("div");
+    pillsWrap.className = "fd-merge-tag-pills";
+
+    for (const tag of tagMap.values()) {
+      const pill = document.createElement("span");
+      pill.className = "fd-tag-pill fd-tag-pill-on";
+      pill.dataset.tagId   = tag.id;
+      pill.dataset.tagName = tag.name;
+      pill.textContent     = tag.name;
+      pill.addEventListener("click", () => {
+        pill.classList.toggle("fd-tag-pill-on");
+        if (mergeModal._summaryEl) {
+          updateMergeSummary(
+            mergeModal._summaryEl, mergeModal.set,
+            mergeModal.survivorId, mergeModal._checkMap
+          );
+        }
+      });
+      pillsWrap.appendChild(pill);
+    }
+
+    section.appendChild(pillsWrap);
+    return section;
+  }
+
   function rebuildMergeModal() {
     const overlay = mergeModal.overlay;
     overlay.querySelector(".fd-merge-modal")?.remove();
@@ -811,8 +851,9 @@
     const survivor = set.find(s => s.id === survivorId);
     const deleted  = set.filter(s => s.id !== survivorId);
     const checkItems = buildCheckItems(set, survivorId);
-    // Map from item.id → checkbox element (populated while building UI)
-    const checkMap = new Map();
+    // Shared checkMap stored on mergeModal so pill click handlers can reach it
+    mergeModal._checkMap = new Map();
+    const checkMap = mergeModal._checkMap;
 
     const modal = document.createElement("div");
     modal.className = "fd-merge-modal";
@@ -880,6 +921,10 @@
     });
     body.appendChild(cardsWrap);
 
+    // Tag picker (all tags from all scenes, all pre-checked)
+    mergeModal.tagPickerEl = buildTagPicker(set);
+    body.appendChild(mergeModal.tagPickerEl);
+
     // Checklist
     if (checkItems.length) {
       const clSection = document.createElement("div");
@@ -903,9 +948,10 @@
       body.appendChild(clSection);
     }
 
-    // Summary
+    // Summary (stored on mergeModal so pill click handlers can update it)
     const summaryEl = document.createElement("div");
     summaryEl.className = "fd-merge-summary";
+    mergeModal._summaryEl = summaryEl;
     body.appendChild(summaryEl);
     updateMergeSummary(summaryEl, set, survivorId, checkMap);
 
@@ -933,14 +979,22 @@
     const survivor = set.find(s => s.id === survivorId);
     const deleted  = set.filter(s => s.id !== survivorId);
 
-    const addParts = [];
+    const setParts = [];  // things being explicitly set / replaced
+    const addParts = [];  // other metadata being added
+
+    // Tags come from the picker — show selected names
+    if (mergeModal.tagPickerEl) {
+      const selNames = [...mergeModal.tagPickerEl.querySelectorAll(".fd-tag-pill.fd-tag-pill-on")]
+        .map(el => el.dataset.tagName);
+      if (selNames.length) setParts.push(`tags: ${selNames.join(", ")}`);
+      else setParts.push("tags: (none)");
+    }
+
     for (const [, { item, cb }] of checkMap) {
       if (!cb.checked) continue;
       if (item.type === "group") {
         const idxStr = item.data.scene_index ? ` (Scene #${item.data.scene_index})` : "";
         addParts.push(`group "${item.data.name}"${idxStr}`);
-      } else if (item.type === "tags") {
-        addParts.push(`tags: ${item.data.map(t => t.name).join(", ")}`);
       } else if (item.type === "performers") {
         addParts.push(`performers: ${item.data.map(p => p.name).join(", ")}`);
       } else if (item.type === "synopsis") {
@@ -950,13 +1004,12 @@
       }
     }
 
-    const survivorTitle  = survivor.title || survivor.id;
-    const deletedTitles  = deleted.map(d => d.title || d.id).join(", ");
+    const survivorTitle = survivor.title || survivor.id;
+    const deletedTitles = deleted.map(d => d.title || d.id).join(", ");
     let text = `"${survivorTitle}" will be kept. "${deletedTitles}" will be deleted.`;
-    if (addParts.length) {
-      text += ` The following will be added to the survivor: ${addParts.join("; ")}.`;
-    } else {
-      text += " No metadata will be copied.";
+    const allParts = [...setParts, ...addParts];
+    if (allParts.length) {
+      text += ` Survivor will have: ${allParts.join("; ")}.`;
     }
     el.textContent = text;
   }
@@ -969,8 +1022,12 @@
     confirmBtn.textContent = "Merging…";
 
     try {
-      // Start with survivor's existing ids/groups
-      let tagIds  = (survivor.tags      || []).map(t => t.id);
+      // tag_ids come entirely from the picker (it already includes all tags, pre-checked)
+      const tagIds = mergeModal.tagPickerEl
+        ? [...mergeModal.tagPickerEl.querySelectorAll(".fd-tag-pill.fd-tag-pill-on")]
+            .map(el => el.dataset.tagId)
+        : (survivor.tags || []).map(t => t.id);
+
       let perfIds = (survivor.performers || []).map(p => p.id);
       let groups  = (survivor.groups    || []).map(sg => ({
         group_id:    sg.group.id,
@@ -980,10 +1037,7 @@
 
       for (const [, { item, cb }] of checkMap) {
         if (!cb.checked) continue;
-        if (item.type === "tags") {
-          const newIds = item.data.map(t => t.id);
-          tagIds = [...new Set([...tagIds, ...newIds])];
-        } else if (item.type === "performers") {
+        if (item.type === "performers") {
           const newIds = item.data.map(p => p.id);
           perfIds = [...new Set([...perfIds, ...newIds])];
         } else if (item.type === "group") {
@@ -995,9 +1049,9 @@
         }
       }
 
-      input.tag_ids      = tagIds;
+      input.tag_ids       = tagIds;
       input.performer_ids = perfIds;
-      input.groups       = groups;
+      input.groups        = groups;
 
       await gql(
         `mutation($input: SceneUpdateInput!) { sceneUpdate(input: $input) { id } }`,

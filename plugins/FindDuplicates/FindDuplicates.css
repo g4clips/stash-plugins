@@ -489,6 +489,32 @@
 .fd-merge-group { font-size: .8rem; margin: 0 0 .25rem; }
 .fd-merge-perfs { font-size: .8rem; color: #aaa; margin: 0 0 .25rem; }
 
+/* ── Tag picker (merge modal) ─────────────────────────────────────────── */
+.fd-merge-tag-picker { display: flex; flex-direction: column; gap: .4rem; }
+.fd-merge-tag-pills  { display: flex; flex-wrap: wrap; gap: .35rem; }
+
+/* Pill base: muted / unchecked */
+.fd-tag-pill {
+  padding: .18rem .55rem;
+  border-radius: 10px;
+  font-size: .78rem;
+  cursor: pointer;
+  user-select: none;
+  background: rgba(13,110,253,.08);
+  color: #6ea8fe;
+  border: 1px solid rgba(13,110,253,.2);
+  opacity: .4;
+  transition: opacity .15s, transform .1s, background .15s, border-color .15s;
+}
+.fd-tag-pill:hover { opacity: .7; transform: scale(1.04); }
+
+/* Checked/on state: solid highlight */
+.fd-tag-pill.fd-tag-pill-on {
+  opacity: 1;
+  background: rgba(13,110,253,.22);
+  border-color: rgba(13,110,253,.5);
+}
+
 /* ── Checklist section inside modal ──────────────────────────────────── */
 .fd-merge-checklist { display: flex; flex-direction: column; gap: .4rem; }
 .fd-merge-section-title {

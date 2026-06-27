@@ -152,7 +152,9 @@ if (window._markerScenesLoaded) {
         btn.disabled = true;
         btn.textContent = "Working...";
         try {
-          await createMarkerScenes(scene);
+          const sceneId = window.location.pathname.match(/^\/scenes\/(\d+)/)[1];
+          const fresh = await gql(FIND_SCENE, { id: sceneId });
+          await createMarkerScenes(fresh.findScene);
         } finally {
           btn.disabled = false;
           btn.textContent = "Split Scene by Markers";

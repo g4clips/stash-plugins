@@ -31,6 +31,7 @@ if (window._markerScenesLoaded) {
     query FindScene($id: ID!) {
       findScene(id: $id) {
         id
+        urls
         title
         files {
           duration

@@ -541,34 +541,34 @@ if (window._markerScenesLoaded) {
     if (!isScenePage() || document.getElementById(BUTTON_ID)) return;
 
     const tryInsert = () => {
-      const anchor = document.getElementById("d18-open-btn") ||
-                     document.querySelector(".scene-toolbar");
-      if (!anchor) return false;
+      // const anchor = document.getElementById("d18-open-btn") ||
+      //                document.querySelector(".scene-toolbar");
+      // if (!anchor) return false;
 
-      const btn = document.createElement("button");
-      btn.id = BUTTON_ID;
-      btn.className = "btn btn-primary";
-      btn.textContent = "Virtual scenes";
-      btn.style.cssText = "margin-left:8px;font-size:.85rem;";
-      btn.addEventListener("click", async () => {
-        btn.disabled = true;
-        try {
-          const sceneId = window.location.pathname.match(/^\/scenes\/(\d+)/)[1];
-          const fresh = await gql(FIND_SCENE, { id: sceneId });
-          await openVirtualSceneModal(fresh.findScene);
-        } finally {
-          btn.disabled = false;
-        }
-      });
+      // const btn = document.createElement("button");
+      // btn.id = BUTTON_ID;
+      // btn.className = "btn btn-primary";
+      // btn.textContent = "Virtual scenes";
+      // btn.style.cssText = "margin-left:8px;font-size:.85rem;";
+      // btn.addEventListener("click", async () => {
+      //   btn.disabled = true;
+      //   try {
+      //     const sceneId = window.location.pathname.match(/^\/scenes\/(\d+)/)[1];
+      //     const fresh = await gql(FIND_SCENE, { id: sceneId });
+      //     await openVirtualSceneModal(fresh.findScene);
+      //   } finally {
+      //     btn.disabled = false;
+      //   }
+      // });
 
-      if (anchor.id === "d18-open-btn") {
-        anchor.parentNode.insertBefore(btn, anchor);
-      } else {
-        anchor.appendChild(btn);
-      }
+      // if (anchor.id === "d18-open-btn") {
+      //   anchor.parentNode.insertBefore(btn, anchor);
+      // } else {
+      //   anchor.appendChild(btn);
+      // }
 
-      console.log(`[${PLUGIN_ID}] Button injected for scene ${scene.id}.`);
-      return true;
+      // console.log(`[${PLUGIN_ID}] Button injected for scene ${scene.id}.`);
+      // return true;
     };
 
     if (!tryInsert()) {

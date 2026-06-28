@@ -84,8 +84,13 @@ if (window._markerScenesLoaded) {
 
     const target = new URL(markerUrl);
     const redirect = target.pathname + target.search;
-    console.log(`[${PLUGIN_ID}] Virtual scene detected, redirecting to ${redirect}`);
-    window.location.replace(redirect);
+    console.log(`[${PLUGIN_ID}] Virtual scene detected, navigating to ${redirect}`);
+    const a = document.createElement("a");
+    a.href = redirect;
+    a.style.display = "none";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
   }
 
   async function createMarkerScenes(scene) {

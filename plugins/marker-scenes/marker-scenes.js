@@ -27,6 +27,28 @@ if (window._markerScenesLoaded) {
     return data.data;
   }
 
+  // Get React Router's history object from the fiber tree
+  function getReactHistory() {
+    const root = document.querySelector('#root');
+    if (!root) return null;
+    const fiber = root._reactRootContainer?._internalRoot?.current;
+    if (!fiber) return null;
+
+    let history = null;
+    const walk = (node, depth = 0) => {
+      if (!node || depth > 100 || history) return;
+      try {
+        if (node.memoizedProps?.history?.replace && typeof node.memoizedProps.history.replace === 'function') {
+          history = node.memoizedProps.history;
+        }
+      } catch(e) {}
+      walk(node.child, depth + 1);
+      walk(node.sibling, depth + 1);
+    };
+    walk(fiber);
+    return history;
+  }
+
   const FIND_SCENE = `
     query FindScene($id: ID!) {
       findScene(id: $id) {
@@ -121,8 +143,10 @@ if (window._markerScenesLoaded) {
   }
 
   function getCurrentTimestamp() {
+    const player = document.querySelector("video-js")?.player;
+    if (player) return player.currentTime();
     const video = document.querySelector("video.vjs-tech");
-    return video ? Math.floor(video.currentTime) : 0;
+    return video ? video.currentTime : 0;
   }
 
   function removeModal() {
@@ -375,7 +399,14 @@ if (window._markerScenesLoaded) {
       player.title = "Click to play original scene at marker timestamp";
       player.addEventListener("click", () => {
         console.log(`[${PLUGIN_ID}] Player clicked, redirecting to ${redirect}`);
-        window.location.replace(redirect);
+        const history = getReactHistory();
+        if (history) {
+          console.log(`[${PLUGIN_ID}] Using React Router history.replace`);
+          history.replace(redirect);
+        } else {
+          console.log(`[${PLUGIN_ID}] Falling back to window.location.replace`);
+          window.location.replace(redirect);
+        }
       }, { once: true });
 
       console.log(`[${PLUGIN_ID}] Click handler attached to empty player.`);

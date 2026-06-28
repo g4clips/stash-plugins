@@ -92,14 +92,19 @@ if (window._markerScenesLoaded) {
     if (!isScenePage()) return;
     if (!window.location.search.includes("t=")) return;
 
-    console.log(`[${PLUGIN_ID}] Landed on timestamped scene, attempting load and play...`);
+    console.log(`[${PLUGIN_ID}] maybeAutoPlay triggered`);
 
     const tryPlay = () => {
       const player = document.querySelector("video-js")?.player;
-      if (!player) return false;
+      if (!player) {
+        console.log(`[${PLUGIN_ID}] tryPlay: no player found`);
+        return false;
+      }
 
+      console.log(`[${PLUGIN_ID}] tryPlay: calling load()`);
       player.load();
       setTimeout(() => {
+        console.log(`[${PLUGIN_ID}] tryPlay: calling play(), readyState=${player.readyState()}`);
         player.play().then(() => {
           console.log(`[${PLUGIN_ID}] Auto-play succeeded.`);
         }).catch(err => {
@@ -111,6 +116,7 @@ if (window._markerScenesLoaded) {
     };
 
     if (!tryPlay()) {
+      console.log(`[${PLUGIN_ID}] tryPlay returned false, starting MutationObserver`);
       const deadline = Date.now() + 10000;
       const obs = new MutationObserver(() => {
         if (tryPlay() || Date.now() > deadline) obs.disconnect();

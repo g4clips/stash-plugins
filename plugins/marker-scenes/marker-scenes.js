@@ -88,43 +88,6 @@ if (window._markerScenesLoaded) {
     window.location.replace(redirect);
   }
 
-  function maybeAutoPlay() {
-    if (!isScenePage()) return;
-    if (!window.location.search.includes("t=")) return;
-
-    console.log(`[${PLUGIN_ID}] maybeAutoPlay triggered`);
-
-    const tryPlay = () => {
-      const player = document.querySelector("video-js")?.player;
-      if (!player) {
-        console.log(`[${PLUGIN_ID}] tryPlay: no player found`);
-        return false;
-      }
-
-      console.log(`[${PLUGIN_ID}] tryPlay: calling load()`);
-      player.load();
-      setTimeout(() => {
-        console.log(`[${PLUGIN_ID}] tryPlay: calling play(), readyState=${player.readyState()}`);
-        player.play().then(() => {
-          console.log(`[${PLUGIN_ID}] Auto-play succeeded.`);
-        }).catch(err => {
-          console.log(`[${PLUGIN_ID}] Auto-play blocked: ${err.message}`);
-        });
-      }, 2000);
-
-      return true;
-    };
-
-    if (!tryPlay()) {
-      console.log(`[${PLUGIN_ID}] tryPlay returned false, starting MutationObserver`);
-      const deadline = Date.now() + 10000;
-      const obs = new MutationObserver(() => {
-        if (tryPlay() || Date.now() > deadline) obs.disconnect();
-      });
-      obs.observe(document.body, { childList: true, subtree: true });
-    }
-  }
-
   async function createMarkerScenes(scene) {
     const markers = scene.scene_markers;
     if (!markers || markers.length === 0) {
@@ -260,10 +223,7 @@ if (window._markerScenesLoaded) {
 
   function startListening() {
     if (window.PluginApi?.Event) {
-      window.PluginApi.Event.addEventListener("stash:location", () => {
-        onLocationChange();
-        maybeAutoPlay();
-      });
+      window.PluginApi.Event.addEventListener("stash:location", onLocationChange);
     } else {
       let last = "";
       setInterval(() => {
@@ -274,7 +234,6 @@ if (window._markerScenesLoaded) {
       }, 500);
     }
     onLocationChange();
-    maybeAutoPlay();
   }
 
   // Wait for PluginApi then start

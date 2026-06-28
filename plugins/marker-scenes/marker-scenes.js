@@ -251,7 +251,7 @@ if (window._markerScenesLoaded) {
 
     // Check if this is a virtual marker scene and redirect if so
     const sceneId = window.location.pathname.match(/^\/scenes\/(\d+)/)[1];
-    // await maybeHandleVirtualScene(sceneId);
+    await maybeHandleVirtualScene(sceneId);
 
     let scene;
     try {

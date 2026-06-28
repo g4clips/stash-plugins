@@ -807,55 +807,21 @@ if (window._markerScenesLoaded) {
 
     // ── Tab injection ─────────────────────────────────────────────────────
 
-    PluginApi.patch.after("ScenePage.TabContent", function({ children, ...props }) {
-      const [active, setActive] = useState(false);
-      const scene = props.scene;
+    const { Nav, Tab } = PluginApi.libraries.Bootstrap;
 
-      useEffect(() => {
-        let tab = document.getElementById("vs-nav-tab");
-        if (!tab) {
-          const navList = document.querySelector(".scene-tabs .nav");
-          if (navList) {
-            const li = document.createElement("li");
-            li.className = "nav-item";
-            const a = document.createElement("a");
-            a.id = "vs-nav-tab";
-            a.className = "nav-link";
-            a.href = "#";
-            a.textContent = "Virtual Scenes";
-            a.addEventListener("click", (e) => {
-              e.preventDefault();
-              // Remove active class from current Bootstrap tab and its pane
-              const activeTab = document.querySelector(".scene-tabs .nav-link.active");
-              if (activeTab) {
-                activeTab.classList.remove("active");
-                const paneKey = activeTab.dataset.rbEventKey;
-                if (paneKey) {
-                  const activePane = document.querySelector(`.tab-pane[data-rb-event-key="${paneKey}"], #${paneKey}`);
-                  if (activePane) activePane.classList.remove("active", "show");
-                }
-              }
-              setActive(true);
-            });
-            li.appendChild(a);
-            navList.appendChild(li);
-
-            navList.querySelectorAll(".nav-link:not(#vs-nav-tab)").forEach(link => {
-              link.addEventListener("click", () => setActive(false));
-            });
-          }
-        }
-
-        const tabEl = document.getElementById("vs-nav-tab");
-        if (tabEl) tabEl.className = `nav-link ${active ? "active" : ""}`;
-      });
-
-      return React.createElement(React.Fragment, null,
-        React.createElement("div", {
-          style: { display: active ? "block" : "none" }
-        }, React.createElement(VirtualScenesTab, { scene })),
-        children
+    PluginApi.patch.after("ScenePage.Tabs", function({ children, ...props }) {
+      const newTab = React.createElement(Nav.Item, null,
+        React.createElement(Nav.Link, { eventKey: "virtual-scenes-panel" }, "Virtual Scenes")
       );
+      return [...React.Children.toArray(children), newTab];
+    });
+
+    PluginApi.patch.after("ScenePage.TabContent", function({ children, ...props }) {
+      const scene = props.scene;
+      const newPane = React.createElement(Tab.Pane, { eventKey: "virtual-scenes-panel" },
+        React.createElement(VirtualScenesTab, { scene })
+      );
+      return [...React.Children.toArray(children), newPane];
     });
 
   });

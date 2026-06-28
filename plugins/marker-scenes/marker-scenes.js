@@ -825,6 +825,9 @@ if (window._markerScenesLoaded) {
             a.textContent = "Virtual Scenes";
             a.addEventListener("click", (e) => {
               e.preventDefault();
+              // Deactivate the currently active Bootstrap tab
+              const activeTab = document.querySelector(".scene-tabs .nav-link.active");
+              if (activeTab) activeTab.click();
               setActive(true);
             });
             li.appendChild(a);

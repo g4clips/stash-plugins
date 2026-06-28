@@ -32,13 +32,13 @@
 
     // Ctrl+Shift+Right = +1 second
     // Ctrl+Shift+Left  = -1 second
-    if (e.ctrlKey && e.shiftKey && !e.altKey) {
-      if (e.key === "ArrowRight") {
+    if (!e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey) {
+      if (e.key === "x" || e.key === "X") {
         e.preventDefault();
         e.stopPropagation();
         seek(1);
         console.log(`[${PLUGIN_ID}] Seeked +1s`);
-      } else if (e.key === "ArrowLeft") {
+      } else if (e.key === "z" || e.key === "Z") {
         e.preventDefault();
         e.stopPropagation();
         seek(-1);
@@ -47,6 +47,6 @@
     }
   }, true); // useCapture=true so we intercept before Video.js
 
-  console.log(`[${PLUGIN_ID}] Loaded — Ctrl+Shift+Left/Right for 1-second seeking.`);
+  console.log(`[${PLUGIN_ID}] Loaded — Z = back 1s, X = forward 1s.`);
 
 })();

@@ -1,6 +1,6 @@
 name: Seek Controls
-description: Adds 1-second seeking to the Stash video player using Ctrl+Left/Right arrow keys.
-version: 1.0.0
+description: Adds 1-second seeking to the Stash video player. Z = back 1s, X = forward 1s.
+version: 1.0.1
 url: ""
 
 ui:

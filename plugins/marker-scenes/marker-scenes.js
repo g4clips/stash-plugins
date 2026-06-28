@@ -161,81 +161,112 @@ if (window._markerScenesLoaded) {
     const nextSceneNum = state.scenes.length + 1;
     const currentTime = getCurrentTimestamp();
 
-    const overlay = document.createElement("div");
-    overlay.id = "ms-modal-overlay";
-    overlay.style.cssText = `
-      position: fixed; inset: 0; background: rgba(0,0,0,0.55);
-      display: flex; align-items: center; justify-content: center;
+    const panel = document.createElement("div");
+    panel.id = "ms-modal-overlay";
+    panel.style.cssText = `
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      width: 380px;
       z-index: 9999;
+      background: #1a1a1a;
+      border: 1px solid #444;
+      border-radius: 8px;
+      color: #eee;
+      font-family: sans-serif;
+      font-size: 14px;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.6);
     `;
 
     const scenesHtml = state.scenes.length === 0
-      ? `<p style="font-size:13px;color:var(--text-muted);margin:0;">No scenes created yet.</p>`
+      ? `<p style="color:#888;margin:0;font-size:13px;">No scenes created yet.</p>`
       : state.scenes.map(s => `
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;background:var(--surface-1);border-radius:var(--radius);border:0.5px solid var(--border);">
-            <span style="font-size:13px;color:var(--text-primary);">Scene ${s.index}</span>
-            <span style="font-size:12px;color:var(--text-muted);font-family:var(--font-mono);">${formatTime(s.start)} → ${s.end !== null ? formatTime(s.end) : "?"}</span>
+          <div style="display:flex;justify-content:space-between;padding:6px 8px;background:#2a2a2a;border-radius:4px;margin-bottom:4px;">
+            <span>Scene ${s.index}</span>
+            <span style="color:#aaa;font-family:monospace;">${formatTime(s.start)} → ${s.end !== null ? formatTime(s.end) : "?"}</span>
           </div>
         `).join("");
 
-    overlay.innerHTML = `
-      <div style="background:var(--surface-2);border-radius:12px;border:0.5px solid var(--border);width:480px;max-width:calc(100vw - 2rem);overflow:hidden;">
+    panel.innerHTML = `
+      <div style="padding:10px 14px;border-bottom:1px solid #444;display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <div style="font-weight:500;">Create virtual scene</div>
+          <div style="font-size:12px;color:#aaa;">${groupName}</div>
+        </div>
+        <button id="ms-close" style="background:none;border:none;color:#aaa;font-size:18px;cursor:pointer;padding:4px;">✕</button>
+      </div>
 
-        <div style="padding:1.25rem 1.5rem;border-bottom:0.5px solid var(--border);display:flex;align-items:center;justify-content:space-between;">
+      <div style="padding:12px 14px;">
+
+        <div style="display:flex;justify-content:space-between;background:#2a2a2a;border-radius:6px;padding:10px;margin-bottom:12px;">
           <div>
-            <p style="margin:0;font-size:15px;font-weight:500;color:var(--text-primary);">Create virtual scene</p>
-            <p style="margin:0;font-size:13px;color:var(--text-muted);">${groupName}</p>
+            <div style="font-size:11px;color:#888;margin-bottom:2px;">Current timestamp</div>
+            <div style="font-size:20px;font-weight:500;font-family:monospace;">${formatTime(currentTime)}</div>
           </div>
-          <button id="ms-close" style="background:none;border:none;cursor:pointer;color:var(--text-muted);font-size:20px;padding:4px;">
-            <i class="ti ti-x" aria-hidden="true"></i>
+          <div style="text-align:right;">
+            <div style="font-size:11px;color:#888;margin-bottom:2px;">Scene to create</div>
+            <div style="font-size:20px;font-weight:500;color:#5b9bd5;">Scene ${nextSceneNum}</div>
+          </div>
+        </div>
+
+        <div style="margin-bottom:12px;">
+          <div style="font-size:12px;color:#aaa;margin-bottom:6px;font-weight:500;">Scenes created so far</div>
+          <div id="ms-scenes-list">${scenesHtml}</div>
+        </div>
+
+        <div style="background:#1e3a52;border:1px solid #2d6a9f;border-radius:4px;padding:8px 10px;margin-bottom:12px;font-size:13px;color:#7ab3e0;">
+          Scrub to the start of scene ${nextSceneNum}, then click "Create scene ${nextSceneNum}".
+        </div>
+
+        <div id="ms-error" style="display:none;background:#3a1a1a;border:1px solid #7a2a2a;border-radius:4px;padding:8px 10px;margin-bottom:12px;font-size:13px;color:#e07a7a;"></div>
+
+        <div style="display:flex;gap:8px;">
+          <button id="ms-last" class="btn btn-secondary" style="flex:1;font-size:13px;">
+            🏁 Last scene
+          </button>
+          <button id="ms-create" class="btn btn-primary" style="flex:1;font-size:13px;">
+            + Create scene ${nextSceneNum}
           </button>
         </div>
 
-        <div style="padding:1.25rem 1.5rem;">
-
-          <div style="background:var(--surface-1);border-radius:var(--radius);border:0.5px solid var(--border);padding:1rem;margin-bottom:1.25rem;display:flex;align-items:center;justify-content:space-between;">
-            <div>
-              <p style="margin:0 0 2px;font-size:12px;color:var(--text-muted);">Current timestamp</p>
-              <p style="margin:0;font-size:22px;font-weight:500;color:var(--text-primary);font-family:var(--font-mono);">${formatTime(currentTime)}</p>
-            </div>
-            <div style="text-align:right;">
-              <p style="margin:0 0 2px;font-size:12px;color:var(--text-muted);">Scene to create</p>
-              <p style="margin:0;font-size:22px;font-weight:500;color:var(--text-accent);">Scene ${nextSceneNum}</p>
-            </div>
-          </div>
-
-          <div style="margin-bottom:1.25rem;">
-            <p style="margin:0 0 6px;font-size:13px;color:var(--text-secondary);font-weight:500;">Scenes created so far</p>
-            <div style="display:flex;flex-direction:column;gap:6px;">
-              ${scenesHtml}
-            </div>
-          </div>
-
-          <div style="background:var(--bg-accent);border:0.5px solid var(--border-accent);border-radius:var(--radius);padding:10px 12px;margin-bottom:1.25rem;display:flex;align-items:center;gap:8px;">
-            <i class="ti ti-info-circle" style="font-size:16px;color:var(--text-accent);" aria-hidden="true"></i>
-            <p style="margin:0;font-size:13px;color:var(--text-accent);">Scrub to the start of scene ${nextSceneNum}, then click "Create scene ${nextSceneNum}".</p>
-          </div>
-
-          <div id="ms-error" style="display:none;background:var(--bg-danger);border:0.5px solid var(--border-danger);border-radius:var(--radius);padding:10px 12px;margin-bottom:1.25rem;">
-            <p style="margin:0;font-size:13px;color:var(--text-danger);"></p>
-          </div>
-
-          <div style="display:flex;gap:8px;">
-            <button id="ms-last" style="flex:1;padding:10px;font-size:14px;border-radius:var(--radius);border:0.5px solid var(--border-strong);background:var(--surface-1);color:var(--text-primary);cursor:pointer;">
-              <i class="ti ti-flag" style="font-size:15px;vertical-align:-2px;margin-right:6px;" aria-hidden="true"></i>
-              This is the last scene
-            </button>
-            <button id="ms-create" style="flex:1;padding:10px;font-size:14px;border-radius:var(--radius);border:0.5px solid var(--border-accent);background:var(--bg-accent);color:var(--text-accent);cursor:pointer;font-weight:500;">
-              <i class="ti ti-plus" style="font-size:15px;vertical-align:-2px;margin-right:6px;" aria-hidden="true"></i>
-              Create scene ${nextSceneNum}
-            </button>
-          </div>
-
-        </div>
       </div>
     `;
 
-    document.body.appendChild(overlay);
+    document.body.appendChild(panel);
+
+    // Make panel draggable by its header
+    const header = panel.querySelector("div");
+    let isDragging = false;
+    let dragStartX, dragStartY, panelStartX, panelStartY;
+
+    header.style.cursor = "grab";
+
+    header.addEventListener("mousedown", (e) => {
+      if (e.target.id === "ms-close") return;
+      isDragging = true;
+      dragStartX = e.clientX;
+      dragStartY = e.clientY;
+      const rect = panel.getBoundingClientRect();
+      panelStartX = rect.left;
+      panelStartY = rect.top;
+      header.style.cursor = "grabbing";
+      e.preventDefault();
+    });
+
+    document.addEventListener("mousemove", (e) => {
+      if (!isDragging) return;
+      const dx = e.clientX - dragStartX;
+      const dy = e.clientY - dragStartY;
+      panel.style.left = (panelStartX + dx) + "px";
+      panel.style.top = (panelStartY + dy) + "px";
+      panel.style.bottom = "auto";
+      panel.style.right = "auto";
+    });
+
+    document.addEventListener("mouseup", () => {
+      isDragging = false;
+      header.style.cursor = "grab";
+    });
 
     document.getElementById("ms-close").addEventListener("click", () => {
       modalState = null;
@@ -249,13 +280,8 @@ if (window._markerScenesLoaded) {
   function showModalError(message) {
     const errorDiv = document.getElementById("ms-error");
     if (!errorDiv) return;
-    errorDiv.style.display = "flex";
-    errorDiv.style.alignItems = "center";
-    errorDiv.style.gap = "8px";
-    errorDiv.innerHTML = `
-      <i class="ti ti-alert-circle" style="font-size:16px;color:var(--text-danger);flex-shrink:0;" aria-hidden="true"></i>
-      <p style="margin:0;font-size:13px;color:var(--text-danger);">${message}</p>
-    `;
+    errorDiv.style.display = "block";
+    errorDiv.textContent = message;
   }
 
   function setModalBusy(busy) {

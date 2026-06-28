@@ -171,7 +171,13 @@
     if (fieldChecks.date    && match.date)     input.date        = match.date;
     if (fieldChecks.details && match.details)  input.details     = match.details;
     if (fieldChecks.image   && match.image)    input.cover_image = match.image;
-    if (fieldChecks.urls    && match.urls?.length) input.urls    = match.urls;
+    if (fieldChecks.urls && match.urls?.length) {
+      const existingUrls = current.urls || [];
+      const newUrls = match.urls.filter(u => !existingUrls.includes(u));
+      if (newUrls.length) {
+        input.urls = [...existingUrls, ...newUrls];
+      }
+    }
 
     if (fieldChecks.studio && studioMatch?.found) {
       input.studio_id = studioMatch.localId;
@@ -932,7 +938,7 @@
       ["details", "Description", current.details,                match.details],
       ["studio",  "Studio",      current.studio?.name,
         studioMatch ? `${esc(studioMatch.name)} ${matchBadge(studioMatch.found)}` : null],
-      ["urls",    "URLs",        (current.urls||[]).join(", "),  (match.urls||[]).join(", ")],
+      ["urls",    "URLs (will merge)", (current.urls||[]).join(", "),  (match.urls||[]).join(", ")],
       ["image",   "Cover Image", current.paths?.screenshot ? "Current image" : "—",
         match.image ? "StashDB image" : null],
       ["stash_id", "StashDB ID", existingStashId || "—",

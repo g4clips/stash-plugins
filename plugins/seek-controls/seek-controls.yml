@@ -1,0 +1,8 @@
+name: Seek Controls
+description: Adds 1-second seeking to the Stash video player using Ctrl+Left/Right arrow keys.
+version: 1.0.0
+url: ""
+
+ui:
+  javascript:
+    - seek-controls.js

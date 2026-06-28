@@ -92,16 +92,21 @@ if (window._markerScenesLoaded) {
     if (!isScenePage()) return;
     if (!window.location.search.includes("t=")) return;
 
-    console.log(`[${PLUGIN_ID}] Landed on timestamped scene, attempting auto-play...`);
+    console.log(`[${PLUGIN_ID}] Landed on timestamped scene, attempting load and play...`);
 
     const tryPlay = () => {
-      const video = document.querySelector("video.vjs-tech");
-      if (!video) return false;
-      video.play().then(() => {
-        console.log(`[${PLUGIN_ID}] Auto-play succeeded.`);
-      }).catch(err => {
-        console.log(`[${PLUGIN_ID}] Auto-play blocked by browser: ${err.message}`);
-      });
+      const player = document.querySelector("video-js")?.player;
+      if (!player) return false;
+
+      player.load();
+      setTimeout(() => {
+        player.play().then(() => {
+          console.log(`[${PLUGIN_ID}] Auto-play succeeded.`);
+        }).catch(err => {
+          console.log(`[${PLUGIN_ID}] Auto-play blocked: ${err.message}`);
+        });
+      }, 2000);
+
       return true;
     };
 

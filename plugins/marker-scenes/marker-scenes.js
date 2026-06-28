@@ -27,6 +27,28 @@ if (window._markerScenesLoaded) {
     return data.data;
   }
 
+  // Get React Router's history object from the fiber tree
+  function getReactHistory() {
+    const root = document.querySelector('#root');
+    if (!root) return null;
+    const fiber = root._reactRootContainer?._internalRoot?.current;
+    if (!fiber) return null;
+
+    let history = null;
+    const walk = (node, depth = 0) => {
+      if (!node || depth > 100 || history) return;
+      try {
+        if (node.memoizedProps?.history?.replace && typeof node.memoizedProps.history.replace === 'function') {
+          history = node.memoizedProps.history;
+        }
+      } catch(e) {}
+      walk(node.child, depth + 1);
+      walk(node.sibling, depth + 1);
+    };
+    walk(fiber);
+    return history;
+  }
+
   const FIND_SCENE = `
     query FindScene($id: ID!) {
       findScene(id: $id) {
@@ -84,13 +106,35 @@ if (window._markerScenesLoaded) {
 
     const target = new URL(markerUrl);
     const redirect = target.pathname + target.search;
-    console.log(`[${PLUGIN_ID}] Virtual scene detected, navigating to ${redirect}`);
-    const a = document.createElement("a");
-    a.href = redirect;
-    a.style.display = "none";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
+
+    const tryAttach = () => {
+      const player = document.querySelector(".VideoPlayer.no-file");
+      if (!player) return false;
+
+      player.style.cursor = "pointer";
+      player.title = "Click to play original scene at marker timestamp";
+      player.addEventListener("click", () => {
+        console.log(`[${PLUGIN_ID}] Player clicked, navigating to ${redirect}`);
+        const history = getReactHistory();
+        if (history) {
+          console.log(`[${PLUGIN_ID}] Using React Router history.replace`);
+          history.replace(redirect);
+        } else {
+          console.log(`[${PLUGIN_ID}] Falling back to window.location.replace`);
+          window.location.replace(redirect);
+        }
+      }, { once: true });
+
+      return true;
+    };
+
+    if (!tryAttach()) {
+      const deadline = Date.now() + 10000;
+      const obs = new MutationObserver(() => {
+        if (tryAttach() || Date.now() > deadline) obs.disconnect();
+      });
+      obs.observe(document.body, { childList: true, subtree: true });
+    }
   }
 
   async function createMarkerScenes(scene) {

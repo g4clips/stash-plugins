@@ -825,9 +825,16 @@ if (window._markerScenesLoaded) {
             a.textContent = "Virtual Scenes";
             a.addEventListener("click", (e) => {
               e.preventDefault();
-              // Deactivate the currently active Bootstrap tab
+              // Remove active class from current Bootstrap tab and its pane
               const activeTab = document.querySelector(".scene-tabs .nav-link.active");
-              if (activeTab) activeTab.click();
+              if (activeTab) {
+                activeTab.classList.remove("active");
+                const paneKey = activeTab.dataset.rbEventKey;
+                if (paneKey) {
+                  const activePane = document.querySelector(`.tab-pane[data-rb-event-key="${paneKey}"], #${paneKey}`);
+                  if (activePane) activePane.classList.remove("active", "show");
+                }
+              }
               setActive(true);
             });
             li.appendChild(a);

@@ -1,0 +1,11 @@
+name: TagChips
+description: Click-to-toggle tag chips and preset tag groups, in a Scene page tab
+version: "0.1.0"
+
+interface: raw
+
+ui:
+  javascript:
+    - TagChips.js
+  css:
+    - TagChips.css

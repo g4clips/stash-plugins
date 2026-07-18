@@ -119,6 +119,15 @@
   color: #eee;
   padding: .3rem .5rem;
 }
+.tc-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  font-size: .8rem;
+  color: #ccc;
+  cursor: pointer;
+  width: fit-content;
+}
 
 /* --- Categorized scene-tab tag grid: fixed-size chips, clean columns --- */
 .tc-cat-section {
@@ -133,6 +142,21 @@
   letter-spacing: .04em;
   color: #bbb;
 }
+.tc-cat-heading-clickable {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  user-select: none;
+}
+.tc-cat-heading-clickable:hover { color: #ddd; }
+.tc-cat-triangle {
+  display: inline-block;
+  margin-right: .35rem;
+  font-size: .6rem;
+  color: #888;
+  transition: transform .12s ease;
+}
+.tc-cat-triangle-expanded { transform: rotate(90deg); }
 .tc-cat-divider {
   margin: 0 0 .3rem;
   border: none;

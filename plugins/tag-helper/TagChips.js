@@ -51,9 +51,11 @@
   async function readConfig() {
     const data = await gql(`{ configuration { plugins } }`);
     const cfg = (data.configuration.plugins || {})[PLUGIN_ID] || {};
+    const categories = Array.isArray(cfg.categories) ? cfg.categories : [];
     return {
       groups: Array.isArray(cfg.groups) ? cfg.groups : [],
-      categories: Array.isArray(cfg.categories) ? cfg.categories : [],
+      // defaultCollapsed defaults to false for categories saved before this field existed
+      categories: categories.map((c) => ({ defaultCollapsed: false, ...c })),
     };
   }
 
@@ -124,18 +126,19 @@
     );
   }
 
-  async function saveCategory({ id, label, tagIds }) {
+  async function saveCategory({ id, label, tagIds, defaultCollapsed }) {
     const current = await readConfig();
+    const dc = !!defaultCollapsed;
     let categories;
     if (id) {
       categories = stripFromOtherCategories(current.categories, id, tagIds).map((c) =>
-        c.id === id ? { ...c, label: label.trim(), tagIds } : c
+        c.id === id ? { ...c, label: label.trim(), tagIds, defaultCollapsed: dc } : c
       );
     } else {
       const newId = genId("cat");
       categories = [
         ...stripFromOtherCategories(current.categories, newId, tagIds),
-        { id: newId, label: label.trim(), tagIds },
+        { id: newId, label: label.trim(), tagIds, defaultCollapsed: dc },
       ];
     }
     return writeConfig({ categories });
@@ -172,7 +175,7 @@
       const catTags = cat.tagIds.map((id) => tagById.get(id)).filter(Boolean);
       catTags.forEach((t) => usedIds.add(t.id));
       catTags.sort((a, b) => (b.scene_count || 0) - (a.scene_count || 0));
-      return { id: cat.id, label: cat.label, tags: catTags };
+      return { id: cat.id, label: cat.label, tags: catTags, defaultCollapsed: !!cat.defaultCollapsed };
     });
     const uncategorized = tags.filter((t) => !usedIds.has(t.id));
     uncategorized.sort((a, b) => (b.scene_count || 0) - (a.scene_count || 0));
@@ -205,6 +208,22 @@
   // fixed-size chips via CSS grid (see .tc-tag-grid in TagChips.css).
   // ---------------------------------------------------------------------
   function CategorizedTagGrid({ sections, sceneTagIds, pendingIds, errorIds, onToggle }) {
+    // Collapse state is local to this render of the panel: seeded once from
+    // each category's stored defaultCollapsed, never written back to config.
+    // Reopening the tab / revisiting the scene always re-derives from the
+    // stored defaults, not from whatever the user last clicked.
+    const [collapsedIds, setCollapsedIds] = React.useState(
+      () => new Set(sections.filter((s) => s.id !== "__uncategorized" && s.defaultCollapsed).map((s) => s.id))
+    );
+
+    function toggleCollapsed(id) {
+      setCollapsedIds((prev) => {
+        const next = new Set(prev);
+        next.has(id) ? next.delete(id) : next.add(id);
+        return next;
+      });
+    }
+
     const nonEmpty = sections.filter((s) => s.tags.length > 0);
     if (nonEmpty.length === 0) {
       return h("span", { style: { color: "#888", fontSize: ".8rem" } }, "No tags match.");
@@ -212,26 +231,49 @@
     return h(
       React.Fragment,
       null,
-      nonEmpty.map((s) =>
-        h("div", { key: s.id, className: "tc-cat-section" }, [
-          h("div", { key: "hd", className: "tc-cat-heading" }, s.label),
-          h("hr", { key: "hr", className: "tc-cat-divider" }),
+      nonEmpty.map((s) => {
+        const collapsible = s.id !== "__uncategorized";
+        const collapsed = collapsible && collapsedIds.has(s.id);
+        return h("div", { key: s.id, className: "tc-cat-section" }, [
           h(
             "div",
-            { key: "grid", className: "tc-tag-grid" },
-            s.tags.map((t) =>
-              h(Chip, {
-                key: t.id,
-                label: t.name,
-                active: sceneTagIds.has(t.id),
-                pending: pendingIds.has(t.id),
-                error: errorIds.has(t.id),
-                onClick: () => onToggle(t.id),
-              })
-            )
+            {
+              key: "hd",
+              className: "tc-cat-heading" + (collapsible ? " tc-cat-heading-clickable" : ""),
+              onClick: collapsible ? () => toggleCollapsed(s.id) : undefined,
+            },
+            collapsible
+              ? [
+                  h(
+                    "span",
+                    {
+                      key: "tri",
+                      className: "tc-cat-triangle" + (collapsed ? "" : " tc-cat-triangle-expanded"),
+                    },
+                    "▶"
+                  ),
+                  s.label,
+                ]
+              : s.label
           ),
-        ])
-      )
+          h("hr", { key: "hr", className: "tc-cat-divider" }),
+          !collapsed &&
+            h(
+              "div",
+              { key: "grid", className: "tc-tag-grid" },
+              s.tags.map((t) =>
+                h(Chip, {
+                  key: t.id,
+                  label: t.name,
+                  active: sceneTagIds.has(t.id),
+                  pending: pendingIds.has(t.id),
+                  error: errorIds.has(t.id),
+                  onClick: () => onToggle(t.id),
+                })
+              )
+            ),
+        ]);
+      })
     );
   }
 
@@ -243,6 +285,7 @@
   function CategoryOrGroupEditor({ allTags, item, noun, onCancel, onPersist, onSaved, onDelete, onDeleted }) {
     const [label, setLabel] = React.useState(item ? item.label : "");
     const [selectedIds, setSelectedIds] = React.useState(new Set(item ? item.selectedIds : []));
+    const [defaultCollapsed, setDefaultCollapsed] = React.useState(item ? !!item.defaultCollapsed : false);
     const [busy, setBusy] = React.useState(false);
     const [error, setError] = React.useState("");
 
@@ -262,7 +305,12 @@
       setBusy(true);
       setError("");
       try {
-        await onPersist({ id: item ? item.id : null, label: label.trim(), tagIds: Array.from(selectedIds) });
+        await onPersist({
+          id: item ? item.id : null,
+          label: label.trim(),
+          tagIds: Array.from(selectedIds),
+          defaultCollapsed,
+        });
         onSaved();
       } catch (e) {
         setError(e.message);
@@ -310,6 +358,16 @@
           "Cancel"
         ),
       ]),
+      noun === "Category" &&
+        h("label", { className: "tc-checkbox-row" }, [
+          h("input", {
+            key: "cb",
+            type: "checkbox",
+            checked: defaultCollapsed,
+            onChange: (e) => setDefaultCollapsed(e.target.checked),
+          }),
+          " Start collapsed",
+        ]),
       error && h("div", { className: "tc-error-bar" }, error),
       h("div", { className: "tc-section-label" }, "Tags"),
       h(
@@ -349,7 +407,9 @@
     }
 
     if (editing !== undefined) {
-      const item = editing ? { id: editing.id, label: editing.label, selectedIds: editing.tagIds } : null;
+      const item = editing
+        ? { id: editing.id, label: editing.label, selectedIds: editing.tagIds, defaultCollapsed: editing.defaultCollapsed }
+        : null;
       return h(CategoryOrGroupEditor, {
         allTags,
         item,

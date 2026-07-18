@@ -369,19 +369,35 @@
           " Start collapsed",
         ]),
       error && h("div", { className: "tc-error-bar" }, error),
-      h("div", { className: "tc-section-label" }, "Tags"),
-      h(
-        "div",
-        { className: "tc-grid" },
-        allTags.map((t) =>
-          h(Chip, {
-            key: t.id,
-            label: t.name,
-            active: selectedIds.has(t.id),
-            onClick: () => toggle(t.id),
-          })
-        )
-      )
+      (() => {
+        const availableTags = allTags.filter((t) => !selectedIds.has(t.id));
+        const usedTags = allTags.filter((t) => selectedIds.has(t.id));
+        return h(React.Fragment, null, [
+          availableTags.length > 0 &&
+            h(React.Fragment, { key: "available" }, [
+              h("div", { key: "hd", className: "tc-section-label" }, "Available"),
+              h(
+                "div",
+                { key: "grid", className: "tc-grid" },
+                availableTags.map((t) =>
+                  h(Chip, { key: t.id, label: t.name, active: false, onClick: () => toggle(t.id) })
+                )
+              ),
+            ]),
+          usedTags.length > 0 &&
+            h(React.Fragment, { key: "used" }, [
+              h("hr", { key: "hr", className: "tc-cat-divider" }),
+              h("div", { key: "hd", className: "tc-section-label" }, "Used Tags"),
+              h(
+                "div",
+                { key: "grid", className: "tc-grid" },
+                usedTags.map((t) =>
+                  h(Chip, { key: t.id, label: t.name, active: true, onClick: () => toggle(t.id) })
+                )
+              ),
+            ]),
+        ]);
+      })()
     );
   }
 

@@ -10,6 +10,18 @@
   color: #eee;
 }
 
+/* Header region above the categorized grid (filter/Manage Tags row +
+   Groups) — tighter than the panel's default gap so less scroll is
+   needed before reaching actual chips. */
+.tc-panel-top {
+  display: flex;
+  flex-direction: column;
+  gap: .35rem;
+}
+.tc-panel-top .tc-section-label {
+  margin: .1rem 0 .1rem;
+}
+
 .tc-search {
   background: #12121a;
   border: 1px solid #3a3a4a;

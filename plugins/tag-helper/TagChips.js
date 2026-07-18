@@ -641,40 +641,41 @@
     const sections = buildCategorizedSections(filteredTags, config.categories);
 
     return h("div", { className: "tc-panel" }, [
-      h("div", { key: "hdr", className: "tc-editor-row" }, [
-        h("span", { key: "spacer", style: { flex: 1 } }),
+      h("div", { key: "top", className: "tc-panel-top" }, [
+        h("div", { key: "hdr", className: "tc-editor-row" }, [
+          h("input", {
+            key: "search",
+            className: "tc-search",
+            style: { flex: 1 },
+            placeholder: "Filter tags…",
+            value: search,
+            onChange: (e) => setSearch(e.target.value),
+          }),
+          h(
+            "button",
+            { key: "manage", className: "btn btn-secondary btn-sm", onClick: () => setModalOpen(true) },
+            "Manage Tags"
+          ),
+        ]),
+        error && h("div", { key: "err", className: "tc-error-bar" }, error),
+
+        h("div", { key: "gh", className: "tc-section-label" }, "Groups"),
         h(
-          "button",
-          { key: "manage", className: "btn btn-secondary btn-sm", onClick: () => setModalOpen(true) },
-          "Manage Tags"
+          "div",
+          { key: "gg", className: "tc-grid" },
+          config.groups.length === 0
+            ? h("span", { style: { color: "#888", fontSize: ".8rem" } }, "No groups yet.")
+            : config.groups.map((g) =>
+                h(Chip, {
+                  key: g.id,
+                  label: g.label,
+                  variant: "group",
+                  onClick: () => applyGroup(g),
+                })
+              )
         ),
       ]),
-      error && h("div", { key: "err", className: "tc-error-bar" }, error),
 
-      h("div", { key: "gh", className: "tc-section-label" }, "Groups"),
-      h(
-        "div",
-        { key: "gg", className: "tc-grid" },
-        config.groups.length === 0
-          ? h("span", { style: { color: "#888", fontSize: ".8rem" } }, "No groups yet.")
-          : config.groups.map((g) =>
-              h(Chip, {
-                key: g.id,
-                label: g.label,
-                variant: "group",
-                onClick: () => applyGroup(g),
-              })
-            )
-      ),
-
-      h("div", { key: "th", className: "tc-section-label" }, "Tags"),
-      h("input", {
-        key: "search",
-        className: "tc-search",
-        placeholder: "Filter tags…",
-        value: search,
-        onChange: (e) => setSearch(e.target.value),
-      }),
       h(CategorizedTagGrid, {
         key: "catgrid",
         sections,

@@ -1,0 +1,33 @@
+name: "Auto-Submit & Approve"
+description: Submits a scene to a configured destination stash-box as a draft edit and immediately applies (auto-approves) it.
+version: "1.0.0"
+url: ""
+
+exec:
+  - python
+  - "{pluginDir}/SubmitToMyStashBox.py"
+interface: raw
+
+ui:
+  javascript:
+    - SubmitToMyStashBox.js
+  css:
+    - SubmitToMyStashBox.css
+
+settings:
+  destUrl:
+    displayName: Destination Stash-Box URL
+    description: GraphQL endpoint of the destination stash-box (e.g. http://your-stash-host-ip:9998/graphql).
+    type: STRING
+  destApiKey:
+    displayName: Destination Stash-Box API Key
+    description: API key for the destination stash-box instance.
+    type: STRING
+  destSiteId:
+    displayName: Destination Site ID
+    description: Site ID (UUID) on the destination stash-box that submitted scene URLs are attributed to.
+    type: STRING
+
+tasks:
+  - name: "Submit Scene"
+    description: Submits and auto-approves a single scene to the configured destination stash-box.

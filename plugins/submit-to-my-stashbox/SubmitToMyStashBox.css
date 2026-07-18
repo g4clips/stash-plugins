@@ -1,0 +1,39 @@
+/* Plain-DOM modal skeleton mirroring Data18StashDB.css's tokens under new
+   ids — this plugin has no React/patch access so it can't reuse TagChips'
+   React-rendered .tc-modal-* skeleton. */
+
+#stmsb-modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.65);
+  z-index: 9999;
+}
+#stmsb-box {
+  background: #1e1e2e;
+  border: 1px solid #444;
+  border-radius: 8px;
+  width: 420px; max-width: calc(100vw - 2rem);
+  display: flex; flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0,0,0,.6);
+  overflow: hidden;
+  position: fixed;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  color: #eee;
+}
+#stmsb-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: .75rem 1rem;
+  border-bottom: 1px solid #333;
+  font-weight: 600; font-size: 1rem;
+  background: #16161e;
+}
+#stmsb-close {
+  background: none; border: none; color: #aaa;
+  font-size: 1.1rem; cursor: pointer; padding: .1rem .4rem;
+  border-radius: 4px;
+}
+#stmsb-close:hover { background: #333; color: #fff; }
+#stmsb-body { padding: 1rem; font-size: .9rem; }
+.stmsb-status  { color: #aaa; font-style: italic; margin: 0; }
+.stmsb-success { color: #9fe0b8; margin: 0; }
+.stmsb-error   { color: #f8a0a8; margin: 0; }

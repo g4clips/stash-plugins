@@ -16,17 +16,30 @@ into a dev instance and iterate from real errors, not just review the diff.
 - **Placement:** new tab on the Scene page via `PluginApi.patch.after`
   (`ScenePage.Tabs` + `ScenePage.TabContent`), *not* a floating modal —
   the user wants to keep interacting with the video player while tagging,
-  and a modal would sit on top of / block it.
+  and a modal would sit on top of / block it. (The "Manage Tags" editor
+  *is* a modal, since it's an occasional CRUD operation, not the primary
+  tagging flow.)
 - **Apply mode:** real-time. Each chip click fires a `sceneUpdate` mutation
   immediately (optimistic UI, revert + red flash on failure). No queue/apply
   step.
-- **Groups (presets):** Stash has no native "tag group" concept, so a group
-  is stored as an ordinary tag named `zzz-group:<Group Name>` whose
-  `description` field holds `{"memberTagIds": ["12","47", ...]}`. The
-  `zzz-` prefix keeps them out of the way in normal tag pickers, mirroring
-  the `zzz-virtual` marker-tag convention from the marker-scenes plugin.
-  Clicking a group chip adds all its member tags to the scene (adds only —
-  never removes tags on group-apply, to keep it non-destructive).
+- **Groups and categories are stored in Stash's plugin config store**, at
+  `configuration.plugins.TagChips`, via the `configurePlugin(plugin_id,
+  input: Map!)` mutation. Confirmed empirically (twice, against a live
+  v0.31.1 instance) that this store accepts arbitrary undeclared JSON keys,
+  round-trips nested structures losslessly, and survives `reloadPlugins`.
+  The one gotcha: `configurePlugin` *replaces* the whole per-plugin config
+  rather than merging, so all reads/writes go through the `readConfig()` /
+  `writeConfig(patch)` helpers in TagChips.js, which do a read-modify-write.
+  No other code should call `configurePlugin` directly.
+  - `groups`: `[{ id, label, memberTagIds }]`. Clicking a group chip adds
+    all its member tags to the scene (adds only — never removes tags on
+    group-apply, to keep it non-destructive).
+  - `categories`: `[{ id, label, tagIds }]`. Array order = display order.
+    A tag belongs to at most one category; "Uncategorized" is not stored,
+    it's computed at render time as whatever isn't claimed by any category.
+  - Earlier versions stored groups as fake tags named `zzz-group:<name>`.
+    That scheme is retired — no migration was done, so any such tags left
+    over in a library are now just ordinary (harmless) tags.
 - **No Python backend needed.** All operations are local GraphQL mutations
   reachable directly from the browser plugin — same-origin, no CORS issue.
 

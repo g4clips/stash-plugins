@@ -52,6 +52,10 @@ def log(msg):
     print(f"time='' level=info msg='[Data18StashDB] {msg}'", flush=True)
 
 
+# ── Plugin settings (populated in main() from Stash's own config) ─────────
+settings = {}
+
+
 # ── Sessions ───────────────────────────────────────────────────────────────────
 
 def data18_session():
@@ -64,6 +68,12 @@ def data18_session():
     })
     s.cookies.set("data_user_captcha", "1", domain=".data18.com", path="/")
     s.verify = False
+
+    proxy_url = settings.get("proxyUrl", "").strip()
+    if proxy_url:
+        s.proxies = {"http": proxy_url, "https": proxy_url}
+        log(f"Using outbound proxy: {proxy_url}")
+
     return s
 
 
@@ -511,6 +521,13 @@ def main():
     mode = args.get("mode", "")
     url  = args.get("url", "").strip()
     stash_url, api_key = get_stash_connection(plugin_input)
+
+    global settings
+    try:
+        cfg = local_gql(stash_url, api_key, "{ configuration { plugins } }")
+        settings = (cfg["configuration"]["plugins"] or {}).get("Data18StashDB", {})
+    except Exception as e:
+        log(f"Could not read plugin settings: {e}")
 
     try:
         if mode == "scrape_movie":

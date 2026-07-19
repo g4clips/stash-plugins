@@ -1,6 +1,6 @@
 name: Data18StashDB
 description: Scrape Data18 and match against StashDB. Adds a Data18 button to scene pages.
-version: "3.1.1"
+version: "3.2.0"
 
 exec:
   - python
@@ -13,6 +13,15 @@ ui:
     - Data18StashDB_v2.js
   css:
     - Data18StashDB.css
+
+settings:
+  proxyUrl:
+    displayName: Outbound Proxy URL (optional)
+    description: >
+      HTTP/HTTPS proxy for outbound scraping requests, e.g.
+      http://your-stash-host-ip:8888. Leave blank to scrape directly with no
+      proxy. Useful when the target site geo-blocks this server's IP.
+    type: STRING
 
 tasks:
   - name: Scrape Data18 Movie

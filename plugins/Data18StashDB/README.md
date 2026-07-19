@@ -46,6 +46,12 @@ url = https://stashdb.org/graphql
 
 Get your API key from [stashdb.org](https://stashdb.org) → Profile → API Key.
 
+### Outbound proxy (optional)
+
+In Stash go to **Settings → Plugins → Data18StashDB** and set **Outbound Proxy URL** if the target site geo-blocks this server's IP (e.g. routing through a VPN sidecar). Leave it blank for normal direct scraping.
+
+Use an **HTTP/HTTPS proxy URL**, e.g. `http://your-stash-host-ip:8888` — not SOCKS. Gluetun's "SOCKS5" is actually Shadowsocks and isn't compatible with plain `requests`/PySocks, so a plain HTTP proxy is the correct choice here.
+
 ## Usage
 
 1. Open any scene in Stash

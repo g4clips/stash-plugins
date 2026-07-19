@@ -1,0 +1,302 @@
+/* IWantClipsStashDB Plugin — modal skeleton, buttons, cards, and
+   comparison-table styles mirror Data18StashDB.css's tokens under new
+   #iwc-*/.iwc-* ids/classes (no cross-plugin CSS dependency). */
+
+/* ── Modal overlay ───────────────────────────────────────────── */
+#iwc-modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.65);
+  z-index: 9999;
+}
+
+#iwc-box {
+  background: #1e1e2e;
+  border: 1px solid #444;
+  border-radius: 8px;
+  width: 640px; max-width: calc(100vw - 2rem);
+  height: 90vh;
+  max-height: 90vh;
+  display: flex; flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0,0,0,.6);
+  overflow: hidden;
+  position: fixed;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+}
+
+#iwc-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: .75rem 1rem;
+  border-bottom: 1px solid #333;
+  font-weight: 600; font-size: 1rem;
+  background: #16161e;
+  cursor: grab;
+  user-select: none;
+}
+
+#iwc-close {
+  background: none; border: none; color: #aaa;
+  font-size: 1.1rem; cursor: pointer; padding: .1rem .4rem;
+  border-radius: 4px;
+}
+#iwc-close:hover { background: #333; color: #fff; }
+
+#iwc-tabs {
+  display: flex; gap: .25rem;
+  padding: .5rem 1rem 0;
+  border-bottom: 1px solid #333;
+  flex-shrink: 0;
+}
+.iwc-tab {
+  background: none; border: none; border-bottom: 2px solid transparent;
+  color: #999; cursor: pointer; padding: .4rem .8rem; font-size: .85rem;
+}
+.iwc-tab:hover { color: #ccc; }
+.iwc-tab-active { color: #eee; border-bottom-color: #6ea8fe; }
+
+#iwc-error {
+  margin: .5rem 1rem 0;
+  padding: .4rem .7rem;
+  border-radius: 4px;
+  background: rgba(220,53,69,.15);
+  border: 1px solid rgba(220,53,69,.4);
+  color: #f8a0a8; font-size: .85rem;
+}
+
+#iwc-status {
+  margin: .4rem 1rem 0;
+  color: #aaa; font-size: .82rem; font-style: italic;
+}
+
+#iwc-content {
+  padding: .9rem 1rem 1rem;
+  overflow-y: auto;
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: .6rem;
+}
+
+/* ── Shared ──────────────────────────────────────────────────── */
+.iwc-hint { color: #999; font-size: .85rem; margin: 0; }
+.iwc-row  { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+
+.iwc-input {
+  flex: 1; min-width: 0;
+  padding: .38rem .6rem;
+  border: 1px solid #555; border-radius: 4px;
+  background: #12121a; color: #eee; font-size: .9rem;
+}
+.iwc-input:focus { outline: none; border-color: #0d6efd; }
+
+.iwc-btn {
+  padding: .38rem .9rem; border: none; border-radius: 4px;
+  cursor: pointer; font-size: .85rem; white-space: nowrap;
+  transition: opacity .15s;
+}
+.iwc-btn:disabled { opacity: .45; cursor: not-allowed; }
+.iwc-btn-primary  { background: #0d6efd; color: #fff; }
+.iwc-btn-primary:hover:not(:disabled) { background: #0a58ca; }
+.iwc-btn-secondary{ background: #444; color: #ddd; }
+.iwc-btn-secondary:hover:not(:disabled){ background: #555; }
+.iwc-btn-danger { background: #dc3545; color: #fff; }
+.iwc-btn-danger:hover:not(:disabled) { background: #bb2d3b; }
+.iwc-btn-xs { padding: .1rem .4rem; font-size: .73rem; }
+
+.iwc-section-label {
+  font-size: .75rem; text-transform: uppercase; letter-spacing: .04em;
+  color: #999; margin: .25rem 0 .1rem;
+}
+
+/* ── Confidence states (distinct layout, not just a color swap) ──── */
+.iwc-confidence-box {
+  border-radius: 6px;
+  padding: .6rem .75rem;
+  font-size: .85rem;
+  display: flex;
+  flex-direction: column;
+  gap: .4rem;
+}
+.iwc-confidence-confident {
+  background: rgba(25,135,84,.15);
+  border: 1px solid rgba(25,135,84,.4);
+}
+.iwc-confidence-confident .iwc-confidence-title { color: #75b798; font-weight: 600; }
+.iwc-confidence-none {
+  background: rgba(255,193,7,.1);
+  border: 1px solid rgba(255,193,7,.35);
+}
+.iwc-confidence-none .iwc-confidence-title { color: #ffc107; font-weight: 600; }
+
+.iwc-suggestions { display: flex; flex-wrap: wrap; gap: .35rem; }
+.iwc-suggestion-chip {
+  padding: .2rem .6rem; border-radius: 12px;
+  font-size: .78rem; cursor: pointer; user-select: none;
+  background: rgba(255,193,7,.12); border: 1px solid rgba(255,193,7,.3);
+  color: #e0c068;
+}
+.iwc-suggestion-chip:hover { background: rgba(255,193,7,.22); }
+
+/* ── Result / clip-picker cards ──────────────────────────────── */
+.iwc-results {
+  display: flex; flex-direction: column; gap: .4rem;
+  max-height: 420px; overflow-y: auto;
+}
+.iwc-result-card {
+  display: flex; gap: .65rem; padding: .5rem .65rem;
+  border: 1px solid #3a3a4a; border-radius: 6px;
+  cursor: pointer; background: #12121a;
+  transition: border-color .15s, background .15s;
+}
+.iwc-result-card:hover { border-color: #0d6efd; background: rgba(13,110,253,.07); }
+.iwc-result-card.iwc-card-loading { opacity: .5; pointer-events: none; }
+.iwc-result-thumb {
+  width: 80px; height: 54px; object-fit: cover;
+  border-radius: 3px; flex-shrink: 0;
+}
+.iwc-no-img { background: #2a2a3a; }
+.iwc-result-info { display: flex; flex-direction: column; gap: .1rem; font-size: .83rem; min-width:0; }
+.iwc-result-title { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.iwc-result-sub   { color:#999; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.iwc-result-desc {
+  color: #888; font-size: .78rem; margin-top: .15rem;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  overflow: hidden; line-height: 1.4;
+}
+
+/* ── Thumbnail hover zoom ──────────────────────────────────────────
+   Originally mirrored Data18's .d18-thumb-wrap/.d18-thumb-hover pattern
+   (a CSS-only nested :hover child), but that gets clipped here: every
+   thumbnail sits inside at least one overflow:auto scroll container
+   (.iwc-results, .iwc-compare-table, #iwc-content) and #iwc-box itself
+   is overflow:hidden (needed to clip the header's square background to
+   the box's rounded corners) -- so a nested absolutely-positioned child
+   gets cut off regardless of its own position value. Fixed by using a
+   single shared floating preview element that lives as a SIBLING of
+   #iwc-box (outside all of those clipping ancestors, see openModal),
+   shown/positioned via JS on hover (see showHoverPreview/hideHoverPreview
+   in IWantClipsStashDB.js). */
+.iwc-thumb-wrap {
+  flex-shrink: 0;
+  display: inline-block;
+  cursor: zoom-in;
+}
+#iwc-hover-preview {
+  display: none;
+  position: fixed;
+  z-index: 100000;
+  border: 2px solid #555;
+  border-radius: 4px;
+  box-shadow: 0 4px 24px rgba(0,0,0,.8);
+  overflow: hidden;
+  width: 320px;
+  pointer-events: none;
+}
+#iwc-hover-preview img {
+  width: 320px;
+  height: auto;
+  display: block;
+}
+
+/* ── Success ─────────────────────────────────────────────────── */
+.iwc-success {
+  padding: .65rem .85rem; border-radius:4px;
+  background: rgba(25,135,84,.15); border:1px solid rgba(25,135,84,.4);
+  color: #75b798; font-size: .9rem;
+}
+
+/* ── Comparison table ────────────────────────────────────────── */
+.iwc-compare-table {
+  display: flex; flex-direction: column; gap: 0;
+  border: 1px solid #3a3a4a; border-radius: 6px;
+  overflow-y: auto; font-size: .85rem; flex-shrink: 0;
+}
+.iwc-compare-header, .iwc-compare-row {
+  display: grid; grid-template-columns: 100px 1fr 1fr 48px; gap: 0;
+}
+.iwc-compare-header {
+  background: #12121a; font-weight: 600; font-size: .8rem; color: #aaa;
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.iwc-compare-header > div, .iwc-compare-row > div {
+  padding: .5rem .65rem; border-bottom: 1px solid #2a2a3a; min-width: 0;
+}
+.iwc-compare-row:last-child > div { border-bottom: none; }
+.iwc-compare-row:nth-child(odd) { background: #16161e; }
+.iwc-compare-row:nth-child(even) { background: #1a1a28; }
+.iwc-compare-label {
+  font-weight: 600; color: #aaa; font-size: .78rem;
+  text-transform: uppercase; letter-spacing: .03em;
+  display: flex; align-items: flex-start; padding-top: .6rem;
+}
+.iwc-compare-current { color: #888; border-left: 1px solid #2a2a3a; border-right: 1px solid #2a2a3a; }
+.iwc-compare-incoming { color: #eee; }
+.iwc-compare-toggle {
+  display: flex; align-items: flex-start; justify-content: center;
+  padding-top: .6rem; border-left: 1px solid #2a2a3a;
+}
+.iwc-compare-toggle input[type="checkbox"], .iwc-perf-chk {
+  width: 16px; height: 16px; cursor: pointer; accent-color: #0d6efd;
+}
+.iwc-trunc {
+  display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden; color: inherit;
+}
+
+/* Description row: significantly taller than other rows -- long-form
+   text needs more room than a single cramped line. */
+.iwc-compare-row-tall > div { padding-top: .65rem; padding-bottom: .65rem; }
+.iwc-textarea {
+  width: 100%;
+  min-height: 160px;
+  resize: vertical;
+  padding: .4rem .55rem;
+  border: 1px solid #555; border-radius: 4px;
+  background: #12121a; color: #eee;
+  font-size: .85rem; font-family: inherit; line-height: 1.4;
+  box-sizing: border-box;
+}
+.iwc-textarea:focus { outline: none; border-color: #0d6efd; }
+
+.iwc-perf-row { display: flex; align-items: center; flex-wrap: wrap; gap: .4rem; margin-bottom: .25rem; }
+.iwc-perf-row:last-child { margin-bottom: 0; }
+.iwc-perf-inline-msg { font-size: .75rem; }
+.iwc-perf-inline-msg.iwc-msg-ok  { color: #75b798; }
+.iwc-perf-inline-msg.iwc-msg-err { color: #f8a0a8; }
+
+.iwc-item-label {
+  display: flex; align-items: center; gap: .4rem; margin-bottom: .25rem;
+  cursor: pointer; user-select: none; font-size: .85rem;
+}
+.iwc-item-label:last-child { margin-bottom: 0; }
+.iwc-item-label input[type="checkbox"] {
+  width: 15px; height: 15px; flex-shrink: 0; accent-color: #0d6efd; cursor: pointer;
+}
+
+.iwc-badge {
+  display: inline-block; font-size: .7rem; padding: .1rem .35rem;
+  border-radius: 3px; margin-left: .3rem; vertical-align: middle; font-weight: 600;
+}
+.iwc-badge-found   { background: rgba(25,135,84,.2); color: #75b798; border: 1px solid rgba(25,135,84,.35); }
+.iwc-badge-missing { background: rgba(220,53,69,.15); color: #f8a0a8; border: 1px solid rgba(220,53,69,.3); }
+
+/* ── Manage Known Stores list (mirrors TagChips' tc-cat-list pattern) ── */
+.iwc-store-list { display: flex; flex-direction: column; gap: .3rem; }
+.iwc-store-row {
+  display: flex; align-items: center; gap: .5rem;
+  padding: .4rem .5rem; background: #16161e;
+  border: 1px solid #2a2a35; border-radius: 4px;
+}
+.iwc-store-name { flex: 1; font-size: .85rem; }
+.iwc-store-url {
+  font-size: .72rem; color: #888; max-width: 220px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.iwc-store-manage-btn {
+  font-size: .72rem; color: #6ea8fe; cursor: pointer;
+  background: none; border: none; padding: 0; text-decoration: underline;
+}
+
+/* ── Scene toolbar button ─────────────────────────────────────── */
+#iwc-open-btn { margin-left: 8px; font-size: .85rem; }

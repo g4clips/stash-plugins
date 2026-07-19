@@ -1,0 +1,55 @@
+name: IWantClipsStashDB
+description: Scrape iWantClips and match against local Stash. Adds an iWantClips button to scene pages.
+version: "0.7.1"
+
+exec:
+  - python
+  - "{pluginDir}/IWantClipsStashDB.py"
+
+interface: raw
+
+ui:
+  javascript:
+    - IWantClipsStashDB.js
+  css:
+    - IWantClipsStashDB.css
+
+settings:
+  proxyUrl:
+    displayName: Outbound Proxy URL (optional)
+    description: >
+      HTTP/HTTPS proxy for outbound requests to iwantclips.com, e.g.
+      http://your-stash-host-ip:8888. Leave blank to scrape directly with no
+      proxy. Useful when the target site geo-blocks this server's IP.
+    type: STRING
+
+tasks:
+  - name: "Test Config Roundtrip"
+    description: Internal check -- writes and reads back a dummy performerStoreMap entry to verify config plumbing. Safe to run any time.
+    defaultArgs:
+      mode: test_config
+
+  - name: "Refresh Sitemap Cache"
+    description: Force-refreshes the local cache of iwantclips.com's performer store sitemap (~19k entries).
+    defaultArgs:
+      mode: refresh_sitemap
+
+  - name: "Parse Filename"
+    description: Parses a local filename into a candidate performer name and clip title. Pass 'filename' as an arg.
+    defaultArgs:
+      mode: parse_filename
+
+  - name: "Match Performer Store"
+    description: Looks up a performer name against known stores (performerStoreMap, then the sitemap cache). Pass 'performer_name' as an arg.
+    defaultArgs:
+      mode: match_performer
+
+  - name: "Search Store"
+    description: Searches a confirmed store's clips via iwantclips' Typesense API. Pass 'store_url', 'model_username', and 'query_text' as args.
+    defaultArgs:
+      mode: search_store
+
+  - name: "Scrape Clip"
+    description: Scrapes one clip page's JSON-LD and resolves performers/studio against local Stash. Pass 'url' and 'studio_name' as args.
+    defaultArgs:
+      mode: scrape_clip

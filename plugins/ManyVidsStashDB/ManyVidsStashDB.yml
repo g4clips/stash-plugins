@@ -1,26 +1,28 @@
-name: IWantClipsStashDB
-description: Scrape iWantClips and match against local Stash. Adds an iWantClips button to scene pages.
-version: "0.7.2"
+name: ManyVidsStashDB
+description: Scrape ManyVids and match against local Stash. Adds a ManyVids button to scene pages.
+version: "0.1.1"
 
 exec:
   - python
-  - "{pluginDir}/IWantClipsStashDB.py"
+  - "{pluginDir}/ManyVidsStashDB.py"
 
 interface: raw
 
 ui:
   javascript:
-    - IWantClipsStashDB.js
+    - ManyVidsStashDB.js
   css:
-    - IWantClipsStashDB.css
+    - ManyVidsStashDB.css
 
 settings:
   proxyUrl:
     displayName: Outbound Proxy URL (optional)
     description: >
-      HTTP/HTTPS proxy for outbound requests to iwantclips.com, e.g.
+      HTTP/HTTPS proxy for outbound requests to manyvids.com, e.g.
       http://your-stash-host-ip:8888. Leave blank to scrape directly with no
-      proxy. Useful when the target site geo-blocks this server's IP.
+      proxy. Not required in testing so far (no blocking observed), kept
+      for parity/future-proofing in case ManyVids starts IP-blocking this
+      server.
     type: STRING
 
 tasks:
@@ -29,25 +31,20 @@ tasks:
     defaultArgs:
       mode: test_config
 
-  - name: "Refresh Sitemap Cache"
-    description: Force-refreshes the local cache of iwantclips.com's performer store sitemap (~19k entries).
-    defaultArgs:
-      mode: refresh_sitemap
-
   - name: "Parse Filename"
     description: Parses a local filename into a candidate performer name and clip title. Pass 'filename' as an arg.
     defaultArgs:
       mode: parse_filename
 
   - name: "Match Performer Store"
-    description: Looks up a performer name against known stores (performerStoreMap, then the sitemap cache). Pass 'performer_name' as an arg.
+    description: Looks up a performer name against known stores (performerStoreMap only -- ManyVids has no public performer directory to fuzzy-match against, unlike IWantClips' sitemap). Pass 'performer_name' as an arg.
     defaultArgs:
       mode: match_performer
 
-  - name: "Search Store"
-    description: Searches a confirmed store's clips via iwantclips' Typesense API. Pass 'store_url', 'model_username', and 'query_text' as args.
+  - name: "Match Clips"
+    description: Fetches a confirmed store's full clip catalog (paginated, both the main and vertical-video listings) and fuzzy-matches clip titles against a query. Pass 'profile_id' and 'query_text' as args.
     defaultArgs:
-      mode: search_store
+      mode: match_clips
 
   - name: "Scrape Clip"
     description: Scrapes one clip page's JSON-LD and resolves performers/studio against local Stash. Pass 'url' and 'studio_name' as args.

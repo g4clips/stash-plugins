@@ -50,6 +50,7 @@ import json
 import os
 import re
 import sys
+import time
 from difflib import SequenceMatcher
 
 import requests
@@ -71,6 +72,20 @@ TITLE_MATCH_THRESHOLD = 0.50
 # is too loose. Surfaced plainly in the UI, never hidden.
 LARGE_RESULT_WARNING = 20
 MAX_STORE_PAGES = 60  # safety cap on full-catalog pagination
+
+# A full crawl is ~39 page-loads for a 350-clip store (confirmed live) --
+# expensive enough that every single scrape re-doing it is wasteful once a
+# store's been crawled once. Cache is invalidated by the store's own
+# reported total count changing (see get_store_clips), but a clip can be
+# silently retitled/re-described without the total ever changing, so a
+# count match alone isn't a permanent freshness guarantee. 14 days is a
+# starting compromise: long enough that a normal scraping cadence (several
+# scrapes a week against the same performer) gets real benefit from the
+# cache, short enough that a stale retitle can't linger for more than two
+# weeks even in the worst case. Tune down if edits-without-count-changes
+# turn out to be common in practice.
+STORE_CACHE_MAX_AGE_DAYS = 14
+STORE_CACHE_MAX_AGE_SECONDS = STORE_CACHE_MAX_AGE_DAYS * 24 * 3600
 
 
 def log(msg):
@@ -110,6 +125,7 @@ def read_config(stash_url, api_key):
     return {
         "performerStoreMap": cfg.get("performerStoreMap") or {},
         "proxyUrl": cfg.get("proxyUrl", ""),
+        "storeCatalogCache": cfg.get("storeCatalogCache") or {},
     }
 
 
@@ -406,10 +422,7 @@ def _fetch_listing_all_pages(base_store_url, session, listing, first_page_html, 
     return clips_out
 
 
-def fetch_all_store_clips(profile_id, proxy_url="", max_pages=MAX_STORE_PAGES):
-    session = _make_session(proxy_url)
-    base_store_url, first_page_html = _resolve_canonical_store_url(profile_id, session)
-
+def _crawl_full_catalog(base_store_url, session, first_page_html, max_pages=MAX_STORE_PAGES):
     all_clips = []
     seen_ids = set()
     for listing in ("main", "vertical"):
@@ -419,6 +432,72 @@ def fetch_all_store_clips(profile_id, proxy_url="", max_pages=MAX_STORE_PAGES):
                 seen_ids.add(cid)
                 all_clips.append(c)
     return all_clips
+
+
+def fetch_all_store_clips(profile_id, proxy_url="", max_pages=MAX_STORE_PAGES):
+    """Unconditional full crawl, no caching -- kept as a standalone entry
+    point (e.g. for the self-test / a forced refresh), but the normal
+    scrape path goes through get_store_clips instead, which only pays this
+    cost when the cache is missing, stale, or the store's reported total
+    count has actually changed."""
+    session = _make_session(proxy_url)
+    base_store_url, first_page_html = _resolve_canonical_store_url(profile_id, session)
+    return _crawl_full_catalog(base_store_url, session, first_page_html, max_pages)
+
+
+def get_store_clips(profile_id, config, proxy_url="", max_pages=MAX_STORE_PAGES):
+    """Cache-aware clip fetch. The cheapest possible freshness check --
+    resolving the canonical store URL and reading page 1 -- happens to
+    embed BOTH the main and vertical listings' page-1 data in a single
+    HTML response (confirmed live), so checking both listings' current
+    "total" costs exactly one HTTP request, not two, regardless of cache
+    outcome. Returns (clips, new_cache_entry_or_None) -- the caller is
+    responsible for persisting new_cache_entry via write_config when it's
+    not None (this function only reads config, never writes it, to keep
+    the read-modify-write discipline in one place).
+
+    The cache max-age window is a SLIDING window, not a fixed expiry from
+    first-cached time: a confirmed-fresh cache hit also returns a refreshed
+    entry (same clips, cachedAt bumped to now) for the caller to persist,
+    so an actively/periodically re-scraped performer's cache never goes
+    stale purely from elapsed time -- only an actual gap in scraping of
+    STORE_CACHE_MAX_AGE_DAYS or more, or a genuine catalog change, forces
+    a re-crawl."""
+    all_cache = config.get("storeCatalogCache") or {}
+    cache = all_cache.get(profile_id)
+    log(f"get_store_clips: looking up cache for store {profile_id!r} "
+        f"(cache entry {'found' if cache else 'ABSENT'} for this id; "
+        f"known cache keys: {list(all_cache.keys())})")
+
+    session = _make_session(proxy_url)
+    base_store_url, first_page_html = _resolve_canonical_store_url(profile_id, session)
+    _, main_meta = fetch_store_page(base_store_url, 1, session, listing="main", first_page_html=first_page_html)
+    _, vertical_meta = fetch_store_page(base_store_url, 1, session, listing="vertical", first_page_html=first_page_html)
+    main_total = main_meta.get("total")
+    vertical_total = vertical_meta.get("total")
+
+    now = time.time()
+    if cache:
+        age = now - cache.get("cachedAt", 0)
+        totals_match = cache.get("mainTotal") == main_total and cache.get("verticalTotal") == vertical_total
+        log(f"get_store_clips: store {profile_id} -- cached mainTotal={cache.get('mainTotal')!r}, "
+            f"verticalTotal={cache.get('verticalTotal')!r}, cachedAt={cache.get('cachedAt')!r} "
+            f"(age={age / 3600:.2f}h) vs current mainTotal={main_total!r}, verticalTotal={vertical_total!r} "
+            f"-- totals_match={totals_match}, within_max_age={age < STORE_CACHE_MAX_AGE_SECONDS} "
+            f"(max age {STORE_CACHE_MAX_AGE_DAYS}d)")
+        if totals_match and age < STORE_CACHE_MAX_AGE_SECONDS:
+            log(f"get_store_clips: DECISION = cache hit, using {len(cache['clips'])} cached clips for store "
+                f"{profile_id}, skipping full crawl -- sliding cachedAt forward to now")
+            refreshed_entry = {**cache, "cachedAt": now}
+            return cache["clips"], refreshed_entry
+        reason = "totals mismatched" if not totals_match else f"cache older than {STORE_CACHE_MAX_AGE_DAYS} days"
+        log(f"get_store_clips: DECISION = cache miss/stale ({reason}) for store {profile_id}, doing full re-crawl")
+    else:
+        log(f"get_store_clips: DECISION = no cache entry for store {profile_id}, doing full crawl")
+
+    clips = _crawl_full_catalog(base_store_url, session, first_page_html, max_pages)
+    new_entry = {"clips": clips, "mainTotal": main_total, "verticalTotal": vertical_total, "cachedAt": now}
+    return clips, new_entry
 
 
 # ── Store confirmation (performerStoreMap only -- no directory/sitemap
@@ -454,8 +533,13 @@ def clip_page_url(clip):
     return f"https://www.manyvids.com/Video/{clip.get('id')}/{clip.get('slug')}"
 
 
-def match_clips_in_store(profile_id, title_candidate, proxy_url=""):
-    clips = fetch_all_store_clips(profile_id, proxy_url=proxy_url)
+def match_clips_in_store(profile_id, title_candidate, config, stash_url, api_key, proxy_url=""):
+    clips, new_cache_entry = get_store_clips(profile_id, config, proxy_url=proxy_url)
+    if new_cache_entry is not None:
+        cache = dict(config.get("storeCatalogCache") or {})
+        cache[profile_id] = new_cache_entry
+        write_config(stash_url, api_key, {"storeCatalogCache": cache})
+
     norm_query = normalize(title_candidate)
 
     scored = []
@@ -560,13 +644,23 @@ def resolve_performer(name, stash_url, api_key):
     token = _query_token(clean_name)
 
     def query(search_value):
+        # Must search both name AND aliases -- a performer whose real name
+        # doesn't contain the candidate token but whose alias_list does
+        # (confirmed live: "LatexnChill" candidate / real name "Lexi Chill"
+        # / alias "latexnchill") would otherwise never even enter the
+        # results set for the alias-matching logic below to consider.
+        # OR here (confirmed live) means "name INCLUDES value OR aliases
+        # INCLUDES value", not a replacement of the name condition.
         data = local_gql(stash_url, api_key, """
-            query PerformerByName($name: String!) {
-                findPerformers(performer_filter: { name: { value: $name, modifier: INCLUDES } }) {
+            query PerformerByNameOrAlias($value: String!) {
+                findPerformers(performer_filter: {
+                    name: { value: $value, modifier: INCLUDES }
+                    OR: { aliases: { value: $value, modifier: INCLUDES } }
+                }) {
                     performers { id name alias_list disambiguation }
                 }
             }
-        """, {"name": search_value})
+        """, {"value": search_value})
         return data["findPerformers"]["performers"]
 
     performers = query(token)
@@ -677,7 +771,8 @@ def main():
             if not profile_id:
                 raise RuntimeError("match_clips requires profile_id")
             settings = read_config(stash_url, api_key)
-            output = match_clips_in_store(profile_id, query_text, proxy_url=settings.get("proxyUrl", ""))
+            output = match_clips_in_store(profile_id, query_text, settings, stash_url, api_key,
+                                           proxy_url=settings.get("proxyUrl", ""))
             result = {"ok": True, "output": output}
 
         elif mode == "scrape_clip":

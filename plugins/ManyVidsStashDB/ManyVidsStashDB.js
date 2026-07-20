@@ -122,6 +122,15 @@
     return {
       performerStoreMap: cfg.performerStoreMap || {},
       proxyUrl: cfg.proxyUrl || "",
+      // Never read/written from JS directly (ManyVidsStashDB.py owns this
+      // cache entirely), but writeConfig()'s {...current, ...patch} merge
+      // means any field readConfig() doesn't round-trip here gets silently
+      // dropped on the NEXT writeConfig call from anywhere in this file
+      // (e.g. the performerStoreMap write on every "Confirm & Search"
+      // click) -- confirmed live this was wiping out the Python-side cache
+      // moments before every repeat scrape's Match Clips task even ran,
+      // defeating the cache on every call after the first.
+      storeCatalogCache: cfg.storeCatalogCache || {},
     };
   }
 

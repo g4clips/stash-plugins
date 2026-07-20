@@ -599,13 +599,23 @@ def resolve_performer(name, stash_url, api_key):
     token = _query_token(clean_name)
 
     def query(search_value):
+        # Must search both name AND aliases -- a performer whose real name
+        # doesn't contain the candidate token but whose alias_list does
+        # (confirmed live: "LatexnChill" candidate / real name "Lexi Chill"
+        # / alias "latexnchill") would otherwise never even enter the
+        # results set for the alias-matching logic below to consider.
+        # OR here (confirmed live) means "name INCLUDES value OR aliases
+        # INCLUDES value", not a replacement of the name condition.
         data = local_gql(stash_url, api_key, """
-            query PerformerByName($name: String!) {
-                findPerformers(performer_filter: { name: { value: $name, modifier: INCLUDES } }) {
+            query PerformerByNameOrAlias($value: String!) {
+                findPerformers(performer_filter: {
+                    name: { value: $value, modifier: INCLUDES }
+                    OR: { aliases: { value: $value, modifier: INCLUDES } }
+                }) {
                     performers { id name alias_list disambiguation }
                 }
             }
-        """, {"name": search_value})
+        """, {"value": search_value})
         return data["findPerformers"]["performers"]
 
     performers = query(token)

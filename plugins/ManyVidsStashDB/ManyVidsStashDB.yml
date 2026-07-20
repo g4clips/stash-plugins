@@ -1,6 +1,6 @@
 name: ManyVidsStashDB
 description: Scrape ManyVids and match against local Stash. Adds a ManyVids button to scene pages.
-version: "0.1.1"
+version: "0.1.4"
 
 exec:
   - python

@@ -1332,10 +1332,14 @@
   }
 
   // ── Batch scrape: Step 1 — candidate scene selection ──────────────────────
-  // Candidate filter confirmed live against this Stash instance's GraphQL
-  // schema (no repo precedent existed for "unorganized/un-URLed" before this):
-  // SceneFilterType.organized is a plain Boolean (not modifier-wrapped), and
-  // .url is a StringCriterionInput supporting IS_NULL.
+  // Candidate definition is "still needs tagging" (zero tags), not the
+  // organized/url-based guess this started with -- confirmed with the
+  // person that they don't reliably use `organized` for this workflow (it's
+  // repurposed for a separate StashBox-submission flow). Confirmed live
+  // against this Stash instance's GraphQL schema: SceneFilterType.tag_count
+  // is an IntCriterionInput ({modifier, value}), so { modifier: EQUALS,
+  // value: 0 } is the exact "no tags at all" filter -- verified it returns
+  // only zero-tag scenes and correctly excludes a scene with tags.
 
   let _batchAllScenes = [];
   let _batchSelectedIds = new Set();
@@ -1344,7 +1348,7 @@
     const data = await gql(`
       query SuperScrapeBatchCandidates {
         findScenes(
-          scene_filter: { organized: false, url: { modifier: IS_NULL, value: "" } }
+          scene_filter: { tag_count: { modifier: EQUALS, value: 0 } }
           filter: { per_page: -1, sort: "created_at", direction: DESC }
         ) {
           scenes { id title files { basename } paths { screenshot } }
@@ -1355,7 +1359,7 @@
   }
 
   async function renderBatchSceneSelect() {
-    setBatchError(""); setBatchStatus("Loading unorganized, un-URLed scenes…");
+    setBatchError(""); setBatchStatus("Loading untagged scenes…");
     const content = document.getElementById("ss-batch-content");
     content.innerHTML = `<p class="ss-hint">Loading scenes…</p>`;
 
@@ -1370,7 +1374,7 @@
     _batchSelectedIds = new Set();
 
     if (!_batchAllScenes.length) {
-      content.innerHTML = `<p class="ss-hint">No unorganized, un-URLed scenes found — nothing to batch scrape.</p>`;
+      content.innerHTML = `<p class="ss-hint">No untagged scenes found — nothing to batch scrape.</p>`;
       return;
     }
 

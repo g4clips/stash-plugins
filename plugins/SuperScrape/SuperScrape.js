@@ -296,6 +296,22 @@
       .sort((a, b) => (b.scene_count || 0) - (a.scene_count || 0));
   }
 
+  // Batched by id (confirmed live: PerformerFilterType has no `id`
+  // field to filter by, but findPerformers' top-level `performer_ids`
+  // arg -- typed [Int!], not [ID!] -- does the job in one query instead
+  // of one per matched performer).
+  async function fetchPerformerTags(ids) {
+    if (!ids.length) return [];
+    const data = await gql(`
+      query SuperScrapePerformerTags($ids: [Int!]) {
+        findPerformers(performer_ids: $ids) {
+          performers { id tags { id } }
+        }
+      }
+    `, { ids });
+    return data.findPerformers.performers;
+  }
+
   // ── Apply scraped metadata directly via GraphQL ───────────────────────────
 
   async function applyToScene(sceneId, fieldChecks, selPerfNames, scraped, resolvedPerformers, resolvedStudio, current, contentUrl, coverPick, scrapedThumbnail, selectedTagIds) {
@@ -971,7 +987,7 @@
       </div>`;
 
     bindThumbHovers();
-    renderTagPicker();
+    renderTagPicker(resolvedPerformers);
 
     document.getElementById("ss-back2").onclick = () => renderResults(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput);
     document.getElementById("ss-selall").onclick  = () =>
@@ -1073,7 +1089,7 @@
     return [..._selectedTagIds];
   }
 
-  async function renderTagPicker() {
+  async function renderTagPicker(resolvedPerformers) {
     // Deliberately does NOT pre-highlight tags the scene already has: the
     // picker only ever ADDS (see applyToScene's merge, never a replace),
     // so pre-checking an existing tag and letting the user "uncheck" it
@@ -1087,6 +1103,32 @@
       grid.innerHTML = `<span class="ss-hint">Could not load tags: ${esc(e.message)}</span>`;
       return;
     }
+
+    // Pre-select the UNION of tags already on any MATCHED (found: true)
+    // performer -- i.e. an existing local Stash performer resolved via
+    // resolve_performer's exact/alias/fuzzy tiers, NOT one newly created
+    // via "Create in Stash" during this same scrape (no localId to look
+    // up tags against yet). One-time pre-population at render time only
+    // -- does not re-run if performer checkboxes change later elsewhere
+    // in the comparison table (re-syncing on every toggle would clobber
+    // manual chip edits). Chips pre-selected this way are exactly as
+    // toggleable as any manually-clicked chip -- same "picker only ever
+    // adds" invariant as the comment above, nothing locked.
+    const matchedIds = [...new Set((resolvedPerformers || [])
+      .filter(p => p.found && p.localId)
+      .map(p => Number(p.localId)))];
+    if (matchedIds.length) {
+      try {
+        const performers = await fetchPerformerTags(matchedIds);
+        for (const p of performers) {
+          for (const t of (p.tags || [])) _selectedTagIds.add(t.id);
+        }
+      } catch (e) {
+        // Non-fatal -- pre-selection is a convenience, not required for
+        // the picker to function; falls through with nothing pre-checked.
+      }
+    }
+
     drawTagGrid(_allTagsCache);
 
     const filterInput = document.getElementById("ss-tag-filter");

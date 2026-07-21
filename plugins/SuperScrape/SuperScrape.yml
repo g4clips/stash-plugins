@@ -1,6 +1,6 @@
 name: SuperScrape
 description: Unified scraper for iWantClips, ManyVids, Clips4Sale, and goddesssnow.com, matching against local Stash. Adds a Scrape button to scene pages.
-version: "0.3.2"
+version: "0.4.0"
 
 exec:
   - python

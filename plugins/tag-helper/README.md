@@ -84,18 +84,13 @@ into a dev instance and iterate from real errors, not just review the diff.
 
 ## Local dev setup
 
-This plugin uses **Model A (manual copy)** — see
-[`PLUGIN-DEV-GUIDE.md` §15](../../PLUGIN-DEV-GUIDE.md#model-a-manual-copy-robocopy)
-for the full canonical instructions (why robocopy instead of a symlink,
-how to verify a deploy actually landed via GraphQL, etc.).
-
-```powershell
-robocopy C:\Users\<you>\Documents\stash-plugins\plugins\tag-helper `
-    C:\Users\<you>\.stash\plugins\tag-helper /MIR
-```
-
-Then in Stash: Settings → Plugins → Reload Plugins. **Re-run the robocopy
-after every source edit** — there's no live symlink.
+This plugin uses **Model B (GitHub Pages install/update)** — see
+[`PLUGIN-DEV-GUIDE.md` §15](../../PLUGIN-DEV-GUIDE.md#model-b-github-pages-installupdate)
+for the full canonical instructions. In short: push to `main`, then click
+**Update** on this plugin in Stash's **Settings → Plugins → Available
+Plugins** (pushing alone does not update a running instance). Confirm via
+`{ plugins { id version } }` that the commit-hash suffix matches your new
+`HEAD` before trusting a "live" test.
 
 Add this plugin's folder to the `stash-plugins` repo under `plugins/TagChips/`
 alongside the existing plugins, with its own `config.ini.example` /

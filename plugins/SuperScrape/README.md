@@ -5,16 +5,11 @@ matching against local Stash. Adds a Scrape button to scene pages.
 
 ## Local dev setup
 
-This plugin uses **Model A (manual copy)** — see
-[`PLUGIN-DEV-GUIDE.md` §15](../../PLUGIN-DEV-GUIDE.md#model-a-manual-copy-robocopy)
-for the full canonical instructions, including the GraphQL steps to
-verify a deploy actually landed (this plugin is the reason that
-verification step exists at all — see the incident noted there).
-
-```powershell
-robocopy C:\Users\<you>\Documents\stash-plugins\plugins\SuperScrape `
-    C:\Users\<you>\.stash\plugins\SuperScrape /MIR /XD __pycache__
-```
-
-Then in Stash: Settings → Plugins → Reload Plugins. **Re-run the robocopy
-after every source edit** — there's no live symlink.
+This plugin uses **Model B (GitHub Pages install/update)** — see
+[`PLUGIN-DEV-GUIDE.md` §15](../../PLUGIN-DEV-GUIDE.md#model-b-github-pages-installupdate)
+for the full canonical instructions. In short: push to `main`, then click
+**Update** on this plugin in Stash's **Settings → Plugins → Available
+Plugins** (pushing alone does not update a running instance). Confirm via
+`{ plugins { id version } }` that the commit-hash suffix matches your new
+`HEAD` before trusting a "live" test (this plugin is the reason that
+verification step exists at all — see the incident noted in §15).

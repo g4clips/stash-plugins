@@ -516,7 +516,8 @@
           setStatus("");
           renderMatchState(sceneId, current,
             { performerCandidate: entry.displayName || entry.modelUsername || entry.profileId || entry.studioId, titleCandidate: parsed.titleCandidate },
-            { confidence: "confident", source: "quickpick", match: entry, score: 1, suggestions: [] });
+            { confidence: "confident", source: "quickpick", match: entry, score: 1, suggestions: [] },
+            /* autoSearch */ true);
         } catch (e) {
           setStatus("");
           setError(e.message);
@@ -552,7 +553,7 @@
 
   // ── Scrape flow: Step 2 — confidence state + confirm ──────────────────────
 
-  function renderMatchState(sceneId, current, parsed, match) {
+  function renderMatchState(sceneId, current, parsed, match, autoSearch = false) {
     setError("");
     const isConfident = match.confidence === "confident";
 
@@ -630,7 +631,7 @@
       });
     }
 
-    document.getElementById("ss-confirm").onclick = async () => {
+    async function runSearch() {
       const performerName = document.getElementById("ss-performer").value.trim();
       const queryText = document.getElementById("ss-query").value.trim();
       if (!performerName) { setError("Performer name is required"); return; }
@@ -676,7 +677,22 @@
         setError(e.message);
         btn.disabled = false; btn.textContent = isConfident ? "Confirm & Search" : "Search"; setStatus("");
       }
-    };
+    }
+
+    document.getElementById("ss-confirm").onclick = runSearch;
+
+    // Quick-pick-only auto-run: performer is already confirmed (from
+    // performerStoreMap, not parsed), so the only real gate is whether
+    // parse_filename actually found a usable title. parse_filename has
+    // no dedicated title-confidence field (its "method" field describes
+    // how the PERFORMER was found, not the title) -- non-empty-after-
+    // trim is the simplest reasonable stand-in. Does NOT touch the
+    // normal (non-quick-pick) flow: autoSearch defaults to false, and
+    // both "Back" buttons in renderResults call this function with only
+    // 4 args, so returning here after an auto-run never re-triggers one.
+    if (autoSearch && isConfident && parsed.titleCandidate && parsed.titleCandidate.trim()) {
+      runSearch();
+    }
   }
 
   // ── Scrape flow: Step 3 — clip-picker cards ───────────────────────────────

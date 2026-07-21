@@ -440,60 +440,15 @@ because the component is inside Stash's React tree.
 
 ## 15. Local Dev Sync — Getting Code From This Repo Onto a Running Stash
 
-Two different deployment models exist across plugins in this repo. **Check
-which one a given plugin uses before assuming either applies** — mixing
-them up (e.g. writing robocopy instructions for a plugin that's actually
-installed via GitHub Pages) documents a workflow that plugin doesn't use.
-
-You can tell them apart by whether the plugin's deployed folder
-(`C:\Users\<you>\.stash\plugins\<PluginFolder>\`) contains a `manifest`
-file — that file is written by Stash itself, only for plugins installed
-via a source URL, never for manually-copied ones.
-
-### Model A: Manual Copy (robocopy)
-
-Used by: SuperScrape, tag-helper (TagChips), IWantClipsStashDB, ManyVidsStashDB.
-
-No `source_repository` on record with Stash for these — the only way their
-code reaches the live instance is a manual file copy.
-
-```powershell
-# NOTE: NTFS junctions are NOT reliably picked up by Stash's plugin
-# directory scanner on Windows (verified against v0.31.1 -- the plugin
-# silently failed to register). True symlinks work but need admin
-# rights. Use a real copy instead:
-robocopy C:\Users\<you>\Documents\stash-plugins\plugins\<PluginFolder> `
-    C:\Users\<you>\.stash\plugins\<PluginFolder> /MIR /XD __pycache__
-```
-
-Then in Stash: Settings → Plugins → Reload Plugins.
-
-**Re-run the robocopy after every source edit.** There is no live
-symlink, so changes to the repo folder are NOT automatically reflected.
-This bit us for real: an entire adapter (SuperScrape's goddesssnow.com
-support) was built, tested, and reported "verified live" across a full
-session without ever being copied to the live plugins directory — the
-instance kept running the pre-existing version the whole time, and every
-"live" test that session was actually exercising the git checkout
-directly (`import` + direct function calls), never the deployed plugin.
-**Verify a deploy actually landed — don't just trust that robocopy ran:**
-
-```graphql
-mutation { reloadPlugins }
-```
-```graphql
-{ plugins { id version } }
-```
-
-Confirm the reported version matches the plugin's `.yml`, and re-run any
-"live" test through `runPluginTask` (the same mutation the plugin's own
-JS uses) rather than a direct Python import/function call — that's the
-only way to actually exercise the deployed subprocess instead of the git
-checkout.
+Every plugin in this repo uses the same deployment model — there used to
+be a second, manual-copy (robocopy) model, retired for the reason
+described at the bottom of this section.
 
 ### Model B: GitHub Pages Install/Update
 
-Used by: Data18StashDB, marker-scenes, seek-controls, FindDuplicates, submit-to-my-stashbox.
+Used by: SuperScrape, tag-helper (TagChips), IWantClipsStashDB,
+ManyVidsStashDB, Data18StashDB, marker-scenes, seek-controls,
+FindDuplicates, submit-to-my-stashbox.
 
 These were installed in Stash via **Settings → Plugins → Available
 Plugins → Add Source**, pointing at
@@ -512,7 +467,7 @@ You can tell which commit a deployed copy is pinned to two ways:
   not part of this repo) recording `version`, `date`, and
   `source_repository`.
 
-To get a change live for one of these plugins:
+To get a change live for any plugin:
 1. Commit and push to `main` (triggers the GitHub Action, which
    republishes `index.yml` — usually within a minute or two; check the
    Actions tab if unsure).
@@ -521,10 +476,32 @@ To get a change live for one of these plugins:
 3. Confirm via `{ plugins { id version } }` that the commit-hash suffix
    now matches your new `HEAD`.
 
-If you want to iterate locally without the push+publish+update round
-trip, you can robocopy the same way as Model A directly over a
-GitHub-Pages-installed plugin's folder as a temporary local-testing
-shortcut — but the *next* "Update" click in Stash will silently overwrite
-your local copy with whatever's actually published, since Stash has no
-way to tell the difference. Don't rely on this for anything you haven't
-also committed and pushed.
+**Verify a deploy actually landed — don't just trust that a push or an
+Update click worked:**
+
+```graphql
+{ plugins { id version } }
+```
+
+Confirm the reported version matches the plugin's `.yml` AND carries the
+commit-hash suffix you expect, and re-run any "live" test through
+`runPluginTask` (the same mutation each plugin's own JS uses) rather than
+a direct Python import/function call — that's the only way to actually
+exercise the deployed subprocess instead of the git checkout.
+
+### Why there's only one model now
+
+SuperScrape, IWC, ManyVids, and tag-helper (TagChips) were originally
+deployed via a manual robocopy to
+`C:\Users\<you>\.stash\plugins\<PluginFolder>` instead of the GitHub
+Pages pipeline. This bit us for real: an entire adapter (SuperScrape's
+goddesssnow.com support) was built, tested, and reported "verified live"
+across a full session without ever being copied to the live plugins
+directory — the instance kept running the pre-existing version the whole
+time, and every "live" test that session was actually exercising the git
+checkout directly (`import` + direct function calls), never the deployed
+plugin. The verification discipline above (checking `{ plugins { id
+version } }` before trusting any "live" test) catches this class of
+mistake regardless of deploy model — but having only one model in the
+first place removes an entire way to get it wrong, which is why manual
+copy is retired rather than kept as a documented second option.

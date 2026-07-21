@@ -1878,30 +1878,54 @@ def resolve_studio(name, stash_url, api_key):
         return {"name": "", "localId": None, "found": False}
     clean_name = name.strip()
     norm = normalize(clean_name)
-    token = _query_token(clean_name)
 
-    def query(search_value):
-        data = local_gql(stash_url, api_key, """
-            query StudioByName($name: String!) {
-                findStudios(studio_filter: { name: { value: $name, modifier: INCLUDES } }) {
-                    studios { id name }
-                }
+    # Ported from Data18StashDB's resolve_studio, confirmed live this
+    # session to handle the exact real case that broke the old
+    # INCLUDES-based query: findStudios(filter: { q }) is Stash's
+    # relevance-ranked general search (covers name AND aliases server-
+    # side), given the FULL name -- no client-side token truncation.
+    # Confirmed live: q="Goddess Alexandra Snow" returns ONLY the
+    # correct studio (id 6, "Alexandra Snow", alias "Goddess Alexandra
+    # Snow") -- the irrelevant "Goddess Lindsey"/"Urlilgoddess" that an
+    # INCLUDES query on a truncated "Goddess" token used to pull in
+    # never appear here at all.
+    data = local_gql(stash_url, api_key, """
+        query StudioSearch($q: String) {
+            findStudios(filter: { q: $q, per_page: 10 }) {
+                studios { id name aliases }
             }
-        """, {"name": search_value})
-        return data["findStudios"]["studios"]
-
-    studios = query(token)
-    if not studios and len(token) > 1:
-        for i in range(len(token) - 1, 0, -1):
-            studios = query(token[:i])
-            if studios:
-                break
+        }
+    """, {"q": clean_name})
+    studios = data["findStudios"]["studios"]
 
     for s in studios:
         if normalize(s["name"]) == norm:
             return {"name": name, "localId": s["id"], "found": True, "matchType": "exact"}
-    if studios:
-        return {"name": name, "localId": studios[0]["id"], "found": True, "matchType": "first-result"}
+
+    # Alias tier (ported from Data18 -- SuperScrape's resolve_studio
+    # never checked studio aliases at all before this change, which is
+    # exactly why it couldn't find "Alexandra Snow" via her registered
+    # "Goddess Alexandra Snow" alias even after today's earlier fuzzy-
+    # tier fix).
+    for s in studios:
+        if any(normalize(a) == norm for a in (s.get("aliases") or [])):
+            return {"name": name, "localId": s["id"], "found": True, "matchType": "alias"}
+
+    # Fuzzy tier kept as a last resort -- deliberate difference from
+    # Data18's version, not an oversight. q: already returns a small,
+    # server-side-relevant candidate pool (not the old over-broad
+    # token-truncated set), so a fuzzy check here is safe and adds a
+    # small extra safety net for near-miss spellings without
+    # reintroducing the original bug (which was caused by an irrelevant
+    # candidate pool, not by having a fuzzy tier per se).
+    best, best_score = None, 0
+    for s in studios:
+        score = SequenceMatcher(None, norm, normalize(s["name"])).ratio()
+        if score > best_score:
+            best_score, best = score, s
+    if best and best_score >= FUZZY_MATCH_THRESHOLD:
+        return {"name": name, "localId": best["id"], "found": True, "matchType": "fuzzy", "score": round(best_score, 3)}
+
     return {"name": name, "localId": None, "found": False}
 
 

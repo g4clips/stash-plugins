@@ -22,7 +22,7 @@
   // here rather than round-tripping through a "Detect Site" task on every
   // keystroke; the Python side still owns the same mapping as the source
   // of truth (used by search_store/scrape_clip's own site dispatch).
-  const SITE_DOMAINS = { "iwantclips.com": "iwantclips", "manyvids.com": "manyvids", "clips4sale.com": "clips4sale" };
+  const SITE_DOMAINS = { "iwantclips.com": "iwantclips", "manyvids.com": "manyvids", "clips4sale.com": "clips4sale", "goddesssnow.com": "goddesssnow" };
 
   // ── Utilities ──────────────────────────────────────────────────────────────
 
@@ -64,6 +64,14 @@
       const m = url.match(/\/studio\/(\d+)/i);
       return m ? m[1] : null;
     }
+    if (site === "goddesssnow") {
+      // No per-store id concept -- genuinely single-performer site
+      // (confirmed live), always the same fixed base URL. A truthy
+      // sentinel here just satisfies the generic "could we parse a store
+      // id out of that URL" check shared by every site's paste-URL
+      // fallback path -- nothing downstream ever reads this value.
+      return "vod";
+    }
     return null;
   }
 
@@ -82,6 +90,7 @@
     if (site === "iwantclips") return "iWantClips";
     if (site === "manyvids") return "ManyVids";
     if (site === "clips4sale") return "Clips4Sale";
+    if (site === "goddesssnow") return "Goddess Snow";
     return site || "?";
   }
 
@@ -576,7 +585,7 @@
       ${boxHtml}
       ${!isConfident ? `
         <div class="ss-row">
-          <input id="ss-store-url" class="ss-input" type="url" placeholder="Paste store URL, e.g. https://iwantclips.com/store/145/BrattyNikki, https://www.manyvids.com/Profile/1004021302/latexnchill/Store/Videos, or https://www.clips4sale.com/studio/37562/mina-thorne-" />
+          <input id="ss-store-url" class="ss-input" type="url" placeholder="Paste store URL, e.g. https://iwantclips.com/store/145/BrattyNikki, https://www.manyvids.com/Profile/1004021302/latexnchill/Store/Videos, https://www.clips4sale.com/studio/37562/mina-thorne-, or https://goddesssnow.com/vod/" />
         </div>
         <div id="ss-store-url-site" class="ss-hint"></div>` : ""}
       <div class="ss-section-label">Search terms (clip title)</div>
@@ -617,7 +626,7 @@
         const url = storeUrlInput.value.trim();
         if (!url) { storeUrlSiteHint.textContent = ""; return; }
         const site = detectSiteFromUrl(url);
-        storeUrlSiteHint.textContent = site ? `Detected site: ${siteLabel(site)}` : "⚠ Unrecognized domain (expected iwantclips.com or manyvids.com)";
+        storeUrlSiteHint.textContent = site ? `Detected site: ${siteLabel(site)}` : `⚠ Unrecognized domain (expected ${Object.keys(SITE_DOMAINS).join(", ")})`;
       });
     }
 
@@ -631,7 +640,7 @@
         const pastedUrl = storeUrlInput?.value.trim();
         if (!pastedUrl) { setError("Confirm a store first — pick a suggestion or paste a store URL"); return; }
         const site = detectSiteFromUrl(pastedUrl);
-        if (!site) { setError("Could not detect a known site (iwantclips.com, manyvids.com, or clips4sale.com) from that URL"); return; }
+        if (!site) { setError(`Could not detect a known site (${Object.keys(SITE_DOMAINS).join(", ")}) from that URL`); return; }
         const storeId = extractStoreIdFromUrl(pastedUrl, site);
         if (!storeId) { setError(`Could not parse a store id out of that ${siteLabel(site)} URL`); return; }
         storeInfo = {
@@ -725,7 +734,14 @@
             url: hit.contentUrl,
             site: storeInfo.site,
             studio_name: storeInfo.displayName,
-            hit: { thumbnail: hit.thumbnail },
+            // Full hit, not just thumbnail -- goddesssnow's extract() needs
+            // publishDate/duration/price threaded through from whichever
+            // search/listing hit produced this URL (see gs_extract's
+            // docstring in SuperScrape.py; it's the first adapter that
+            // isn't self-sufficient from the URL alone). Harmless for the
+            // other three adapters' extract(), which only ever reads
+            // hit.thumbnail from this object.
+            hit,
           });
           setStatus("Checking for duplicates…");
           const resolvedPerfs = scrapeOutput.resolvedPerformers || [];

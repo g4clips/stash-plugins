@@ -103,6 +103,7 @@ SITE_DOMAINS = {
     "iwantclips.com": "iwantclips",
     "manyvids.com": "manyvids",
     "clips4sale.com": "clips4sale",
+    "goddesssnow.com": "goddesssnow",
 }
 
 
@@ -1323,6 +1324,365 @@ def c4s_crawl_full_catalog(studio_id, slug, proxy_url="", max_pages=MAX_STORE_PA
 
 
 # ═════════════════════════════════════════════════════════════════════════
+# SITE ADAPTER: goddesssnow
+#
+# Confirmed live: goddesssnow.com/vod/ is a genuinely single-performer
+# personal storefront, not a marketplace -- a custom/legacy PHP template
+# (no WordPress/WooCommerce/Squarespace, no generator meta tag), fully
+# scrapable via plain requests. No JSON-LD anywhere on the site (0 blocks
+# checked) -- a fourth distinct data shape from all three prior adapters:
+# plain server-rendered HTML plus small inline JSON blobs for price tiers
+# (`id="packageinfo_<id>" data-title="..." data-redirect="...">
+# {"rent":[...],"buy":[...]}`), correlated POSITIONALLY with the
+# surrounding title/date/duration/thumbnail markup for the same catalog
+# row -- there's no id repeated near that markup to correlate by key, so
+# _gs_parse_listing_items windows the HTML from one packageinfo block to
+# the next rather than matching text across the page.
+#
+# No sitemap, no studio-identity ambiguity, no marketplace collision:
+# confirmed live no other performer has their own store/section anywhere
+# on the site, so unlike iwantclips/clips4sale this adapter never needs a
+# fetched directory to check candidate names against. It DOES still fuzzy-
+# match against a curated list of her own name variants (see
+# GS_KNOWN_NAME_VARIANTS) rather than being truly unconditional, so an
+# unrelated performer's filename doesn't silently get routed here.
+# HOWEVER: some individual clips are collabs with guest performers
+# (confirmed live: "Featuring Goddess Nyx and Natalie Carnot!" as the
+# first line of a real clip's own description) -- gs_extract must not
+# hardcode performers to just her, see _gs_guest_performers below.
+#
+# Search (search.php?query=...) returns real, topically relevant,
+# paginated results -- but its own ranking is NOT trustworthy (confirmed
+# live: the exact real title "Seductrix's New Powers" ranked #6 of its
+# own page-1 results, several less-relevant same-franchise titles
+# outranked it). Same fix as clips4sale needed: page 1 is a candidate
+# pool only, re-scored locally with the same SequenceMatcher/
+# TITLE_MATCH_THRESHOLD discipline already proven in c4s_search.
+#
+# URL identifier: DIFFERENT from all three prior adapters -- the SLUG
+# itself is load-bearing (https://goddesssnow.com/vod/scenes/<Slug>_vids.html,
+# the _vids suffix is optional, confirmed live) and a garbage slug 404s
+# outright; there is no redirect-to-canonical-from-numeric-id behavior to
+# resolve here (unlike iwantclips/manyvids/clips4sale), so this adapter
+# never needs a "resolve canonical URL" step -- the slug from a search/
+# listing hit is used as-is.
+#
+# date/duration are NOT reliably present on the clip page itself (the
+# only date/duration spans found there, confirmed live, belong to an
+# unrelated "related content" carousel, not the clip in question) -- they
+# come from whichever search/listing row produced this clip's URL,
+# threaded through via extract()'s optional `hint` dict. This is the
+# first adapter where extract() isn't fully self-sufficient from the URL
+# alone -- see gs_extract's docstring and the dispatch wrapper below.
+# ═════════════════════════════════════════════════════════════════════════
+
+GS_STORE_URL = "https://goddesssnow.com/vod/"
+GS_SEARCH_URL = "https://goddesssnow.com/vod/search.php"
+GS_UPDATES_PAGE_URL = "https://goddesssnow.com/vod/updates/page_{page}.html"
+GS_DISPLAY_NAME = "Goddess Alexandra Snow"
+GS_MAX_PAGES = 150  # confirmed live catalog is ~115 pages -- MAX_STORE_PAGES (60) would truncate a real full crawl
+
+# Curated, not fetched -- there is no sitemap/directory to check against
+# (confirmed live: single-performer site, see module note above).
+GS_KNOWN_NAME_VARIANTS = ["Alexandra Snow", "Goddess Alexandra Snow", "Goddess Snow", "Domina Snow"]
+
+
+def gs_discover(candidate_name):
+    """Near-unconditional discover -- no sitemap, no studio-identity
+    ambiguity, no multi-site collision handling needed beyond what
+    discover() already does generically (see module docstring): this
+    adapter only ever resolves to this one fixed site. Still fuzzy-
+    matched against known name variants rather than truly unconditional,
+    so an unrelated performer's filename doesn't silently get routed
+    here."""
+    norm = normalize(candidate_name)
+    known_norms = {normalize(n) for n in GS_KNOWN_NAME_VARIANTS}
+    score = 1.0 if norm in known_norms else max(
+        (SequenceMatcher(None, norm, kn).ratio() for kn in known_norms), default=0.0
+    )
+
+    if score >= FUZZY_MATCH_THRESHOLD:
+        return {
+            "confidence": "confident",
+            "source": "gs_fixed",
+            "match": {"site": "goddesssnow", "storeUrl": GS_STORE_URL, "displayName": GS_DISPLAY_NAME},
+            "score": round(score, 3),
+            "suggestions": [],
+        }
+    return {"confidence": "none", "source": None, "match": None, "score": None, "suggestions": []}
+
+
+_GS_PACKAGEINFO_RE = re.compile(
+    r'id="packageinfo_(\d+)"[^>]*data-title="([^"]*)"[^>]*data-redirect="([^"]*)"[^>]*>(\{.*?\})</div>', re.S
+)
+_GS_TITLE_ROW_RE = re.compile(
+    r'update-title" href="[^"]+"><h4>[^<]*</h4>.*?class="date">([^<]+)<.*?class="duration">\s*([^<]*)<', re.S
+)
+_GS_THUMB_RE = re.compile(r'src0_4x="([^"]+)"')
+_GS_DATE_RE = re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{4})$")
+
+
+def gs_parse_date(date_display):
+    """Format confirmed live: "MM/DD/YYYY" (e.g. "07/03/2026")."""
+    m = _GS_DATE_RE.match((date_display or "").strip())
+    if not m:
+        return None
+    month, day, year = m.groups()
+    return f"{year}-{int(month):02d}-{int(day):02d}"
+
+
+def _gs_price_from_json(price_json_text):
+    try:
+        data = json.loads(price_json_text)
+    except Exception:
+        return None
+    for key in ("buy", "rent"):
+        tiers = data.get(key) or []
+        if tiers:
+            return tiers[0].get("FullPrice")
+    return None
+
+
+def _gs_parse_listing_items(page_html):
+    """The one parsing primitive every goddesssnow listing/search page
+    shares (confirmed live identical shape on both search.php results and
+    /vod/updates/page_N.html catalog pages). Windowed POSITIONALLY per
+    item -- from one packageinfo_<id> block to the next -- rather than
+    correlated by matching title text across the page, since the item's
+    own numeric id isn't repeated anywhere near the title/date/duration
+    markup to key off of directly. Returns a full "hit" shape (title/
+    contentUrl/price/thumbnail/publishDate/duration) straight from the
+    listing/search page -- no per-item extra request needed just to
+    browse or search; only the eventual extract() call needs the clip
+    page itself, for the description."""
+    matches = list(_GS_PACKAGEINFO_RE.finditer(page_html))
+    items = []
+    for i, m in enumerate(matches):
+        window_start = m.start()
+        window_end = matches[i + 1].start() if i + 1 < len(matches) else len(page_html)
+        window = page_html[window_start:window_end]
+
+        title = html_lib.unescape(m.group(2))
+        content_url = m.group(3)
+        price = _gs_price_from_json(m.group(4))
+
+        thumb_m = _GS_THUMB_RE.search(window)
+        thumbnail = thumb_m.group(1) if thumb_m else ""
+        if thumbnail.startswith("/"):
+            thumbnail = "https://goddesssnow.com" + thumbnail
+
+        row_m = _GS_TITLE_ROW_RE.search(window)
+        date_display = row_m.group(1) if row_m else None
+        duration = row_m.group(2).replace("&nbsp;", " ").strip() if row_m else None
+
+        items.append({
+            "title": title,
+            "contentUrl": content_url,
+            "price": price,
+            "category": None,
+            "publishDate": gs_parse_date(date_display),
+            "description": "",
+            "thumbnail": thumbnail,
+            "duration": duration,
+            "score": None,
+        })
+    return items
+
+
+def gs_search(store_info, title_candidate, proxy_url=""):
+    """IMPORTANT CORRECTION, same class of fix as clips4sale needed:
+    confirmed live search.php's own result ordering is not trustworthy
+    (exact real title "Seductrix's New Powers" ranked #6 of its own
+    page-1 results, several less-relevant same-franchise titles
+    outranked it). Page 1 (24 results) is treated as a candidate pool
+    only, then re-scored locally with the same SequenceMatcher/
+    TITLE_MATCH_THRESHOLD discipline already proven in c4s_search --
+    reused pattern, not rebuilt. An empty query browses the landing page
+    (/vod/, newest first) instead of hitting search.php, same "no query ->
+    browse" fallback c4s_search uses."""
+    query = (title_candidate or "").strip()
+    session = _make_session(proxy_url)
+    if query:
+        resp = session.get(GS_SEARCH_URL, params={"query": query}, timeout=20)
+    else:
+        resp = session.get(GS_STORE_URL, timeout=20)
+    resp.raise_for_status()
+
+    items = _gs_parse_listing_items(resp.text)
+
+    norm_query = normalize(query)
+    hits = []
+    for item in items:
+        score = SequenceMatcher(None, norm_query, normalize(item["title"])).ratio() if query else None
+        if query and score < TITLE_MATCH_THRESHOLD:
+            continue
+        hits.append({**item, "score": round(score, 3) if score is not None else None})
+    if query:
+        hits.sort(key=lambda h: h["score"] or 0, reverse=True)
+
+    return {
+        "found": len(hits),
+        "totalInStore": None,
+        "largeResultWarning": len(hits) > LARGE_RESULT_WARNING,
+        "hits": hits,
+    }
+
+
+_GS_MODELS_RE = re.compile(r'class="update_models">(.*?)</span>', re.S)
+_GS_FEATURING_RE = re.compile(r"^Featuring\s+(.+?)[!.\n]", re.I)
+
+
+def _gs_structured_performers(page_html):
+    """The site DOES have a real structured performer list after all
+    (found during build, correcting the original investigation, which
+    only checked JSON-LD/description text and missed this) -- a single
+    `class="update_models">Featuring: <a>Name</a> , <a>Name2</a></span>`
+    block, confirmed live to appear exactly once per clip page (not
+    subject to the carousel-ordering ambiguity that broke the first price-
+    parsing attempt, see gs_extract's price-sourcing note) and to
+    correctly list every tagged performer, solo or collab."""
+    m = _GS_MODELS_RE.search(page_html)
+    if not m:
+        return []
+    names = re.findall(r"<a[^>]*>([^<]*)</a>", m.group(1))
+    return [html_lib.unescape(n).strip() for n in names if n.strip()]
+
+
+def _gs_guest_performers(description):
+    """Confirmed live the structured update_models list can still be
+    INCOMPLETE -- a real collab clip's description opened "Featuring
+    Goddess Nyx and Natalie Carnot!" but its own update_models block only
+    listed Alexandra Snow and Goddess Nyx, silently omitting Natalie
+    Carnot (not tagged in the site's own model database, evidently).  So
+    this text-parsed signal is kept as a supplement to
+    _gs_structured_performers, not replaced by it -- it's necessarily
+    best-effort (free-form prose, not a structured field): no match
+    simply means no additional guests detected, not an error."""
+    m = _GS_FEATURING_RE.match((description or "").strip())
+    if not m:
+        return []
+    parts = re.split(r",\s*| and ", m.group(1))
+    return [p.strip() for p in parts if p.strip()]
+
+
+def gs_extract(clip_url, proxy_url="", hint=None):
+    """The first adapter where extract() isn't self-sufficient from the
+    URL alone (see module note above): date and duration are only
+    reliably available from the search/listing row that found this clip,
+    not the clip page itself, so they're threaded through via the
+    optional `hint` dict -- whatever search/listing hit produced
+    clip_url. Degrades gracefully if hint is absent/incomplete: date/
+    duration simply come back missing rather than raising, same as any
+    other optional field elsewhere in this shared shape."""
+    hint = hint or {}
+    session = _make_session(proxy_url)
+    resp = session.get(clip_url, timeout=20)
+    resp.raise_for_status()
+    page_html = resp.text
+
+    title_block_m = re.search(r'class="title_bar">(.*?)</div>', page_html, re.S)
+    title_span_m = re.search(r"<span>([^<]*)</span>", title_block_m.group(1)) if title_block_m else None
+    title = html_lib.unescape(title_span_m.group(1)).strip() if title_span_m else ""
+    if not title:
+        raise RuntimeError(f"Could not extract clip metadata (no title_bar span found) from: {clip_url}")
+
+    desc_m = re.search(r'class="update_description">\s*(.*?)\s*</span>', page_html, re.S)
+    description = html_lib.unescape(desc_m.group(1)).strip() if desc_m else ""
+
+    performers = _gs_structured_performers(page_html) or [GS_DISPLAY_NAME]
+    seen_norms = {normalize(p) for p in performers}
+    for guest in _gs_guest_performers(description):
+        if normalize(guest) not in seen_norms:
+            performers.append(guest)
+            seen_norms.add(normalize(guest))
+
+    # PRICE SOURCING NOTE (confirmed live, corrected from the original
+    # investigation): the clip page can carry a "recommended/related
+    # items" carousel whose own price blocks are NOT reliably positioned
+    # after the clip's own -- confirmed live fetching the exact same URL
+    # twice, the clip's own price block appeared first one time and not
+    # at all in the visible packageinfo blocks the next (template
+    # variance between clip types, see date/duration note below). Taking
+    # "the first data-redirect block on the page" silently returned a
+    # DIFFERENT item's price (17.99 for a carousel neighbor instead of
+    # 12.99 for the actual clip) -- exactly the kind of bug this
+    # adapter's build discipline is meant to catch. The search/listing
+    # hint's price (parsed the same way, but scoped to one unambiguous
+    # catalog row) is reliable and used as the primary source instead,
+    # matching date/duration; a title-anchored (not positional) match on
+    # the clip page itself is kept as a best-effort fallback only when no
+    # hint is available.
+    price = hint.get("price")
+    if price is None:
+        price_m = re.search(
+            r'data-title="' + re.escape(title) + r'" data-redirect="[^"]*">(\{.*?\})</div>', page_html, re.S
+        )
+        price = _gs_price_from_json(price_m.group(1)) if price_m else None
+
+    thumb_m = re.search(r'<meta property="og:image" content="([^"]*)"', page_html)
+    thumbnail = html_lib.unescape(thumb_m.group(1)) if thumb_m else ""
+
+    # DATE/DURATION SOURCING NOTE (confirmed live, reinforces the original
+    # investigation rather than overturning it): the clip page's own
+    # date/duration markup is template-dependent, not uniform -- some
+    # clip pages expose a plain update_date div with no duration
+    # counterpart nearby, others expose a nested release-date/duration
+    # pair inside a differently-named wrapper. The search/listing row's
+    # date+duration markup is confirmed uniform across every catalog row
+    # checked, so it remains the sole source here rather than adding
+    # fragile per-template clip-page parsing on top.
+    return {
+        "title": title,
+        "date": hint.get("publishDate"),
+        "performers": performers,
+        "description": description,
+        "thumbnail": thumbnail,
+        "price": price,
+        "duration": hint.get("duration"),
+    }
+
+
+# ── Full-catalog crawl -- FALLBACK ONLY, same role/discipline as every
+# prior adapter's crawl (c4s_crawl_full_catalog, _mv_crawl_full_catalog):
+# in-store search (gs_search) is the primary "find this clip" mechanism;
+# this exists for browsing/verification, not wired into the task
+# dispatcher any more than c4s's crawl currently is. Path-segment
+# pagination (/vod/updates/page_N.html), confirmed live page 2 returns
+# genuinely different real items from page 1 -- no query-string-drop
+# redirect trap here either (same as clips4sale, unlike manyvids). ────────
+
+def gs_crawl_full_catalog(proxy_url="", max_pages=GS_MAX_PAGES):
+    session = _make_session(proxy_url)
+    all_items = []
+    seen_urls = set()
+    page_num = 1
+    while True:
+        url = GS_STORE_URL if page_num == 1 else GS_UPDATES_PAGE_URL.format(page=page_num)
+        resp = session.get(url, timeout=20)
+        if resp.status_code == 404:
+            break
+        resp.raise_for_status()
+        items = _gs_parse_listing_items(resp.text)
+        if not items:
+            break
+        new_count = 0
+        for item in items:
+            if item["contentUrl"] not in seen_urls:
+                seen_urls.add(item["contentUrl"])
+                all_items.append(item)
+                new_count += 1
+        log(f"goddesssnow: fetched catalog page {page_num} ({len(items)} items, {new_count} new, "
+            f"{len(all_items)} total so far)")
+        if new_count == 0:
+            break
+        page_num += 1
+        if page_num > max_pages:
+            log(f"goddesssnow: hit max_pages safety cap ({max_pages}) -- stopping early")
+            break
+    return all_items
+
+
+# ═════════════════════════════════════════════════════════════════════════
 # Unified dispatch -- routes to the correct site adapter. This is the ONLY
 # place that needs to change to add a future site (e.g. Data18, EvilAngel):
 # add a branch here plus a new "SITE ADAPTER: X" section above.
@@ -1377,8 +1737,9 @@ def discover(candidate_name, config, proxy_url=""):
 
     iwc_result = iwc_discover(candidate_name, proxy_url=proxy_url)
     c4s_result = c4s_discover(candidate_name, proxy_url=proxy_url)
+    gs_result = gs_discover(candidate_name)
 
-    confident_results = [r for r in (iwc_result, c4s_result) if r["confidence"] == "confident"]
+    confident_results = [r for r in (iwc_result, c4s_result, gs_result) if r["confidence"] == "confident"]
 
     if len(confident_results) == 1:
         return confident_results[0]
@@ -1389,7 +1750,8 @@ def discover(candidate_name, config, proxy_url=""):
         suggestions = [{**r["match"], "score": r["score"]} for r in confident_results]
         return {"confidence": "none", "source": "multi_site_match", "match": None, "score": None, "suggestions": suggestions}
 
-    suggestions = list(iwc_result.get("suggestions") or []) + list(c4s_result.get("suggestions") or [])
+    suggestions = (list(iwc_result.get("suggestions") or []) + list(c4s_result.get("suggestions") or [])
+                   + list(gs_result.get("suggestions") or []))
     try:
         suggestions += c4s_sitewide_search_suggestions(candidate_name, proxy_url=proxy_url)
     except Exception as e:
@@ -1407,6 +1769,9 @@ def search(store_info, title_candidate, config, stash_url, api_key, proxy_url=""
         return mv_search(store_info, title_candidate, config, stash_url, api_key, proxy_url=proxy_url)
     if site == "clips4sale":
         result = c4s_search(store_info, title_candidate, proxy_url=proxy_url)
+        return result, None
+    if site == "goddesssnow":
+        result = gs_search(store_info, title_candidate, proxy_url=proxy_url)
         return result, None
     raise RuntimeError(f"Unknown site {site!r} on store info -- cannot search")
 
@@ -1430,6 +1795,10 @@ def extract(clip_url, site, hit, proxy_url=""):
         scraped = mv_extract(clip_url, proxy_url=proxy_url)
     elif site == "clips4sale":
         scraped = c4s_extract(clip_url, proxy_url=proxy_url)
+    elif site == "goddesssnow":
+        # The only adapter that needs the hit -- see gs_extract's docstring
+        # and the module note in the goddesssnow adapter section above.
+        scraped = gs_extract(clip_url, proxy_url=proxy_url, hint=hit)
     else:
         raise RuntimeError(f"Unknown site {site!r} -- cannot extract")
 
@@ -1623,7 +1992,7 @@ def main():
             site = detect_site_from_url(url)
             if not site:
                 raise RuntimeError(
-                    f"That URL's domain doesn't match a known site (iwantclips.com or manyvids.com): {url}"
+                    f"That URL's domain doesn't match a known site ({', '.join(SITE_DOMAINS.keys())}): {url}"
                 )
             result = {"ok": True, "output": {"site": site}}
 

@@ -1,6 +1,6 @@
 name: IWantClipsStashDB
 description: Scrape iWantClips and match against local Stash. Adds an iWantClips button to scene pages.
-version: "0.7.3"
+version: "0.7.4"
 
 exec:
   - python

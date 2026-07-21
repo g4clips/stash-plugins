@@ -1,0 +1,60 @@
+name: SuperScrape
+description: Unified scraper for iWantClips, ManyVids, and Clips4Sale, matching against local Stash. Adds a Scrape button to scene pages.
+version: "0.2.1"
+
+exec:
+  - python
+  - "{pluginDir}/SuperScrape.py"
+
+interface: raw
+
+ui:
+  javascript:
+    - SuperScrape.js
+  css:
+    - SuperScrape.css
+
+settings:
+  proxyUrl:
+    displayName: Outbound Proxy URL (optional)
+    description: >
+      HTTP/HTTPS proxy for outbound requests to iwantclips.com/manyvids.com,
+      e.g. http://your-stash-host-ip:8888. Leave blank to scrape directly with
+      no proxy.
+    type: STRING
+
+tasks:
+  - name: "Test Config Roundtrip"
+    description: Internal check -- writes and reads back a dummy performerStoreMap entry to verify config plumbing. Safe to run any time.
+    defaultArgs:
+      mode: test_config
+
+  - name: "Parse Filename"
+    description: Parses a local filename into a candidate performer name and clip title. Pass 'filename' as an arg.
+    defaultArgs:
+      mode: parse_filename
+
+  - name: "Discover Store"
+    description: Looks up a performer name against known stores (performerStoreMap first, then iwantclips' sitemap as a fallback -- manyvids has no directory to fall back to). Pass 'performer_name' as an arg.
+    defaultArgs:
+      mode: discover_store
+
+  - name: "Detect Site"
+    description: Detects which site (iwantclips/manyvids) a pasted store URL belongs to. Pass 'url' as an arg.
+    defaultArgs:
+      mode: detect_site
+
+  - name: "Search Store"
+    description: Searches a confirmed store's clips (live Typesense query for iwantclips, cached-catalog fuzzy match for manyvids). Pass 'store_info' (JSON) and 'title_candidate' as args.
+    defaultArgs:
+      mode: search_store
+
+  - name: "Scrape Clip"
+    description: Scrapes one clip page and resolves performers/studio against local Stash. Pass 'url', 'site', 'studio_name', and 'hit' (JSON) as args.
+    defaultArgs:
+      mode: scrape_clip
+
+  - name: "Check Duplicates"
+    description: Checks for likely-duplicate local scenes via performer+title fuzzy match and phash. Pass 'scraped_title', 'performer_ids' (JSON), 'current_scene_id', and 'current_phashes' (JSON) as args.
+    defaultArgs:
+      mode: check_duplicates

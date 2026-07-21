@@ -485,13 +485,65 @@ def _clean_ld_json(raw):
     return raw.strip()
 
 
+def _repair_ld_json(raw):
+    """Best-effort repair for a confirmed real site-side encoding bug: a
+    literal, unescaped '"' character embedded inside a JSON string value
+    (confirmed live on a real clip: a description containing the text
+    'command to "cum."' breaks json.loads on an otherwise well-formed
+    JSON-LD block -- the strict parser has no way to know that quote
+    isn't meant to end the string). Walks the text tracking whether we're
+    inside a string value; when a '"' is hit that ISN'T actually closing
+    the string (the next non-whitespace character isn't one of : , } ]),
+    it's a literal quote the site failed to escape -- escaped here
+    instead of trusted as a real string terminator."""
+    out = []
+    in_string = False
+    i, n = 0, len(raw)
+    while i < n:
+        ch = raw[i]
+        if in_string:
+            if ch == "\\" and i + 1 < n:
+                out.append(ch)
+                out.append(raw[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                j = i + 1
+                while j < n and raw[j] in " \t\r\n":
+                    j += 1
+                if j >= n or raw[j] in ":,}]":
+                    in_string = False
+                    out.append(ch)
+                else:
+                    out.append('\\"')
+                i += 1
+                continue
+            out.append(ch)
+            i += 1
+        else:
+            out.append(ch)
+            if ch == '"':
+                in_string = True
+            i += 1
+    return "".join(out)
+
+
 def _find_json_ld_objects(page_html):
     objects = []
     for m in re.finditer(r'<script type="application/ld\+json">(.*?)</script>', page_html, re.S):
+        raw = _clean_ld_json(m.group(1))
         try:
-            objects.append(json.loads(_clean_ld_json(m.group(1))))
+            objects.append(json.loads(raw))
+            continue
         except Exception:
             pass
+        # Strict parse failed -- try the repair pass for the known stray-
+        # unescaped-quote bug before giving up on this block entirely.
+        try:
+            objects.append(json.loads(_repair_ld_json(raw)))
+            log("Repaired malformed JSON-LD (stray unescaped quote in a string value) on a clip page")
+        except Exception:
+            pass  # genuinely unparseable, not just the known quote bug -- skip silently as before
     return objects
 
 

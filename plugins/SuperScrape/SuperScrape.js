@@ -17,6 +17,8 @@
   const BTN_ID     = "ss-open-btn";
   const MODAL_ID   = "ss-modal-overlay";
   const RESULT_TAG = "__superscrape_result__";
+  const BATCH_BTN_ID   = "ss-batch-fab";
+  const BATCH_MODAL_ID = "ss-batch-modal-overlay";
 
   // Mirrors SuperScrape.py's SITE_DOMAINS exactly -- kept small/duplicated
   // here rather than round-tripping through a "Detect Site" task on every
@@ -1272,7 +1274,157 @@
     }
   }
 
+  // ── Batch scrape: entry point ─────────────────────────────────────────────
+  // Unlike the per-scene modal (gated to /scenes/:id via isScenePage()), this
+  // repo has no existing precedent for injecting into the scenes LIBRARY
+  // page's toolbar/selection UI (checked: no other plugin here does it), so
+  // rather than guess at that page's DOM, this is a standalone always-on
+  // floating button, independent of route. It opens its own modal that
+  // queries Stash directly for candidate scenes rather than relying on
+  // whatever the user has selected in the native scenes grid.
+
+  function injectBatchButton() {
+    if (document.getElementById(BATCH_BTN_ID)) return;
+    const btn = document.createElement("button");
+    btn.id = BATCH_BTN_ID;
+    btn.className = "ss-batch-fab";
+    btn.textContent = "Batch Scrape";
+    btn.title = "Queue multiple scenes for SuperScrape review";
+    btn.addEventListener("click", openBatchModal);
+    document.body.appendChild(btn);
+  }
+
+  function closeBatchModal() { document.getElementById(BATCH_MODAL_ID)?.remove(); }
+
+  function setBatchError(msg) {
+    const el = document.getElementById("ss-batch-error");
+    if (!el) return;
+    el.textContent = msg ? `⚠ ${msg}` : "";
+    el.style.display = msg ? "block" : "none";
+  }
+
+  function setBatchStatus(msg) {
+    const el = document.getElementById("ss-batch-status");
+    if (!el) return;
+    el.textContent = msg;
+    el.style.display = msg ? "block" : "none";
+  }
+
+  function openBatchModal() {
+    if (document.getElementById(BATCH_MODAL_ID)) return;
+    const overlay = document.createElement("div");
+    overlay.id = BATCH_MODAL_ID;
+    overlay.className = "ss-overlay";
+    overlay.innerHTML = `
+      <div id="ss-batch-box" class="ss-dialog">
+        <div class="ss-dialog-header">
+          <span>SuperScrape → Batch Scrape</span>
+          <button id="ss-batch-close" class="ss-dialog-close">✕</button>
+        </div>
+        <div id="ss-batch-error"  class="ss-dialog-error"  style="display:none"></div>
+        <div id="ss-batch-status" class="ss-dialog-status" style="display:none"></div>
+        <div id="ss-batch-content" class="ss-dialog-content"></div>
+      </div>`;
+    document.body.appendChild(overlay);
+    document.getElementById("ss-batch-close").onclick = closeBatchModal;
+    overlay.addEventListener("click", e => { if (e.target === overlay) closeBatchModal(); });
+    renderBatchSceneSelect();
+  }
+
+  // ── Batch scrape: Step 1 — candidate scene selection ──────────────────────
+  // Candidate filter confirmed live against this Stash instance's GraphQL
+  // schema (no repo precedent existed for "unorganized/un-URLed" before this):
+  // SceneFilterType.organized is a plain Boolean (not modifier-wrapped), and
+  // .url is a StringCriterionInput supporting IS_NULL.
+
+  let _batchAllScenes = [];
+  let _batchSelectedIds = new Set();
+
+  async function fetchBatchCandidateScenes() {
+    const data = await gql(`
+      query SuperScrapeBatchCandidates {
+        findScenes(
+          scene_filter: { organized: false, url: { modifier: IS_NULL, value: "" } }
+          filter: { per_page: -1, sort: "created_at", direction: DESC }
+        ) {
+          scenes { id title files { basename } paths { screenshot } }
+        }
+      }
+    `);
+    return data.findScenes.scenes;
+  }
+
+  async function renderBatchSceneSelect() {
+    setBatchError(""); setBatchStatus("Loading unorganized, un-URLed scenes…");
+    const content = document.getElementById("ss-batch-content");
+    content.innerHTML = `<p class="ss-hint">Loading scenes…</p>`;
+
+    try {
+      _batchAllScenes = await fetchBatchCandidateScenes();
+    } catch (e) {
+      setBatchStatus("");
+      setBatchError(e.message);
+      return;
+    }
+    setBatchStatus("");
+    _batchSelectedIds = new Set();
+
+    if (!_batchAllScenes.length) {
+      content.innerHTML = `<p class="ss-hint">No unorganized, un-URLed scenes found — nothing to batch scrape.</p>`;
+      return;
+    }
+
+    content.innerHTML = `
+      <div class="ss-row" style="justify-content:space-between">
+        <label class="ss-item-label" style="margin:0">
+          <input type="checkbox" id="ss-batch-selall" />
+          <span>Select all (${_batchAllScenes.length})</span>
+        </label>
+        <span id="ss-batch-count" class="ss-hint">0 selected</span>
+      </div>
+      <div id="ss-batch-scene-list" class="ss-batch-scene-list">
+        ${_batchAllScenes.map(s => `
+          <label class="ss-batch-scene-row" data-id="${esc(s.id)}">
+            <input type="checkbox" class="ss-batch-scene-chk" data-id="${esc(s.id)}" />
+            ${thumbWithHover(s.paths?.screenshot, "ss-result-thumb")}
+            <span class="ss-batch-scene-name">${esc(s.title || (s.files || [])[0]?.basename || `Scene ${s.id}`)}</span>
+          </label>`).join("")}
+      </div>
+      <div class="ss-row" style="margin-top:.5rem;flex-shrink:0">
+        <button id="ss-batch-start" class="ss-btn ss-btn-primary" disabled>Start Batch</button>
+      </div>`;
+
+    function updateCount() {
+      document.getElementById("ss-batch-count").textContent = `${_batchSelectedIds.size} selected`;
+      document.getElementById("ss-batch-start").disabled = _batchSelectedIds.size === 0;
+    }
+
+    document.querySelectorAll(".ss-batch-scene-chk").forEach(cb => {
+      cb.addEventListener("change", () => {
+        if (cb.checked) _batchSelectedIds.add(cb.dataset.id);
+        else _batchSelectedIds.delete(cb.dataset.id);
+        updateCount();
+        document.getElementById("ss-batch-selall").checked = _batchSelectedIds.size === _batchAllScenes.length;
+      });
+    });
+
+    document.getElementById("ss-batch-selall").addEventListener("change", e => {
+      const checked = e.target.checked;
+      document.querySelectorAll(".ss-batch-scene-chk").forEach(cb => { cb.checked = checked; });
+      _batchSelectedIds = new Set(checked ? _batchAllScenes.map(s => s.id) : []);
+      updateCount();
+    });
+
+    document.getElementById("ss-batch-start").onclick = () => {
+      // Stage 2 replaces this stub with real queue-building: looping the
+      // existing parse/discover/search/scrape/dupe-check pipeline over
+      // _batchSelectedIds without applying anything to Stash yet.
+      content.innerHTML = `<p class="ss-hint">${_batchSelectedIds.size} scene(s) selected. Queue building isn't implemented yet — coming in stage 2.</p>`;
+    };
+  }
+
   // ── Boot ───────────────────────────────────────────────────────────────────
   startListening();
+  injectBatchButton();
 
 })();

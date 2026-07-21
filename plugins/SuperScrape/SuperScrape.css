@@ -2,14 +2,15 @@
    styles mirror IWantClipsStashDB.css/ManyVidsStashDB.css's tokens under
    new ss- prefixed ids/classes (no cross-plugin CSS dependency). */
 
-/* ── Modal overlay ───────────────────────────────────────────── */
-#ss-modal-overlay {
+/* ── Modal overlay (shared by the per-scene modal and the batch-scrape
+   modal via the .ss-overlay/.ss-dialog/etc classes below) ────────────── */
+#ss-modal-overlay, .ss-overlay {
   position: fixed; inset: 0;
   background: rgba(0,0,0,.65);
   z-index: 9999;
 }
 
-#ss-box {
+#ss-box, .ss-dialog {
   background: #1e1e2e;
   border: 1px solid #444;
   border-radius: 8px;
@@ -24,7 +25,7 @@
   transform: translate(-50%, -50%);
 }
 
-#ss-header {
+#ss-header, .ss-dialog-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: .75rem 1rem;
   border-bottom: 1px solid #333;
@@ -34,12 +35,12 @@
   user-select: none;
 }
 
-#ss-close {
+#ss-close, .ss-dialog-close {
   background: none; border: none; color: #aaa;
   font-size: 1.1rem; cursor: pointer; padding: .1rem .4rem;
   border-radius: 4px;
 }
-#ss-close:hover { background: #333; color: #fff; }
+#ss-close:hover, .ss-dialog-close:hover { background: #333; color: #fff; }
 
 #ss-tabs {
   display: flex; gap: .25rem;
@@ -54,7 +55,7 @@
 .ss-tab:hover { color: #ccc; }
 .ss-tab-active { color: #eee; border-bottom-color: #6ea8fe; }
 
-#ss-error {
+#ss-error, .ss-dialog-error {
   margin: .5rem 1rem 0;
   padding: .4rem .7rem;
   border-radius: 4px;
@@ -63,12 +64,12 @@
   color: #f8a0a8; font-size: .85rem;
 }
 
-#ss-status {
+#ss-status, .ss-dialog-status {
   margin: .4rem 1rem 0;
   color: #aaa; font-size: .82rem; font-style: italic;
 }
 
-#ss-content {
+#ss-content, .ss-dialog-content {
   padding: .9rem 1rem 1rem;
   overflow-y: auto;
   flex: 1 1 0;
@@ -77,6 +78,10 @@
   flex-direction: column;
   gap: .6rem;
 }
+
+/* The batch dialog doesn't wire up the drag-to-move handlers the per-scene
+   modal has, so its header shouldn't hint at a grab affordance it lacks. */
+.ss-dialog-header { cursor: default; }
 
 /* ── Shared ──────────────────────────────────────────────────── */
 .ss-hint { color: #999; font-size: .85rem; margin: 0; }
@@ -347,3 +352,26 @@
 
 /* ── Scene toolbar button ─────────────────────────────────────── */
 #ss-open-btn { margin-left: 8px; font-size: .85rem; }
+
+/* ── Batch scrape: floating entry button + scene picker ──────────── */
+.ss-batch-fab {
+  position: fixed; right: 20px; bottom: 20px; z-index: 9997;
+  padding: .6rem 1.1rem; border-radius: 24px; border: none;
+  background: #0d6efd; color: #fff; font-size: .85rem; font-weight: 600;
+  cursor: pointer; box-shadow: 0 4px 16px rgba(0,0,0,.4);
+}
+.ss-batch-fab:hover { background: #0a58ca; }
+
+.ss-batch-scene-list {
+  display: flex; flex-direction: column; gap: .3rem;
+  max-height: 55vh; overflow-y: auto;
+}
+.ss-batch-scene-row {
+  display: flex; align-items: center; gap: .6rem;
+  padding: .4rem .5rem;
+  border: 1px solid #3a3a4a; border-radius: 6px;
+  background: #12121a; cursor: pointer;
+}
+.ss-batch-scene-row:hover { border-color: #0d6efd; }
+.ss-batch-scene-chk { width: 16px; height: 16px; cursor: pointer; accent-color: #0d6efd; flex-shrink: 0; }
+.ss-batch-scene-name { font-size: .85rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

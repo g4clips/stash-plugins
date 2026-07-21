@@ -435,3 +435,96 @@ btn.className = "btn btn-secondary"; // grey
 
 ### ✅ In React components rendered via patch.after, CSS vars DO work
 because the component is inside Stash's React tree.
+
+---
+
+## 15. Local Dev Sync — Getting Code From This Repo Onto a Running Stash
+
+Two different deployment models exist across plugins in this repo. **Check
+which one a given plugin uses before assuming either applies** — mixing
+them up (e.g. writing robocopy instructions for a plugin that's actually
+installed via GitHub Pages) documents a workflow that plugin doesn't use.
+
+You can tell them apart by whether the plugin's deployed folder
+(`C:\Users\<you>\.stash\plugins\<PluginFolder>\`) contains a `manifest`
+file — that file is written by Stash itself, only for plugins installed
+via a source URL, never for manually-copied ones.
+
+### Model A: Manual Copy (robocopy)
+
+Used by: SuperScrape, tag-helper (TagChips), IWantClipsStashDB, ManyVidsStashDB.
+
+No `source_repository` on record with Stash for these — the only way their
+code reaches the live instance is a manual file copy.
+
+```powershell
+# NOTE: NTFS junctions are NOT reliably picked up by Stash's plugin
+# directory scanner on Windows (verified against v0.31.1 -- the plugin
+# silently failed to register). True symlinks work but need admin
+# rights. Use a real copy instead:
+robocopy C:\Users\<you>\Documents\stash-plugins\plugins\<PluginFolder> `
+    C:\Users\<you>\.stash\plugins\<PluginFolder> /MIR /XD __pycache__
+```
+
+Then in Stash: Settings → Plugins → Reload Plugins.
+
+**Re-run the robocopy after every source edit.** There is no live
+symlink, so changes to the repo folder are NOT automatically reflected.
+This bit us for real: an entire adapter (SuperScrape's goddesssnow.com
+support) was built, tested, and reported "verified live" across a full
+session without ever being copied to the live plugins directory — the
+instance kept running the pre-existing version the whole time, and every
+"live" test that session was actually exercising the git checkout
+directly (`import` + direct function calls), never the deployed plugin.
+**Verify a deploy actually landed — don't just trust that robocopy ran:**
+
+```graphql
+mutation { reloadPlugins }
+```
+```graphql
+{ plugins { id version } }
+```
+
+Confirm the reported version matches the plugin's `.yml`, and re-run any
+"live" test through `runPluginTask` (the same mutation the plugin's own
+JS uses) rather than a direct Python import/function call — that's the
+only way to actually exercise the deployed subprocess instead of the git
+checkout.
+
+### Model B: GitHub Pages Install/Update
+
+Used by: Data18StashDB, marker-scenes, seek-controls, FindDuplicates, submit-to-my-stashbox.
+
+These were installed in Stash via **Settings → Plugins → Available
+Plugins → Add Source**, pointing at
+`https://g4clips.github.io/stash-plugins/index.yml` (built by
+`.github/workflows/deploy.yml` on every push to `main`, see §12). Their
+deployed copy is pinned to whatever commit was `HEAD` on `main` the last
+time someone clicked **Update** on that plugin in Stash's Plugins
+settings — **pushing to `main` alone does not update a running
+instance**; the update still has to be manually triggered per plugin (or
+via "Update All").
+
+You can tell which commit a deployed copy is pinned to two ways:
+- The version string reported by `{ plugins { id version } }` is suffixed
+  with a short commit hash, e.g. `3.2.0-945e885`.
+- The plugin's deployed folder has a `manifest` file (written by Stash,
+  not part of this repo) recording `version`, `date`, and
+  `source_repository`.
+
+To get a change live for one of these plugins:
+1. Commit and push to `main` (triggers the GitHub Action, which
+   republishes `index.yml` — usually within a minute or two; check the
+   Actions tab if unsure).
+2. In Stash: **Settings → Plugins → Available Plugins**, find the
+   plugin, click **Update** (or **Update All**).
+3. Confirm via `{ plugins { id version } }` that the commit-hash suffix
+   now matches your new `HEAD`.
+
+If you want to iterate locally without the push+publish+update round
+trip, you can robocopy the same way as Model A directly over a
+GitHub-Pages-installed plugin's folder as a temporary local-testing
+shortcut — but the *next* "Update" click in Stash will silently overwrite
+your local copy with whatever's actually published, since Stash has no
+way to tell the difference. Don't rely on this for anything you haven't
+also committed and pushed.

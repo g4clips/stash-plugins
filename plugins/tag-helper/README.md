@@ -84,20 +84,18 @@ into a dev instance and iterate from real errors, not just review the diff.
 
 ## Local dev setup
 
-Follow the standard workflow from the project notes:
+This plugin uses **Model A (manual copy)** — see
+[`PLUGIN-DEV-GUIDE.md` §15](../../PLUGIN-DEV-GUIDE.md#model-a-manual-copy-robocopy)
+for the full canonical instructions (why robocopy instead of a symlink,
+how to verify a deploy actually landed via GraphQL, etc.).
 
 ```powershell
-# NOTE: NTFS junctions are NOT reliably picked up by Stash's plugin
-# directory scanner on Windows (verified against v0.31.1 — the plugin
-# silently failed to register). True symlinks work but need admin
-# rights. Use a real copy instead, matching marker-scenes/seek-controls:
 robocopy C:\Users\<you>\Documents\stash-plugins\plugins\tag-helper `
     C:\Users\<you>\.stash\plugins\tag-helper /MIR
 ```
 
-Then in Stash: Settings → Plugins → reload plugins (or restart) to pick it up.
-Re-run the robocopy after every source edit — there's no live symlink, so
-changes to the repo folder aren't automatically reflected.
+Then in Stash: Settings → Plugins → Reload Plugins. **Re-run the robocopy
+after every source edit** — there's no live symlink.
 
 Add this plugin's folder to the `stash-plugins` repo under `plugins/TagChips/`
 alongside the existing plugins, with its own `config.ini.example` /

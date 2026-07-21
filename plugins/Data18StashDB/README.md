@@ -63,6 +63,16 @@ Use an **HTTP/HTTPS proxy URL**, e.g. `http://your-stash-host-ip:8888` — not S
 6. Check which fields to apply in the comparison table, and add any performers to your local stash if you so desire
 7. Click **Apply to Scene**
 
+## Local dev setup
+
+This plugin uses **Model B (GitHub Pages install/update)** — see
+[`PLUGIN-DEV-GUIDE.md` §15](../../PLUGIN-DEV-GUIDE.md#model-b-github-pages-installupdate)
+for the full canonical instructions. In short: push to `main`, then click
+**Update** on this plugin in Stash's **Settings → Plugins → Available
+Plugins** (pushing alone does not update a running instance). Confirm via
+`{ plugins { id version } }` that the commit-hash suffix matches your new
+`HEAD` before trusting a "live" test.
+
 ## License
 
 AGPL-3.0

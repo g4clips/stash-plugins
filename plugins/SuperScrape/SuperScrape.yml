@@ -1,6 +1,6 @@
 name: SuperScrape
-description: Unified scraper for iWantClips, ManyVids, and Clips4Sale, matching against local Stash. Adds a Scrape button to scene pages.
-version: "0.2.1"
+description: Unified scraper for iWantClips, ManyVids, Clips4Sale, and goddesssnow.com, matching against local Stash. Adds a Scrape button to scene pages.
+version: "0.3.0"
 
 exec:
   - python
@@ -18,9 +18,9 @@ settings:
   proxyUrl:
     displayName: Outbound Proxy URL (optional)
     description: >
-      HTTP/HTTPS proxy for outbound requests to iwantclips.com/manyvids.com,
-      e.g. http://your-stash-host-ip:8888. Leave blank to scrape directly with
-      no proxy.
+      HTTP/HTTPS proxy for outbound requests to iwantclips.com, manyvids.com,
+      clips4sale.com, or goddesssnow.com, e.g. http://your-stash-host-ip:8888.
+      Leave blank to scrape directly with no proxy.
     type: STRING
 
 tasks:
@@ -35,17 +35,17 @@ tasks:
       mode: parse_filename
 
   - name: "Discover Store"
-    description: Looks up a performer name against known stores (performerStoreMap first, then iwantclips' sitemap as a fallback -- manyvids has no directory to fall back to). Pass 'performer_name' as an arg.
+    description: Looks up a performer name against known stores (performerStoreMap first, then iwantclips'/clips4sale's sitemaps and goddesssnow's fixed single-site match as fallbacks -- manyvids has no directory to fall back to). Pass 'performer_name' as an arg.
     defaultArgs:
       mode: discover_store
 
   - name: "Detect Site"
-    description: Detects which site (iwantclips/manyvids) a pasted store URL belongs to. Pass 'url' as an arg.
+    description: Detects which site (iwantclips/manyvids/clips4sale/goddesssnow) a pasted store URL belongs to. Pass 'url' as an arg.
     defaultArgs:
       mode: detect_site
 
   - name: "Search Store"
-    description: Searches a confirmed store's clips (live Typesense query for iwantclips, cached-catalog fuzzy match for manyvids). Pass 'store_info' (JSON) and 'title_candidate' as args.
+    description: Searches a confirmed store's clips (live Typesense query for iwantclips, cached-catalog fuzzy match for manyvids, in-store search + local re-rank for clips4sale and goddesssnow). Pass 'store_info' (JSON) and 'title_candidate' as args.
     defaultArgs:
       mode: search_store
 

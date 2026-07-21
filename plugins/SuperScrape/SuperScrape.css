@@ -238,6 +238,7 @@
 }
 .ss-compare-current { color: #888; border-left: 1px solid #2a2a3a; border-right: 1px solid #2a2a3a; }
 .ss-compare-incoming { color: #eee; }
+.ss-compare-incoming-full { grid-column: 2 / span 2; border-left: 1px solid #2a2a3a; }
 .ss-compare-toggle {
   display: flex; align-items: flex-start; justify-content: center;
   padding-top: .6rem; border-left: 1px solid #2a2a3a;

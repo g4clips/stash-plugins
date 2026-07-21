@@ -915,11 +915,12 @@
         <div class="ss-compare-toggle"><input type="checkbox" class="ss-field-chk" data-field="${field}" checked /></div>
       </div>`).join("");
 
+    const currentDescriptionBlank = !current.details;
     const descriptionRowHtml = scraped.description ? `
-      <div class="ss-compare-row ss-compare-row-tall">
+      <div class="ss-compare-row ss-compare-row-tall${currentDescriptionBlank ? " ss-compare-row-full" : ""}">
         <div class="ss-compare-label">Description</div>
-        <div class="ss-compare-current ss-trunc">${esc(current.details || "—")}</div>
-        <div class="ss-compare-incoming">
+        ${currentDescriptionBlank ? "" : `<div class="ss-compare-current ss-trunc">${esc(current.details)}</div>`}
+        <div class="ss-compare-incoming${currentDescriptionBlank ? " ss-compare-incoming-full" : ""}">
           <textarea id="ss-details-edit" class="ss-textarea">${esc(scraped.description)}</textarea>
         </div>
         <div class="ss-compare-toggle"><input type="checkbox" class="ss-field-chk" data-field="details" checked /></div>
@@ -946,7 +947,10 @@
       </div>
       <div id="ss-tagpicker-wrap">
         <div class="ss-section-label">Add tags</div>
-        <input id="ss-tag-filter" class="ss-input" type="text" placeholder="Filter tags…" style="margin-bottom:.4rem" />
+        <div class="ss-row" style="margin-bottom:.4rem">
+          <input id="ss-tag-filter" class="ss-input" type="text" placeholder="Filter tags…" />
+          <button id="ss-tag-filter-clear" class="ss-btn ss-btn-secondary ss-btn-xs" type="button" style="display:none" title="Clear filter">✕</button>
+        </div>
         <div id="ss-tag-grid" class="ss-tag-grid"><span class="ss-hint">Loading tags…</span></div>
       </div>`;
 
@@ -1070,11 +1074,21 @@
     drawTagGrid(_allTagsCache);
 
     const filterInput = document.getElementById("ss-tag-filter");
+    const filterClearBtn = document.getElementById("ss-tag-filter-clear");
     if (filterInput) {
       filterInput.addEventListener("input", () => {
         const q = normalize(filterInput.value);
         const filtered = q ? _allTagsCache.filter(t => normalize(t.name).includes(q)) : _allTagsCache;
         drawTagGrid(filtered);
+        if (filterClearBtn) filterClearBtn.style.display = filterInput.value ? "" : "none";
+      });
+    }
+    if (filterClearBtn) {
+      filterClearBtn.addEventListener("click", () => {
+        filterInput.value = "";
+        drawTagGrid(_allTagsCache);
+        filterClearBtn.style.display = "none";
+        filterInput.focus();
       });
     }
   }

@@ -23,6 +23,17 @@ Convention (matches this repo's git history): patch (x.x.X) for fixes,
 minor (x.X.0) for features/new capability, major (X.0.0) for breaking
 changes.
 
+## 3. State the expected diff size
+After showing a diff for approval, add a one-line summary: number of
+files touched, and approximate insertions/deletions per file (e.g. "2
+files: SuperScrape.js +46/-3, SuperScrape.yml +2/-1").
+
+This is a cross-check against `git diff --stat` output after the person
+applies and stages the change — if the stated total doesn't roughly
+match what git actually reports, that's a signal something unexpected
+happened and should be investigated before committing, not silently
+trusted.
+
 ## Local dev plugin sync
 Every plugin in this repo uses the same deployment model (GitHub Pages
 install/update) — a plugin built/edited in the git tree is NOT

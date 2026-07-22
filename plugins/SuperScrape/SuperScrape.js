@@ -1092,31 +1092,15 @@
     return [..._selectedTagIds];
   }
 
-  async function renderTagPicker(resolvedPerformers) {
-    // Deliberately does NOT pre-highlight tags the scene already has: the
-    // picker only ever ADDS (see applyToScene's merge, never a replace),
-    // so pre-checking an existing tag and letting the user "uncheck" it
-    // would falsely imply removal is possible here.
-    const grid = document.getElementById("ss-tag-grid");
-    if (!grid) return;
-    _selectedTagIds = new Set();
-    try {
-      if (!_allTagsCache) _allTagsCache = await fetchAllTags();
-    } catch (e) {
-      grid.innerHTML = `<span class="ss-hint">Could not load tags: ${esc(e.message)}</span>`;
-      return;
-    }
-
-    // Pre-select the UNION of tags already on any MATCHED (found: true)
-    // performer -- i.e. an existing local Stash performer resolved via
-    // resolve_performer's exact/alias/fuzzy tiers, NOT one newly created
-    // via "Create in Stash" during this same scrape (no localId to look
-    // up tags against yet). One-time pre-population at render time only
-    // -- does not re-run if performer checkboxes change later elsewhere
-    // in the comparison table (re-syncing on every toggle would clobber
-    // manual chip edits). Chips pre-selected this way are exactly as
-    // toggleable as any manually-clicked chip -- same "picker only ever
-    // adds" invariant as the comment above, nothing locked.
+  // Pre-select the UNION of tags already on any MATCHED (found: true)
+  // performer -- i.e. an existing local Stash performer resolved via
+  // resolve_performer's exact/alias/fuzzy tiers, NOT one newly created via
+  // "Create in Stash" during this same scrape (no localId to look up tags
+  // against yet). Extracted out of renderTagPicker so the batch queue-
+  // builder can run the exact same pre-selection at queue time (per its
+  // own "tags carry through" requirement) without duplicating this logic.
+  async function computePreselectedTagIds(resolvedPerformers) {
+    const ids = new Set();
     const matchedIds = [...new Set((resolvedPerformers || [])
       .filter(p => p.found && p.localId)
       .map(p => Number(p.localId)))];
@@ -1124,13 +1108,37 @@
       try {
         const performers = await fetchPerformerTags(matchedIds);
         for (const p of performers) {
-          for (const t of (p.tags || [])) _selectedTagIds.add(t.id);
+          for (const t of (p.tags || [])) ids.add(t.id);
         }
       } catch (e) {
         // Non-fatal -- pre-selection is a convenience, not required for
         // the picker to function; falls through with nothing pre-checked.
       }
     }
+    return ids;
+  }
+
+  async function renderTagPicker(resolvedPerformers) {
+    // Deliberately does NOT pre-highlight tags the scene already has: the
+    // picker only ever ADDS (see applyToScene's merge, never a replace),
+    // so pre-checking an existing tag and letting the user "uncheck" it
+    // would falsely imply removal is possible here.
+    const grid = document.getElementById("ss-tag-grid");
+    if (!grid) return;
+    try {
+      if (!_allTagsCache) _allTagsCache = await fetchAllTags();
+    } catch (e) {
+      grid.innerHTML = `<span class="ss-hint">Could not load tags: ${esc(e.message)}</span>`;
+      return;
+    }
+
+    // One-time pre-population at render time only -- does not re-run if
+    // performer checkboxes change later elsewhere in the comparison table
+    // (re-syncing on every toggle would clobber manual chip edits). Chips
+    // pre-selected this way are exactly as toggleable as any manually-
+    // clicked chip -- same "picker only ever adds" invariant as above,
+    // nothing locked.
+    _selectedTagIds = await computePreselectedTagIds(resolvedPerformers);
 
     drawTagGrid(_allTagsCache);
 
@@ -1491,6 +1499,240 @@
     updateBatchSelectionUI(visible);
   }
 
+  // ── Batch scrape: Step 2 ─ queue-building ───────────────────────────────────
+  // In-memory only, module scope -- same pattern as _batchAllScenes/
+  // _batchSelectedIds -- NOT persisted via configurePlugin (this repo's
+  // config-store is meant for small key-value settings, not per-scene
+  // scraped payloads for a whole batch -- see the documented drift-risk
+  // warning above readConfig/writeConfig) and NOT written to a tag/temp
+  // file. Lost on refresh, same limitation the single-scene wizard already
+  // has today -- an accepted tradeoff, not a gap to fix here.
+  //
+  // Reuses the exact single-scene pipeline (Parse Filename / Search Store /
+  // Scrape Clip / Check Duplicates tasks, computePreselectedTagIds) one
+  // scene at a time -- no parallel requests against target sites or the
+  // local Stash instance. The one deliberate divergence from the single-
+  // scene wizard: it never calls the "Discover Store" task. That task
+  // itself does real discovery (sitemap fuzzy-matching across iwantclips/
+  // clips4sale/goddesssnow) even for performers absent from
+  // performerStoreMap -- out of scope for batch mode per the earlier
+  // decision, so the map is checked directly (already-fetched config,
+  // plain object lookup) and anything not already in it goes straight to
+  // needs-review instead.
+
+  let _batchQueue = [];
+  let _batchStopRequested = false;
+
+  function tallyBatchQueue() {
+    const tally = { confident: 0, "needs-review": 0, "no-match": 0, error: 0 };
+    for (const item of _batchQueue) tally[item.classification] = (tally[item.classification] || 0) + 1;
+    return tally;
+  }
+
+  // Runs the existing per-scene pipeline for one scene and returns a queue
+  // item carrying everything a later review screen needs (scene id/data,
+  // parsed candidate, matched store, search/scrape output, duplicates,
+  // pre-selected tags) plus a classification + human-readable reason.
+  // Never throws -- any failing step is caught and turns into an "error"
+  // classification so one bad scene can't take down the whole batch.
+  async function processBatchScene(sceneId, performerStoreMap) {
+    const item = {
+      sceneId, current: null, parsed: null, storeInfo: null, storeKey: null,
+      searchOutput: null, scrapeOutput: null, contentUrl: null, scrapedThumbnail: null,
+      duplicates: [], preselectedTagIds: [], classification: "no-match", reason: "",
+    };
+
+    try {
+      item.current = await fetchCurrentScene(sceneId);
+    } catch (e) {
+      item.classification = "error";
+      item.reason = e.message;
+      return item;
+    }
+
+    const basename = (item.current.files || [])[0]?.basename || "";
+
+    let parsed;
+    try {
+      parsed = await runTask("Parse Filename", { filename: basename });
+    } catch (e) {
+      item.classification = "error";
+      item.reason = e.message;
+      return item;
+    }
+    item.parsed = parsed;
+
+    if (!parsed.performerCandidate || !parsed.performerCandidate.trim()) {
+      item.classification = "no-match";
+      item.reason = "Filename didn't parse into a usable performer/title candidate";
+      return item;
+    }
+
+    const storeKey = normalize(parsed.performerCandidate);
+    item.storeKey = storeKey;
+    const storeInfo = performerStoreMap[storeKey];
+    if (!storeInfo) {
+      item.classification = "needs-review";
+      item.reason = `Unknown performer/store: "${parsed.performerCandidate}" (not in performerStoreMap -- batch mode doesn't attempt discovery)`;
+      return item;
+    }
+    item.storeInfo = storeInfo;
+
+    let searchOutput;
+    try {
+      searchOutput = await runTask("Search Store", {
+        store_info: storeInfo,
+        title_candidate: parsed.titleCandidate,
+      }, { pollSeconds: storeInfo.site === "manyvids" ? 240 : 90 });
+    } catch (e) {
+      item.classification = "error";
+      item.reason = e.message;
+      return item;
+    }
+    item.searchOutput = searchOutput;
+
+    const hits = searchOutput.hits || [];
+    if (hits.length === 0) {
+      item.classification = "needs-review";
+      item.reason = `No results found in ${storeInfo.displayName}'s store for "${parsed.titleCandidate}"`;
+      return item;
+    }
+    if (hits.length > 1) {
+      item.classification = "needs-review";
+      item.reason = `${hits.length} candidate matches found — ambiguous, needs a manual pick`;
+      return item;
+    }
+
+    const hit = hits[0];
+    item.contentUrl = hit.contentUrl;
+    item.scrapedThumbnail = hit.thumbnail;
+
+    let scrapeOutput;
+    try {
+      scrapeOutput = await runTask("Scrape Clip", {
+        url: hit.contentUrl,
+        site: storeInfo.site,
+        studio_name: storeInfo.displayName,
+        hit,
+      });
+    } catch (e) {
+      item.classification = "error";
+      item.reason = e.message;
+      return item;
+    }
+    item.scrapeOutput = scrapeOutput;
+
+    const resolvedPerfs = scrapeOutput.resolvedPerformers || [];
+    const perfIds = resolvedPerfs.filter(p => p.localId).map(p => p.localId);
+
+    let dupeOutput;
+    try {
+      dupeOutput = await runTask("Check Duplicates", {
+        scraped_title: scrapeOutput.scraped.title || "",
+        performer_ids: perfIds,
+        current_scene_id: sceneId,
+        current_phashes: currentScenePhashes(item.current),
+      });
+    } catch (e) {
+      item.classification = "error";
+      item.reason = e.message;
+      return item;
+    }
+    const dupes = (dupeOutput.duplicates || []).filter(d => d.id !== sceneId);
+    item.duplicates = dupes;
+
+    try {
+      item.preselectedTagIds = [...(await computePreselectedTagIds(resolvedPerfs))];
+    } catch (_) {
+      item.preselectedTagIds = [];
+    }
+
+    if (dupes.length) {
+      item.classification = "needs-review";
+      item.reason = `Possible duplicate: ${dupes[0].title || dupes[0].matchReason || "existing scene"}`;
+    } else {
+      item.classification = "confident";
+      item.reason = `Matched ${storeInfo.displayName} (${siteLabel(storeInfo.site)})`;
+    }
+
+    return item;
+  }
+
+  function renderBatchProgress(done, total) {
+    const content = document.getElementById("ss-batch-content");
+    if (!content) return;
+    const tally = tallyBatchQueue();
+    content.innerHTML = `
+      <p class="ss-hint">Processing ${done} of ${total} scene${total !== 1 ? "s" : ""} — ${tally.confident} confident, ${tally["needs-review"]} needs review, ${tally["no-match"]} no match, ${tally.error} error${tally.error !== 1 ? "s" : ""}</p>
+      <div class="ss-row">
+        <button id="ss-batch-stop" class="ss-btn ss-btn-secondary" ${_batchStopRequested ? "disabled" : ""}>${_batchStopRequested ? "Stopping after current scene…" : "Stop"}</button>
+      </div>`;
+    const stopBtn = document.getElementById("ss-batch-stop");
+    if (stopBtn && !_batchStopRequested) {
+      stopBtn.onclick = () => {
+        _batchStopRequested = true;
+        renderBatchProgress(done, total);
+      };
+    }
+  }
+
+  function batchClassificationBadge(classification) {
+    const label = classification === "confident" ? "Confident"
+      : classification === "needs-review" ? "Needs Review"
+      : classification === "error" ? "Error"
+      : "No Match";
+    return `<span class="ss-batch-badge ss-batch-badge-${classification}">${label}</span>`;
+  }
+
+  function renderBatchQueueResults() {
+    const content = document.getElementById("ss-batch-content");
+    if (!content) return;
+    const tally = tallyBatchQueue();
+    const headerMsg = _batchQueue.length
+      ? `Processed ${_batchQueue.length} scene${_batchQueue.length !== 1 ? "s" : ""}${_batchStopRequested ? " (stopped early)" : ""} — ${tally.confident} confident, ${tally["needs-review"]} needs review, ${tally["no-match"]} no match, ${tally.error} error${tally.error !== 1 ? "s" : ""}`
+      : "No scenes processed.";
+
+    const rowsHtml = _batchQueue.map(item => {
+      const name = item.current?.title || (item.current?.files || [])[0]?.basename || `Scene ${item.sceneId}`;
+      const storeBit = item.storeInfo ? ` — ${esc(item.storeInfo.displayName)} (${siteLabel(item.storeInfo.site)})` : "";
+      return `
+        <div class="ss-batch-queue-row">
+          ${batchClassificationBadge(item.classification)}
+          <span class="ss-batch-queue-name">${esc(name)}${storeBit}</span>
+          <span class="ss-batch-queue-reason">${esc(item.reason || "")}</span>
+        </div>`;
+    }).join("");
+
+    content.innerHTML = `
+      <p class="ss-hint">${esc(headerMsg)}</p>
+      <div class="ss-batch-queue-list">${rowsHtml}</div>`;
+  }
+
+  async function runBatchQueue(selectedIds) {
+    _batchQueue = [];
+    _batchStopRequested = false;
+
+    let cfg;
+    try {
+      cfg = await readConfig();
+    } catch (e) {
+      setBatchError(e.message);
+      return;
+    }
+
+    const total = selectedIds.length;
+    renderBatchProgress(0, total);
+
+    for (let i = 0; i < total; i++) {
+      if (_batchStopRequested) break;
+      const item = await processBatchScene(selectedIds[i], cfg.performerStoreMap);
+      _batchQueue.push(item);
+      renderBatchProgress(i + 1, total);
+    }
+
+    renderBatchQueueResults();
+  }
+
   async function renderBatchSceneSelect() {
     setBatchError(""); setBatchStatus("Loading untagged scenes…");
     const content = document.getElementById("ss-batch-content");
@@ -1552,10 +1794,7 @@
     });
 
     document.getElementById("ss-batch-start").onclick = () => {
-      // Stage 2 replaces this stub with real queue-building: looping the
-      // existing parse/discover/search/scrape/dupe-check pipeline over
-      // _batchSelectedIds without applying anything to Stash yet.
-      content.innerHTML = `<p class="ss-hint">${_batchSelectedIds.size} scene(s) selected. Queue building isn't implemented yet — coming in stage 2.</p>`;
+      runBatchQueue([..._batchSelectedIds]);
     };
   }
 

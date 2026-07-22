@@ -17,7 +17,7 @@
   const BTN_ID     = "ss-open-btn";
   const MODAL_ID   = "ss-modal-overlay";
   const RESULT_TAG = "__superscrape_result__";
-  const BATCH_BTN_ID   = "ss-batch-fab";
+  const LIBRARY_BTN_ID = "ss-batch-toolbar-btn";
   const BATCH_MODAL_ID = "ss-batch-modal-overlay";
 
   // Mirrors SuperScrape.py's SITE_DOMAINS exactly -- kept small/duplicated
@@ -384,6 +384,7 @@
     const old = document.getElementById(BTN_ID);
     if (old) old.remove();
     if (isScenePage()) setTimeout(injectButton, 800);
+    tryInjectBatchToolbarButton();
   }
 
   function startListening() {
@@ -1274,24 +1275,44 @@
     }
   }
 
-  // ── Batch scrape: entry point ─────────────────────────────────────────────
-  // Unlike the per-scene modal (gated to /scenes/:id via isScenePage()), this
-  // repo has no existing precedent for injecting into the scenes LIBRARY
-  // page's toolbar/selection UI (checked: no other plugin here does it), so
-  // rather than guess at that page's DOM, this is a standalone always-on
-  // floating button, independent of route. It opens its own modal that
-  // queries Stash directly for candidate scenes rather than relying on
-  // whatever the user has selected in the native scenes grid.
+  // ── Batch scrape: entry point ───────────────────────────────────────────────
+  // Investigated: FilteredListToolbar (the .filtered-list-toolbar div) is a
+  // shared component with no PatchComponent hook of its own, and the one
+  // patchable ancestor (FilteredSceneList) only lets patch.after append
+  // AFTER the whole page, not merge into that toolbar's row -- so reaching
+  // inside it requires DOM injection. That toolbar is reused verbatim on
+  // performer/studio/tag/group "Scenes" detail-panel tabs, but those live on
+  // their own routes (/performers/:id etc.), never on the literal /scenes
+  // path -- so an exact pathname check is sufficient to scope this to the
+  // real library page without any React-side prop inspection. React
+  // re-renders this toolbar on every filter/sort/page change, which can wipe
+  // an unmanaged child node, so injection runs off a PERSISTENT (never
+  // disconnected) MutationObserver rather than the per-scene button's
+  // time-boxed one -- it just re-inserts whenever a mutation leaves the
+  // button missing.
 
-  function injectBatchButton() {
-    if (document.getElementById(BATCH_BTN_ID)) return;
+  function isScenesLibraryPage() {
+    return window.location.pathname === "/scenes";
+  }
+
+  function tryInjectBatchToolbarButton() {
+    if (!isScenesLibraryPage()) return;
+    const toolbar = document.querySelector(".filtered-list-toolbar");
+    if (!toolbar || document.getElementById(LIBRARY_BTN_ID)) return;
     const btn = document.createElement("button");
-    btn.id = BATCH_BTN_ID;
-    btn.className = "ss-batch-fab";
+    btn.id = LIBRARY_BTN_ID;
+    btn.type = "button";
+    btn.className = "btn btn-secondary ss-batch-toolbar-btn";
     btn.textContent = "Batch Scrape";
-    btn.title = "Queue multiple scenes for SuperScrape review";
-    btn.addEventListener("click", openBatchModal);
-    document.body.appendChild(btn);
+    btn.title = "Queue multiple untagged scenes for SuperScrape review";
+    btn.addEventListener("click", e => { e.preventDefault(); openBatchModal(); });
+    toolbar.appendChild(btn);
+  }
+
+  function startBatchToolbarWatcher() {
+    tryInjectBatchToolbarButton();
+    const observer = new MutationObserver(() => tryInjectBatchToolbarButton());
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 
   function closeBatchModal() { document.getElementById(BATCH_MODAL_ID)?.remove(); }
@@ -1331,31 +1352,143 @@
     renderBatchSceneSelect();
   }
 
-  // ── Batch scrape: Step 1 — candidate scene selection ──────────────────────
-  // Candidate definition is "still needs tagging" (zero tags), not the
-  // organized/url-based guess this started with -- confirmed with the
-  // person that they don't reliably use `organized` for this workflow (it's
-  // repurposed for a separate StashBox-submission flow). Confirmed live
-  // against this Stash instance's GraphQL schema: SceneFilterType.tag_count
-  // is an IntCriterionInput ({modifier, value}), so { modifier: EQUALS,
-  // value: 0 } is the exact "no tags at all" filter -- verified it returns
-  // only zero-tag scenes and correctly excludes a scene with tags.
+  // ── Batch scrape: Step 1 ─ candidate scene selection ────────────────────────────
+  // Candidate definition is "still needs tagging" (zero tags) -- confirmed
+  // live: SceneFilterType.tag_count is an IntCriterionInput, { modifier:
+  // EQUALS, value: 0 } returns only zero-tag scenes and correctly excludes
+  // a scene with tags. This is a permanent baseline, always AND-ed with
+  // whatever else applies below -- it never gets replaced.
+  //
+  // Best-effort Stash-filter-honoring: Stash encodes the scenes list's live
+  // filter into the URL (?q=...&c=...), each `c` being
+  // JSON.stringify({type, modifier, value}) with `{`/`}` swapped for
+  // `(`/`)` outside quoted strings (see stash-source's
+  // ListFilterModel.translateJSON/getEncodedParams) -- an internal,
+  // undocumented scheme, not a public API, so this could stop matching on
+  // a future Stash UI update. Only performers, studios, and title/search
+  // criteria are decoded (explicit scope decision); anything else is left
+  // unmapped and simply ignored -- if nothing decodes, this falls back to
+  // the zero-tags baseline alone.
 
   let _batchAllScenes = [];
   let _batchSelectedIds = new Set();
+  let _batchNameFilter = "";
 
-  async function fetchBatchCandidateScenes() {
+  // Mirrors ListFilterModel's own { }<->( ) substitution outside quoted
+  // strings -- decoding direction only (this plugin never re-encodes).
+  function translateStashFilterJSON(str) {
+    let inString = false, escaped = false, out = "";
+    for (const c of str) {
+      if (escaped) { out += c; escaped = false; continue; }
+      if (c === "\\" && inString) { escaped = true; out += c; continue; }
+      if (c === '"') { inString = !inString; out += c; continue; }
+      if (c === "(" && !inString) { out += "{"; continue; }
+      if (c === ")" && !inString) { out += "}"; continue; }
+      out += c;
+    }
+    return out;
+  }
+
+  function decodeStashFilterCriteria() {
+    const decoded = { performers: null, studios: null, title: null, searchTerm: null };
+    const params = new URLSearchParams(window.location.search);
+
+    const q = params.get("q");
+    if (q) decoded.searchTerm = q;
+
+    for (const raw of params.getAll("c")) {
+      try {
+        const crit = JSON.parse(translateStashFilterJSON(raw));
+        if (crit.type === "performers" && crit.value?.items?.length) {
+          decoded.performers = {
+            value: crit.value.items.map(i => Number(i.id)),
+            modifier: crit.modifier,
+            labels: crit.value.items.map(i => i.label),
+          };
+        } else if (crit.type === "studios" && crit.value?.items?.length) {
+          decoded.studios = {
+            value: crit.value.items.map(i => Number(i.id)),
+            modifier: crit.modifier,
+            labels: crit.value.items.map(i => i.label),
+          };
+        } else if (crit.type === "title" && crit.value != null) {
+          decoded.title = { value: crit.value, modifier: crit.modifier };
+        }
+        // Any other criterion type is left unmapped -- deliberately not
+        // tracked or surfaced, per the narrow scope for this feature.
+      } catch (_) {
+        // Undecodable -- skip this criterion, don't fail the whole batch.
+      }
+    }
+    return decoded;
+  }
+
+  function summarizeDecodedFilter(decoded) {
+    const bits = [];
+    if (decoded.performers?.labels?.length) bits.push(`performer ${decoded.performers.labels.join(", ")}`);
+    if (decoded.studios?.labels?.length) bits.push(`studio ${decoded.studios.labels.join(", ")}`);
+    if (decoded.title) bits.push(`title "${decoded.title.value}"`);
+    if (decoded.searchTerm) bits.push(`search "${decoded.searchTerm}"`);
+    return bits;
+  }
+
+  async function fetchBatchCandidateScenes(decoded) {
+    const sceneFilter = { tag_count: { modifier: "EQUALS", value: 0 } };
+    if (decoded.performers) sceneFilter.performers = { value: decoded.performers.value, modifier: decoded.performers.modifier };
+    if (decoded.studios) sceneFilter.studios = { value: decoded.studios.value, modifier: decoded.studios.modifier };
+    if (decoded.title) sceneFilter.title = { value: decoded.title.value, modifier: decoded.title.modifier };
+
+    const findFilter = { per_page: -1, sort: "created_at", direction: "DESC" };
+    if (decoded.searchTerm) findFilter.q = decoded.searchTerm;
+
     const data = await gql(`
-      query SuperScrapeBatchCandidates {
-        findScenes(
-          scene_filter: { tag_count: { modifier: EQUALS, value: 0 } }
-          filter: { per_page: -1, sort: "created_at", direction: DESC }
-        ) {
+      query SuperScrapeBatchCandidates($sceneFilter: SceneFilterType, $findFilter: FindFilterType) {
+        findScenes(scene_filter: $sceneFilter, filter: $findFilter) {
           scenes { id title files { basename } paths { screenshot } }
         }
       }
-    `);
+    `, { sceneFilter, findFilter });
     return data.findScenes.scenes;
+  }
+
+  function visibleBatchScenes() {
+    const q = normalize(_batchNameFilter);
+    if (!q) return _batchAllScenes;
+    return _batchAllScenes.filter(s => normalize(s.title || (s.files || [])[0]?.basename || "").includes(q));
+  }
+
+  function updateBatchSelectionUI(visible) {
+    const countEl = document.getElementById("ss-batch-count");
+    const selAllEl = document.getElementById("ss-batch-selall");
+    const startBtn = document.getElementById("ss-batch-start");
+    if (countEl) countEl.textContent = `${_batchSelectedIds.size} selected`;
+    if (startBtn) startBtn.disabled = _batchSelectedIds.size === 0;
+    if (selAllEl) selAllEl.checked = visible.length > 0 && visible.every(s => _batchSelectedIds.has(s.id));
+  }
+
+  function drawBatchSceneList() {
+    const listEl = document.getElementById("ss-batch-scene-list");
+    if (!listEl) return;
+
+    const visible = visibleBatchScenes();
+    listEl.innerHTML = visible.length ? visible.map(s => `
+      <label class="ss-batch-scene-row" data-id="${esc(s.id)}">
+        <input type="checkbox" class="ss-batch-scene-chk" data-id="${esc(s.id)}" ${_batchSelectedIds.has(s.id) ? "checked" : ""} />
+        ${thumbWithHover(s.paths?.screenshot, "ss-result-thumb")}
+        <span class="ss-batch-scene-name">${esc(s.title || (s.files || [])[0]?.basename || `Scene ${s.id}`)}</span>
+      </label>`).join("") : `<p class="ss-hint">No scenes match that filter.</p>`;
+
+    bindThumbHovers();
+
+    document.querySelectorAll(".ss-batch-scene-chk").forEach(cb => {
+      cb.addEventListener("change", () => {
+        if (cb.checked) _batchSelectedIds.add(cb.dataset.id);
+        else _batchSelectedIds.delete(cb.dataset.id);
+        updateBatchSelectionUI(visible);
+      });
+    });
+
+    updateBatchSelectionUI(visible);
   }
 
   async function renderBatchSceneSelect() {
@@ -1363,60 +1496,59 @@
     const content = document.getElementById("ss-batch-content");
     content.innerHTML = `<p class="ss-hint">Loading scenes…</p>`;
 
+    const decoded = isScenesLibraryPage() ? decodeStashFilterCriteria() : {};
+    let scenes;
     try {
-      _batchAllScenes = await fetchBatchCandidateScenes();
+      scenes = await fetchBatchCandidateScenes(decoded);
     } catch (e) {
       setBatchStatus("");
       setBatchError(e.message);
       return;
     }
     setBatchStatus("");
+    _batchAllScenes = scenes;
     _batchSelectedIds = new Set();
+    _batchNameFilter = "";
+
+    const summaryBits = summarizeDecodedFilter(decoded);
+    const summaryHtml = summaryBits.length
+      ? `<p class="ss-hint">Showing untagged scenes matching your current filter: ${esc(summaryBits.join("; "))}</p>`
+      : `<p class="ss-hint">Showing all untagged scenes.</p>`;
 
     if (!_batchAllScenes.length) {
-      content.innerHTML = `<p class="ss-hint">No untagged scenes found — nothing to batch scrape.</p>`;
+      content.innerHTML = `${summaryHtml}<p class="ss-hint">No untagged scenes found — nothing to batch scrape.</p>`;
       return;
     }
 
     content.innerHTML = `
+      ${summaryHtml}
+      <div class="ss-row">
+        <input id="ss-batch-namefilter" class="ss-input" type="text" placeholder="Filter by filename/title…" />
+      </div>
       <div class="ss-row" style="justify-content:space-between">
         <label class="ss-item-label" style="margin:0">
           <input type="checkbox" id="ss-batch-selall" />
-          <span>Select all (${_batchAllScenes.length})</span>
+          <span>Select all</span>
         </label>
         <span id="ss-batch-count" class="ss-hint">0 selected</span>
       </div>
-      <div id="ss-batch-scene-list" class="ss-batch-scene-list">
-        ${_batchAllScenes.map(s => `
-          <label class="ss-batch-scene-row" data-id="${esc(s.id)}">
-            <input type="checkbox" class="ss-batch-scene-chk" data-id="${esc(s.id)}" />
-            ${thumbWithHover(s.paths?.screenshot, "ss-result-thumb")}
-            <span class="ss-batch-scene-name">${esc(s.title || (s.files || [])[0]?.basename || `Scene ${s.id}`)}</span>
-          </label>`).join("")}
-      </div>
+      <div id="ss-batch-scene-list" class="ss-batch-scene-list"></div>
       <div class="ss-row" style="margin-top:.5rem;flex-shrink:0">
         <button id="ss-batch-start" class="ss-btn ss-btn-primary" disabled>Start Batch</button>
       </div>`;
 
-    function updateCount() {
-      document.getElementById("ss-batch-count").textContent = `${_batchSelectedIds.size} selected`;
-      document.getElementById("ss-batch-start").disabled = _batchSelectedIds.size === 0;
-    }
+    drawBatchSceneList();
 
-    document.querySelectorAll(".ss-batch-scene-chk").forEach(cb => {
-      cb.addEventListener("change", () => {
-        if (cb.checked) _batchSelectedIds.add(cb.dataset.id);
-        else _batchSelectedIds.delete(cb.dataset.id);
-        updateCount();
-        document.getElementById("ss-batch-selall").checked = _batchSelectedIds.size === _batchAllScenes.length;
-      });
+    document.getElementById("ss-batch-namefilter").addEventListener("input", e => {
+      _batchNameFilter = e.target.value;
+      drawBatchSceneList();
     });
 
     document.getElementById("ss-batch-selall").addEventListener("change", e => {
       const checked = e.target.checked;
-      document.querySelectorAll(".ss-batch-scene-chk").forEach(cb => { cb.checked = checked; });
-      _batchSelectedIds = new Set(checked ? _batchAllScenes.map(s => s.id) : []);
-      updateCount();
+      const visible = visibleBatchScenes();
+      visible.forEach(s => { if (checked) _batchSelectedIds.add(s.id); else _batchSelectedIds.delete(s.id); });
+      drawBatchSceneList();
     });
 
     document.getElementById("ss-batch-start").onclick = () => {
@@ -1429,6 +1561,6 @@
 
   // ── Boot ───────────────────────────────────────────────────────────────────
   startListening();
-  injectBatchButton();
+  startBatchToolbarWatcher();
 
 })();

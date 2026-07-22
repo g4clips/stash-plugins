@@ -425,7 +425,7 @@
 
   function closeModal() { getModal()?.remove(); }
 
-  function openModal(sceneId) {
+  function openModal(sceneId, initialRender) {
     if (getModal()) return;
     const overlay = document.createElement("div");
     overlay.id = MODAL_ID;
@@ -488,7 +488,11 @@
     });
     // ── End drag ─────────────────────────────────────────────────────────────
 
-    switchTab(sceneId, "scrape");
+    if (initialRender) {
+      initialRender();
+    } else {
+      switchTab(sceneId, "scrape");
+    }
   }
 
   function switchTab(sceneId, tab) {
@@ -596,7 +600,7 @@
 
   // ── Scrape flow: Step 2 — confidence state + confirm ──────────────────────
 
-  function renderMatchState(sceneId, current, parsed, match, autoSearch = false) {
+  function renderMatchState(sceneId, current, parsed, match, autoSearch = false, opts = {}) {
     setError("");
     const isConfident = match.confidence === "confident";
 
@@ -639,9 +643,11 @@
       <div class="ss-row">
         <button id="ss-confirm" class="ss-btn ss-btn-primary">${isConfident ? "Confirm &amp; Search" : "Search"}</button>
         <button id="ss-back0" class="ss-btn ss-btn-secondary">← Back</button>
+        ${opts.onDismiss ? `<button id="ss-dismiss0" class="ss-btn ss-btn-danger">Dismiss</button>` : ""}
       </div>`;
 
-    document.getElementById("ss-back0").onclick = () => renderFilenameInput(sceneId);
+    document.getElementById("ss-back0").onclick = opts.onBack || (() => renderFilenameInput(sceneId));
+    if (opts.onDismiss) document.getElementById("ss-dismiss0").onclick = opts.onDismiss;
 
     let selectedStore = isConfident ? match.match : null;
 
@@ -715,7 +721,7 @@
           title_candidate: queryText,
         }, { pollSeconds: storeInfo.site === "manyvids" ? 240 : 90 });
         setStatus("");
-        renderResults(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput);
+        renderResults(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput, opts);
       } catch (e) {
         setError(e.message);
         btn.disabled = false; btn.textContent = isConfident ? "Confirm & Search" : "Search"; setStatus("");
@@ -740,7 +746,7 @@
 
   // ── Scrape flow: Step 3 — clip-picker cards ───────────────────────────────
 
-  function renderResults(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput) {
+  function renderResults(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput, opts = {}) {
     setError("");
     const hits = searchOutput.hits || [];
 
@@ -749,7 +755,7 @@
       getContent().innerHTML = `
         <p class="ss-hint">No results in ${esc(storeInfo.displayName)}'s store${totalHint} for that search.</p>
         <div class="ss-row"><button id="ss-back1" class="ss-btn ss-btn-secondary">← Back</button></div>`;
-      document.getElementById("ss-back1").onclick = () => renderMatchState(sceneId, current, parsed, match);
+      document.getElementById("ss-back1").onclick = () => renderMatchState(sceneId, current, parsed, match, false, opts);
       return;
     }
 
@@ -814,9 +820,9 @@
           setStatus("");
           const dupes = (dupeOutput.duplicates || []).filter(d => d.id !== sceneId);
           if (dupes.length) {
-            renderDuplicates(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput, scrapeOutput, hit.contentUrl, hit.thumbnail, dupes);
+            renderDuplicates(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput, scrapeOutput, hit.contentUrl, hit.thumbnail, dupes, opts);
           } else {
-            renderApply(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput, scrapeOutput, hit.contentUrl, hit.thumbnail);
+            renderApply(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput, scrapeOutput, hit.contentUrl, hit.thumbnail, opts);
           }
         } catch (e) {
           setError(e.message); setStatus("");
@@ -825,7 +831,7 @@
       });
     });
 
-    document.getElementById("ss-back1").onclick = () => renderMatchState(sceneId, current, parsed, match);
+    document.getElementById("ss-back1").onclick = () => renderMatchState(sceneId, current, parsed, match, false, opts);
   }
 
   // ── Scrape flow: Step 3b — duplicate warning (mirrors Data18StashDB's
@@ -835,7 +841,7 @@
   // scene turns out to already exist elsewhere, remove the redundant one
   // I was about to process") ──────────────────────────────────────────────
 
-  function renderDuplicates(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput, scrapeOutput, contentUrl, scrapedThumbnail, dupes) {
+  function renderDuplicates(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput, scrapeOutput, contentUrl, scrapedThumbnail, dupes, opts = {}) {
     setError("");
 
     function fmtSize(bytes) {
@@ -872,7 +878,7 @@
     bindThumbHovers();
 
     document.getElementById("ss-dupe-keep").onclick = () =>
-      renderApply(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput, scrapeOutput, contentUrl, scrapedThumbnail);
+      renderApply(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput, scrapeOutput, contentUrl, scrapedThumbnail, opts);
 
     document.getElementById("ss-dupe-delete").onclick = async () => {
       const btn = document.getElementById("ss-dupe-delete");
@@ -902,7 +908,7 @@
       : `<span class="ss-badge ss-badge-missing">✗ not found</span>`;
   }
 
-  function renderApply(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput, scrapeOutput, contentUrl, scrapedThumbnail) {
+  function renderApply(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput, scrapeOutput, contentUrl, scrapedThumbnail, opts = {}) {
     setError("");
     const scraped = scrapeOutput.scraped;
     const resolvedPerformers = scrapeOutput.resolvedPerformers || [];
@@ -1002,6 +1008,7 @@
         <button id="ss-back2"   class="ss-btn ss-btn-secondary">← Back</button>
         <button id="ss-selall"  class="ss-btn ss-btn-secondary">All</button>
         <button id="ss-selnone" class="ss-btn ss-btn-secondary">None</button>
+        ${opts.onDismiss ? `<button id="ss-dismiss2" class="ss-btn ss-btn-danger">Dismiss</button>` : ""}
         <button id="ss-apply"   class="ss-btn ss-btn-primary">Apply to Scene</button>
       </div>
       <div id="ss-tagpicker-wrap">
@@ -1016,7 +1023,8 @@
     bindThumbHovers();
     renderTagPicker(resolvedPerformers);
 
-    document.getElementById("ss-back2").onclick = () => renderResults(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput);
+    document.getElementById("ss-back2").onclick = opts.onBack || (() => renderResults(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput, opts));
+    if (opts.onDismiss) document.getElementById("ss-dismiss2").onclick = opts.onDismiss;
     document.getElementById("ss-selall").onclick  = () =>
       document.querySelectorAll(".ss-field-chk,.ss-perf-chk").forEach(c => { c.checked = true; });
     document.getElementById("ss-selnone").onclick = () =>
@@ -1044,7 +1052,7 @@
         await applyToScene(sceneId, fieldChecks, selPerfs, scrapedForApply, resolvedPerformers, resolvedStudio, current, contentUrl, coverPick, scrapedThumbnail, selectedTagIds);
         await bumpLastUsed(storeKey, storeInfo);
         setStatus("");
-        renderDone();
+        if (opts.onApplied) opts.onApplied(); else renderDone();
       } catch (e) {
         setError(e.message);
         btn.disabled = false; btn.textContent = "Apply to Scene"; setStatus("");
@@ -1720,11 +1728,11 @@
       ? `Processed ${_batchQueue.length} scene${_batchQueue.length !== 1 ? "s" : ""}${_batchStopRequested ? " (stopped early)" : ""} — ${tally.confident} confident, ${tally["needs-review"]} needs review, ${tally["no-match"]} no match, ${tally.error} error${tally.error !== 1 ? "s" : ""}`
       : "No scenes processed.";
 
-    const rowsHtml = _batchQueue.map(item => {
+    const rowsHtml = _batchQueue.map((item, idx) => {
       const name = item.current?.title || (item.current?.files || [])[0]?.basename || `Scene ${item.sceneId}`;
       const storeBit = item.storeInfo ? ` — ${esc(item.storeInfo.displayName)} (${siteLabel(item.storeInfo.site)})` : "";
       return `
-        <div class="ss-batch-queue-row">
+        <div class="ss-batch-queue-row" data-idx="${idx}" role="button" tabindex="0">
           ${batchClassificationBadge(item)}
           <span class="ss-batch-queue-name">${esc(name)}${storeBit}</span>
           <span class="ss-batch-queue-reason">${esc(item.reason || "")}</span>
@@ -1744,6 +1752,13 @@
 
     const approveBtn = document.getElementById("ss-batch-approve-all");
     if (approveBtn) approveBtn.onclick = runBulkApproveConfident;
+
+    document.querySelectorAll(".ss-batch-queue-row").forEach(row => {
+      row.addEventListener("click", () => {
+        const item = _batchQueue[+row.dataset.idx];
+        if (item) openQueueItemReview(item);
+      });
+    });
   }
 
   // ── Bulk-apply all confident queue items in place, sequentially (same
@@ -1780,6 +1795,44 @@
     setBatchStatus(failures.length
       ? `${succeeded} of ${confidentItems.length} applied successfully, ${failures.length} failed: ${failures.join("; ")}`
       : `✓ ${succeeded} of ${confidentItems.length} confident scene${confidentItems.length !== 1 ? "s" : ""} applied.`);
+  }
+
+  // ── Individual review: opens the single-scene modal directly at the
+  // comparison-table (item has scrapeOutput) or manual confirm/search step
+  // (item doesn't), reusing renderApply/renderMatchState verbatim instead of
+  // a parallel review UI. opts.onBack leaves the item untouched; onDismiss
+  // and the reused Apply path both remove it from _batchQueue and re-render
+  // the queue -- bulk-approve reads _batchQueue fresh every render, so its
+  // confident count/button reflect the removal automatically.
+  function removeFromBatchQueue(item) {
+    _batchQueue = _batchQueue.filter(i => i !== item);
+  }
+
+  function openQueueItemReview(item) {
+    setBatchError("");
+    if (!item.current) {
+      setBatchError("Can't review this item — its scene data failed to load earlier.");
+      return;
+    }
+
+    const opts = {
+      onBack: () => { closeModal(); renderBatchQueueResults(); },
+      onDismiss: () => { removeFromBatchQueue(item); closeModal(); renderBatchQueueResults(); },
+      onApplied: () => { removeFromBatchQueue(item); closeModal(); renderBatchQueueResults(); },
+    };
+
+    if (item.scrapeOutput) {
+      openModal(item.sceneId, () => renderApply(
+        item.sceneId, item.current, item.parsed, null, item.storeInfo, item.storeKey,
+        item.searchOutput, item.scrapeOutput, item.contentUrl, item.scrapedThumbnail, opts
+      ));
+    } else {
+      const parsed = item.parsed || { performerCandidate: "", titleCandidate: item.current.title || "" };
+      const match = item.storeInfo
+        ? { confidence: "confident", source: "batch_queue", match: item.storeInfo, score: 1, suggestions: [] }
+        : { confidence: "no-match", source: "batch_queue", match: null, score: 0, suggestions: [] };
+      openModal(item.sceneId, () => renderMatchState(item.sceneId, item.current, parsed, match, false, opts));
+    }
   }
 
   async function runBatchQueue(selectedIds) {

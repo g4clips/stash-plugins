@@ -13,6 +13,13 @@ user sees the message, that is not acceptable — only a proposal counts as
 asked. When unsure whether something counts as "a change," treat it as one
 and propose it first.
 
+Concretely: no Edit/Write tool call against a tracked file may occur until
+an approval message from the user exists in the conversation. Drafting a
+diff and applying it are NOT one continuous flow, even internally — the
+turn that shows the diff must be text output only. Confidence that the
+user will approve is not a substitute for an actual approval message
+having arrived.
+
 ## 2. Version bump travels with the diff
 Any functional change to a plugin's `.py`/`.js`/`.css` (new feature, bug
 fix, behavior change — not pure documentation/README edits) must include a

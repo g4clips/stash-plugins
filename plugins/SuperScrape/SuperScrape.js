@@ -341,6 +341,30 @@
     await gql(`mutation U($input:SceneUpdateInput!){sceneUpdate(input:$input){id}}`, { input });
   }
 
+  // ── Bulk-apply one confident queue item, reusing the exact same
+  // applyToScene mutation the single-scene wizard's "Apply to Scene" button
+  // calls -- no parallel apply path. Field selection mirrors renderApply's
+  // DEFAULT (untouched) state: every field checkbox starts checked, only
+  // performers already found in Stash start checked, cover defaults to
+  // "keep current" if a current image exists, and tags are whatever
+  // computePreselectedTagIds already chose during queue-building. This is
+  // deliberately "what Apply would do if you changed nothing," matching the
+  // premise that a "confident" item needs no manual review.
+  async function applyConfidentBatchItem(item) {
+    const scraped = item.scrapeOutput.scraped;
+    const resolvedPerformers = item.scrapeOutput.resolvedPerformers || [];
+    const resolvedStudio = item.scrapeOutput.resolvedStudio;
+    const fieldChecks = { title: true, date: true, studio: true, urls: true, details: true, performers: true };
+    const selPerfNames = resolvedPerformers.filter(p => p.found).map(p => p.name);
+    const currentImageUrl = item.current.paths?.screenshot || "";
+    const coverPick = currentImageUrl ? "current" : "scraped";
+    await applyToScene(
+      item.sceneId, fieldChecks, selPerfNames, scraped, resolvedPerformers, resolvedStudio,
+      item.current, item.contentUrl, coverPick, item.scrapedThumbnail, item.preselectedTagIds
+    );
+    await bumpLastUsed(item.storeKey, item.storeInfo);
+  }
+
   async function bumpLastUsed(storeKey, storeInfo) {
     if (!storeKey) return;
     try {
@@ -1676,7 +1700,11 @@
     }
   }
 
-  function batchClassificationBadge(classification) {
+  function batchClassificationBadge(item) {
+    if (item.status === "applied") {
+      return `<span class="ss-batch-badge ss-batch-badge-applied">Applied</span>`;
+    }
+    const classification = item.classification;
     const label = classification === "confident" ? "Confident"
       : classification === "needs-review" ? "Needs Review"
       : classification === "error" ? "Error"
@@ -1697,15 +1725,61 @@
       const storeBit = item.storeInfo ? ` — ${esc(item.storeInfo.displayName)} (${siteLabel(item.storeInfo.site)})` : "";
       return `
         <div class="ss-batch-queue-row">
-          ${batchClassificationBadge(item.classification)}
+          ${batchClassificationBadge(item)}
           <span class="ss-batch-queue-name">${esc(name)}${storeBit}</span>
           <span class="ss-batch-queue-reason">${esc(item.reason || "")}</span>
         </div>`;
     }).join("");
 
+    const pendingConfident = _batchQueue.filter(i => i.classification === "confident" && i.status !== "applied");
+    const approveBtnHtml = pendingConfident.length ? `
+      <div class="ss-row" style="margin-top:.5rem;flex-shrink:0">
+        <button id="ss-batch-approve-all" class="ss-btn ss-btn-primary">Approve All Confident (${pendingConfident.length})</button>
+      </div>` : "";
+
     content.innerHTML = `
       <p class="ss-hint">${esc(headerMsg)}</p>
-      <div class="ss-batch-queue-list">${rowsHtml}</div>`;
+      <div class="ss-batch-queue-list">${rowsHtml}</div>
+      ${approveBtnHtml}`;
+
+    const approveBtn = document.getElementById("ss-batch-approve-all");
+    if (approveBtn) approveBtn.onclick = runBulkApproveConfident;
+  }
+
+  // ── Bulk-apply all confident queue items in place, sequentially (same
+  // "don't hammer local Stash / target sites concurrently" reasoning as
+  // the queue-building pass). needs-review/no-match/error items are never
+  // touched -- the array itself is never filtered or replaced, only
+  // confident items get mutated (status: "applied", or reclassified to
+  // "error" on a failed apply so it's visible and reuses the exact same
+  // badge/render path the queue-building engine's own error items use).
+  async function runBulkApproveConfident() {
+    const confidentItems = _batchQueue.filter(i => i.classification === "confident" && i.status !== "applied");
+    if (!confidentItems.length) return;
+    if (!window.confirm(`Apply ${confidentItems.length} confident scene${confidentItems.length !== 1 ? "s" : ""} now?`)) return;
+
+    setBatchError("");
+    let succeeded = 0;
+    const failures = [];
+
+    for (let i = 0; i < confidentItems.length; i++) {
+      const item = confidentItems[i];
+      setBatchStatus(`Applying ${i + 1} of ${confidentItems.length} confident scene${confidentItems.length !== 1 ? "s" : ""}…`);
+      try {
+        await applyConfidentBatchItem(item);
+        item.status = "applied";
+        succeeded++;
+      } catch (e) {
+        item.classification = "error";
+        item.reason = `Apply failed: ${e.message}`;
+        failures.push(e.message);
+      }
+      renderBatchQueueResults();
+    }
+
+    setBatchStatus(failures.length
+      ? `${succeeded} of ${confidentItems.length} applied successfully, ${failures.length} failed: ${failures.join("; ")}`
+      : `✓ ${succeeded} of ${confidentItems.length} confident scene${confidentItems.length !== 1 ? "s" : ""} applied.`);
   }
 
   async function runBatchQueue(selectedIds) {

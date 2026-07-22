@@ -34,6 +34,15 @@ match what git actually reports, that's a signal something unexpected
 happened and should be investigated before committing, not silently
 trusted.
 
+## 4. Reserve 1.0.0 -- do not auto-roll to it.
+When bumping a plugin's version per instruction #2, minor version
+bumps continue past x.9.0 as x.10.0, x.11.0, etc. -- never
+automatically advance a plugin from 0.9.x to 1.0.0. The 1.0.0 (and any
+future major version) milestone is reserved for the person to declare
+explicitly ("this plugin is done, bump to 1.0.0") -- it is not a
+default outcome of continued minor bumps. This applies per-plugin
+(each plugin's version sequence is independent).
+
 ## Local dev plugin sync
 Every plugin in this repo uses the same deployment model (GitHub Pages
 install/update) — a plugin built/edited in the git tree is NOT

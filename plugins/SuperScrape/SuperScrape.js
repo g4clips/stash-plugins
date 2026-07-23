@@ -1553,6 +1553,7 @@
         <div id="ss-batch-error"  class="ss-dialog-error"  style="display:none"></div>
         <div id="ss-batch-status" class="ss-dialog-status" style="display:none"></div>
         <div id="ss-batch-content" class="ss-dialog-content"></div>
+        <div id="ss-footer" class="ss-footer" style="display:none"></div>
       </div>`;
     document.body.appendChild(overlay);
     document.getElementById("ss-batch-close").onclick = closeBatchModal;
@@ -1858,15 +1859,32 @@
     return item;
   }
 
+  // Live-processing screen -- called once at the start of a run (done=0)
+  // and again after every scene finishes, so the count/percentage/bar/
+  // tally all advance scene-by-scene rather than jumping straight to a
+  // final state. No step tracker here (renderStepTracker(null) is a
+  // no-op in the batch modal today -- it has no #ss-steps element at
+  // all, this represents many scenes, not one linear per-scene flow) --
+  // called anyway so nothing stale could leak in if these shells are
+  // ever unified later. The tally deliberately shows only confident/
+  // needs-review/error, matching the approved mockup -- no-match stays
+  // tracked in _batchQueue same as before, just not surfaced here (it's
+  // already visible on the batch results dashboard once the run ends).
   function renderBatchProgress(done, total) {
     const content = document.getElementById("ss-batch-content");
     if (!content) return;
+    renderStepTracker(null);
     const tally = tallyBatchQueue();
+    const pct = total ? Math.round((done / total) * 100) : 0;
     content.innerHTML = `
-      <p class="ss-hint">Processing ${done} of ${total} scene${total !== 1 ? "s" : ""} — ${tally.confident} confident, ${tally["needs-review"]} needs review, ${tally["no-match"]} no match, ${tally.error} error${tally.error !== 1 ? "s" : ""}</p>
-      <div class="ss-row">
-        <button id="ss-batch-stop" class="ss-btn ss-btn-secondary" ${_batchStopRequested ? "disabled" : ""}>${_batchStopRequested ? "Stopping after current scene…" : "Stop"}</button>
-      </div>`;
+      <div class="ss-live-status">
+        <span>Processing ${done} of ${total} scene${total !== 1 ? "s" : ""}…</span>
+        <span>${pct}%</span>
+      </div>
+      <div class="ss-live-bar-track"><div class="ss-live-bar-fill" style="width:${pct}%"></div></div>
+      <p class="ss-live-tally">So far: <b class="ss-live-c">${tally.confident} confident</b> · <b class="ss-live-r">${tally["needs-review"]} needs review</b> · <b class="ss-live-e">${tally.error} error${tally.error !== 1 ? "s" : ""}</b></p>`;
+
+    setFooter(`<button id="ss-batch-stop" class="ss-btn ss-btn-secondary" ${_batchStopRequested ? "disabled" : ""}>${_batchStopRequested ? "Stopping after current scene…" : "Stop"}</button>`);
     const stopBtn = document.getElementById("ss-batch-stop");
     if (stopBtn && !_batchStopRequested) {
       stopBtn.onclick = () => {
@@ -1891,6 +1909,11 @@
   function renderBatchQueueResults() {
     const content = document.getElementById("ss-batch-content");
     if (!content) return;
+    // The processing screen's Stop button lives in #ss-footer -- clear it
+    // here so it doesn't linger once the run finishes and this results
+    // screen (unchanged otherwise; its own footer/actions are Stage 5)
+    // takes over.
+    setFooter(null);
     const tally = tallyBatchQueue();
     const headerMsg = _batchQueue.length
       ? `Processed ${_batchQueue.length} scene${_batchQueue.length !== 1 ? "s" : ""}${_batchStopRequested ? " (stopped early)" : ""} — ${tally.confident} confident, ${tally["needs-review"]} needs review, ${tally["no-match"]} no match, ${tally.error} error${tally.error !== 1 ? "s" : ""}`

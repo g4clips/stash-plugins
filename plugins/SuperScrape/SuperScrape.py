@@ -1776,6 +1776,35 @@ def search(store_info, title_candidate, config, stash_url, api_key, proxy_url=""
     raise RuntimeError(f"Unknown site {site!r} on store info -- cannot search")
 
 
+def _thumbnail_is_gif(url, session):
+    """Best-effort check for whether a scraped thumbnail URL points to a
+    GIF -- stash-box scene covers can't be GIFs, so this drives the apply
+    UI's fallback-to-current behavior (see renderApply in SuperScrape.js).
+    Checked once here, server-side, via the same proxied session every
+    adapter already uses -- not in the browser: the thumbnail's CDN is a
+    different origin than the local Stash instance, so a browser-side
+    fetch() would be subject to that CDN's CORS policy, which we don't
+    control and can't rely on. Content-Type is checked first (usually
+    enough); if the server doesn't send a useful one, falls back to
+    sniffing the GIF87a/GIF89a magic bytes from the first few bytes of the
+    actual response body (a Range request, so a server that honors it
+    doesn't send the whole file just to be checked). Never raises -- a
+    failed check just means "assume not a GIF", not a scrape failure."""
+    if not url:
+        return False
+    try:
+        with session.get(url, timeout=10, stream=True, headers={"Range": "bytes=0-5"}) as resp:
+            content_type = (resp.headers.get("Content-Type") or "").lower()
+            if "gif" in content_type:
+                return True
+            if content_type.startswith("image/"):
+                return False
+            chunk = next(resp.iter_content(chunk_size=6), b"")
+            return chunk.startswith(b"GIF87a") or chunk.startswith(b"GIF89a")
+    except Exception:
+        return False
+
+
 def extract(clip_url, site, hit, proxy_url=""):
     """Wraps each adapter's site-specific extraction, then packages the
     result into the SHARED external shape (title, date, description,
@@ -1802,9 +1831,12 @@ def extract(clip_url, site, hit, proxy_url=""):
     else:
         raise RuntimeError(f"Unknown site {site!r} -- cannot extract")
 
+    thumbnail = scraped.get("thumbnail") or (hit or {}).get("thumbnail") or ""
+    session = _make_session(proxy_url)
     return {
         **scraped,
-        "thumbnail": scraped.get("thumbnail") or (hit or {}).get("thumbnail") or "",
+        "thumbnail": thumbnail,
+        "thumbnailIsGif": _thumbnail_is_gif(thumbnail, session),
         "contentUrl": clip_url,
     }
 

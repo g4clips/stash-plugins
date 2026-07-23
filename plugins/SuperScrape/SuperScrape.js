@@ -989,26 +989,43 @@
           <span class="ss-perf-inline-msg"></span>` : ""}
       </div>` : "—";
 
+    // stash-box scene covers can't be GIFs -- scraped.thumbnailIsGif is
+    // computed once server-side in extract() (Content-Type / magic-byte
+    // check via the proxied session, see SuperScrape.py) so this never
+    // needs a browser-side fetch. currentIsGif is a defensive extension
+    // check only: Stash's own screenshot generator never actually emits a
+    // GIF, but the fallback below still needs to degrade sanely if that
+    // assumption is ever wrong.
     const currentImageUrl = current.paths?.screenshot || "";
-    const defaultCoverPick = currentImageUrl ? "current" : "scraped";
+    const currentIsGif = /\.gif(\?|$)/i.test(currentImageUrl);
+    const incomingIsGif = !!scraped.thumbnailIsGif;
+    const currentUsable = !!currentImageUrl && !currentIsGif;
+    const incomingUsable = !!scrapedThumbnail && !incomingIsGif;
+    const defaultCoverPick = currentUsable ? "current" : incomingUsable ? "scraped" : null;
+    const noValidCover = (currentImageUrl || scrapedThumbnail) && !currentUsable && !incomingUsable;
+
+    function coverBoxHtml(kind, url, usable, tag, selected) {
+      if (!url) return `<div class="ss-cover-box ss-cover-empty"><span class="ss-hint">No image</span></div>`;
+      return `
+        <div class="ss-cover-box${selected ? " ss-cover-selected" : ""}${usable ? "" : " ss-cover-disabled"}" data-cover="${kind}">
+          ${thumbWithHover(url, "ss-result-thumb")}
+          <span class="ss-cover-tag${usable ? "" : " ss-cover-tag-warn"}">${tag}</span>
+          <input type="radio" name="ss-cover-pick" value="${kind}" style="display:none" ${usable ? "" : "disabled"} ${selected ? "checked" : ""} />
+        </div>`;
+    }
+
+    const currentTag = currentIsGif ? "⚠ GIF — unusable" : (defaultCoverPick === "current" ? "Current ✓" : "Current");
+    const incomingTag = incomingIsGif ? "⚠ GIF — will be skipped" : (defaultCoverPick === "scraped" ? "Incoming ✓" : "Incoming");
+
     const imageRowHtml = (currentImageUrl || scrapedThumbnail) ? `
       <div class="ss-compare-row">
         <div class="ss-compare-label">Cover Image</div>
         <div class="ss-compare-current">
-          ${thumbWithHover(currentImageUrl, "ss-result-thumb")}
-          ${currentImageUrl ? `
-            <label class="ss-item-label" style="margin-top:.3rem">
-              <input type="radio" name="ss-cover-pick" value="current" ${defaultCoverPick === "current" ? "checked" : ""} />
-              <span>Keep current</span>
-            </label>` : ""}
+          ${coverBoxHtml("current", currentImageUrl, currentUsable, currentTag, defaultCoverPick === "current")}
         </div>
         <div class="ss-compare-incoming">
-          ${thumbWithHover(scrapedThumbnail, "ss-result-thumb")}
-          ${scrapedThumbnail ? `
-            <label class="ss-item-label" style="margin-top:.3rem">
-              <input type="radio" name="ss-cover-pick" value="scraped" ${defaultCoverPick === "scraped" ? "checked" : ""} />
-              <span>Use scraped</span>
-            </label>` : ""}
+          ${coverBoxHtml("scraped", scrapedThumbnail, incomingUsable, incomingTag, defaultCoverPick === "scraped")}
+          ${noValidCover ? `<p class="ss-hint ss-warning" style="margin-top:.3rem">⚠ No valid cover available — GIFs can't be used as stash-box covers. Cover will be left unchanged.</p>` : ""}
         </div>
         <div class="ss-compare-toggle"></div>
       </div>` : "";
@@ -1070,6 +1087,21 @@
 
     bindThumbHovers();
     renderTagPicker(resolvedPerformers);
+
+    // Whole-thumbnail click-to-select for the cover boxes -- the actual
+    // selection state still lives on the hidden ss-cover-pick radios (so
+    // ss-apply's existing querySelector('input[name="ss-cover-pick"]:checked')
+    // read doesn't need to change), this just gives each box a bigger,
+    // more obvious click target than the radio input alone. Disabled
+    // boxes (GIF-flagged incoming cover) are never wired up -- clicking
+    // them does nothing, matching their disabled radio underneath.
+    document.querySelectorAll(".ss-cover-box[data-cover]:not(.ss-cover-disabled)").forEach(box => {
+      box.addEventListener("click", () => {
+        const kind = box.dataset.cover;
+        document.querySelectorAll('input[name="ss-cover-pick"]').forEach(r => { r.checked = (r.value === kind); });
+        document.querySelectorAll(".ss-cover-box[data-cover]").forEach(b => b.classList.toggle("ss-cover-selected", b.dataset.cover === kind));
+      });
+    });
 
     document.getElementById("ss-back2").onclick = opts.onBack || (() => renderResults(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput, opts));
     if (opts.onDismiss) document.getElementById("ss-dismiss2").onclick = opts.onDismiss;

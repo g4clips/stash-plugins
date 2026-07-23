@@ -295,6 +295,35 @@
   overflow: hidden; color: inherit;
 }
 
+/* ── Cover picker -- click-to-select box (replaces the old thumb+radio-
+   label pattern with a single clickable thumbnail, mirrors the approved
+   mockup's .cover-box). Selection state still lives on the hidden
+   ss-cover-pick radio inside each box -- see renderApply. ─────────────── */
+.ss-cover-box {
+  position: relative;
+  display: inline-block;
+  border: 2px solid #3a3a4a;
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: pointer;
+}
+.ss-cover-box .ss-thumb-wrap { display: block; }
+.ss-cover-box .ss-result-thumb { display: block; }
+.ss-cover-box.ss-cover-selected { border-color: #0d6efd; }
+.ss-cover-box.ss-cover-disabled { cursor: not-allowed; opacity: .55; }
+.ss-cover-tag {
+  position: absolute; bottom: 2px; right: 4px;
+  font-size: .65rem; font-weight: 600;
+  background: rgba(0,0,0,.6); color: #fff;
+  padding: 1px 5px; border-radius: 3px;
+}
+.ss-cover-tag-warn { background: rgba(220,53,69,.85); }
+.ss-cover-empty {
+  display: flex; align-items: center; justify-content: center;
+  width: 80px; height: 54px;
+  border: 2px dashed #3a3a4a; border-radius: 6px;
+}
+
 .ss-compare-row-tall > div { padding-top: .65rem; padding-bottom: .65rem; }
 .ss-textarea {
   width: 100%;

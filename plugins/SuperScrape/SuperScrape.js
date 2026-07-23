@@ -1906,6 +1906,33 @@
     return `<span class="ss-batch-badge ss-batch-badge-${classification}">${label}</span>`;
   }
 
+  // One row's markup, shared by all three sections below -- idx is the
+  // item's index in _batchQueue (not section-local), so the delegated
+  // click handlers can look it up directly the same way the old flat
+  // list already did. Thumbnail source: scraped thumbnail if the scene
+  // got that far, else the local scene's own existing cover, else
+  // thumbWithHover's normal empty state -- no new fetch, both fields
+  // already live on the item from processBatchScene.
+  function batchRowHtml(item, idx) {
+    const name = item.current?.title || (item.current?.files || [])[0]?.basename || `Scene ${item.sceneId}`;
+    const storeBit = item.storeInfo ? ` — ${esc(item.storeInfo.displayName)} (${siteLabel(item.storeInfo.site)})` : "";
+    const thumbUrl = item.scrapedThumbnail || item.current?.paths?.screenshot || "";
+    let actionHtml = "";
+    if (item.classification === "confident" && item.status !== "applied") {
+      actionHtml = `<button class="ss-batch-row-next" data-action="apply-next" data-idx="${idx}" type="button">Apply &amp; Next →</button>`;
+    } else if (item.classification === "needs-review") {
+      actionHtml = `<button class="ss-batch-row-next" data-action="review-next" data-idx="${idx}" type="button">Review &amp; Next →</button>`;
+    }
+    return `
+      <div class="ss-batch-queue-row" data-idx="${idx}" role="button" tabindex="0">
+        ${thumbWithHover(thumbUrl, "ss-batch-row-thumb")}
+        ${batchClassificationBadge(item)}
+        <span class="ss-batch-queue-name">${esc(name)}${storeBit}</span>
+        <span class="ss-batch-queue-reason">${esc(item.reason || "")}</span>
+        ${actionHtml}
+      </div>`;
+  }
+
   function renderBatchQueueResults() {
     const content = document.getElementById("ss-batch-content");
     if (!content) return;
@@ -1919,30 +1946,59 @@
       ? `Processed ${_batchQueue.length} scene${_batchQueue.length !== 1 ? "s" : ""}${_batchStopRequested ? " (stopped early)" : ""} — ${tally.confident} confident, ${tally["needs-review"]} needs review, ${tally["no-match"]} no match, ${tally.error} error${tally.error !== 1 ? "s" : ""}`
       : "No scenes processed.";
 
-    const rowsHtml = _batchQueue.map((item, idx) => {
-      const name = item.current?.title || (item.current?.files || [])[0]?.basename || `Scene ${item.sceneId}`;
-      const storeBit = item.storeInfo ? ` — ${esc(item.storeInfo.displayName)} (${siteLabel(item.storeInfo.site)})` : "";
-      return `
-        <div class="ss-batch-queue-row" data-idx="${idx}" role="button" tabindex="0">
-          ${batchClassificationBadge(item)}
-          <span class="ss-batch-queue-name">${esc(name)}${storeBit}</span>
-          <span class="ss-batch-queue-reason">${esc(item.reason || "")}</span>
-        </div>`;
-    }).join("");
+    // Split into the mockup's Ready to Approve / Needs Review sections,
+    // plus a third (not in the mockup, kept so no-match/error items don't
+    // silently lose the click-to-review access they already have today)
+    // "Other" bucket for anything that's neither. Original _batchQueue
+    // indices are preserved through the filter so the row/button handlers
+    // below can still look items up the same way the old flat list did.
+    const withIdx = _batchQueue.map((item, idx) => ({ item, idx }));
+    const confidentRows = withIdx.filter(x => x.item.classification === "confident");
+    const needsReviewRows = withIdx.filter(x => x.item.classification === "needs-review");
+    const otherRows = withIdx.filter(x => x.item.classification !== "confident" && x.item.classification !== "needs-review");
+    const pendingConfidentCount = confidentRows.filter(x => x.item.status !== "applied").length;
 
-    const pendingConfident = _batchQueue.filter(i => i.classification === "confident" && i.status !== "applied");
-    const approveBtnHtml = pendingConfident.length ? `
-      <div class="ss-row" style="margin-top:.5rem;flex-shrink:0">
-        <button id="ss-batch-approve-all" class="ss-btn ss-btn-primary">Approve All Confident (${pendingConfident.length})</button>
-      </div>` : "";
+    const readySectionHtml = confidentRows.length ? `
+      <div class="ss-batch-section-header">
+        <span class="ss-batch-section-title ss-batch-section-ready">Ready to Approve (${pendingConfidentCount})</span>
+        ${pendingConfidentCount ? `<div class="ss-batch-section-actions"><button id="ss-batch-approve-all" class="ss-btn ss-btn-primary ss-btn-xs">Approve All →</button></div>` : ""}
+      </div>
+      <div class="ss-batch-queue-list">${confidentRows.map(x => batchRowHtml(x.item, x.idx)).join("")}</div>` : "";
+
+    const reviewSectionHtml = needsReviewRows.length ? `
+      <div class="ss-batch-section-header">
+        <span class="ss-batch-section-title ss-batch-section-review">Needs Review (${needsReviewRows.length})</span>
+      </div>
+      <div class="ss-batch-queue-list">${needsReviewRows.map(x => batchRowHtml(x.item, x.idx)).join("")}</div>` : "";
+
+    const otherSectionHtml = otherRows.length ? `
+      <div class="ss-batch-section-header">
+        <span class="ss-batch-section-title">Other (${otherRows.length})</span>
+      </div>
+      <div class="ss-batch-queue-list">${otherRows.map(x => batchRowHtml(x.item, x.idx)).join("")}</div>` : "";
 
     content.innerHTML = `
       <p class="ss-hint">${esc(headerMsg)}</p>
-      <div class="ss-batch-queue-list">${rowsHtml}</div>
-      ${approveBtnHtml}`;
+      ${readySectionHtml}
+      ${reviewSectionHtml}
+      ${otherSectionHtml}`;
 
     const approveBtn = document.getElementById("ss-batch-approve-all");
     if (approveBtn) approveBtn.onclick = runBulkApproveConfident;
+
+    document.querySelectorAll('.ss-batch-row-next[data-action="apply-next"]').forEach(btn => {
+      btn.addEventListener("click", e => {
+        e.stopPropagation();
+        applyBatchItemAndNext(+btn.dataset.idx, btn);
+      });
+    });
+    document.querySelectorAll('.ss-batch-row-next[data-action="review-next"]').forEach(btn => {
+      btn.addEventListener("click", e => {
+        e.stopPropagation();
+        const item = _batchQueue[+btn.dataset.idx];
+        if (item) openQueueItemReview(item);
+      });
+    });
 
     document.querySelectorAll(".ss-batch-queue-row").forEach(row => {
       row.addEventListener("click", () => {
@@ -1986,6 +2042,31 @@
     setBatchStatus(failures.length
       ? `${succeeded} of ${confidentItems.length} applied successfully, ${failures.length} failed: ${failures.join("; ")}`
       : `✓ ${succeeded} of ${confidentItems.length} confident scene${confidentItems.length !== 1 ? "s" : ""} applied.`);
+  }
+
+  // ── Apply & Next -- applies exactly one confident row via the same
+  // applyConfidentBatchItem call runBulkApproveConfident already uses (no
+  // parallel apply path), then re-renders the results screen. "Next" is
+  // deliberately just that re-render: the applied item drops out of the
+  // pending set (same status:"applied" convention as the bulk path), so
+  // whatever's now first in the Ready to Approve section is simply what's
+  // next -- no separate current-item/index tracking needed, mirroring how
+  // runBulkApproveConfident already re-renders after every single item.
+  async function applyBatchItemAndNext(idx, btn) {
+    const item = _batchQueue[idx];
+    if (!item) return;
+    setBatchError("");
+    btn.disabled = true;
+    btn.textContent = "Applying…";
+    try {
+      await applyConfidentBatchItem(item);
+      item.status = "applied";
+    } catch (e) {
+      item.classification = "error";
+      item.reason = `Apply failed: ${e.message}`;
+      setBatchError(e.message);
+    }
+    renderBatchQueueResults();
   }
 
   // ── Individual review: opens the single-scene modal directly at the

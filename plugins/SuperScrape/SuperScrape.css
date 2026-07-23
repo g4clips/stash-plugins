@@ -482,8 +482,30 @@
   cursor: pointer;
 }
 .ss-batch-queue-row:hover { border-color: #0d6efd; }
+.ss-batch-row-thumb { width: 56px; height: 32px; border-radius: 4px; object-fit: cover; flex-shrink: 0; }
 .ss-batch-queue-name { flex-shrink: 0; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ss-batch-queue-reason { color: #999; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ss-batch-queue-reason { color: #999; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ss-batch-row-next {
+  flex-shrink: 0;
+  font-size: .73rem; font-weight: 600;
+  padding: .25rem .55rem; border-radius: 4px; border: none;
+  background: #0d6efd; color: #fff; cursor: pointer;
+}
+.ss-batch-row-next:hover { background: #0a58ca; }
+.ss-batch-row-next:disabled { opacity: .5; cursor: not-allowed; }
+
+.ss-batch-section-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin: .9rem 0 .4rem;
+}
+.ss-batch-section-header:first-child { margin-top: 0; }
+.ss-batch-section-title {
+  font-size: .75rem; font-weight: 600;
+  text-transform: uppercase; letter-spacing: .04em;
+  color: #999;
+}
+.ss-batch-section-ready  { color: #75b798; }
+.ss-batch-section-review { color: #e0c068; }
 
 .ss-batch-badge {
   display: inline-block; flex-shrink: 0; font-size: .7rem; font-weight: 600;

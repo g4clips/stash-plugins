@@ -55,6 +55,45 @@
 .ss-tab:hover { color: #ccc; }
 .ss-tab-active { color: #eee; border-bottom-color: #6ea8fe; }
 
+/* ── Wizard step tracker (Parse/Match/Search/Compare & Apply) ─────────── */
+#ss-steps {
+  display: flex; align-items: center;
+  padding: .5rem 1rem;
+  background: #16161e;
+  border-bottom: 1px solid #333;
+  gap: .25rem;
+  flex-shrink: 0;
+}
+.ss-step { display: flex; align-items: center; gap: .35rem; }
+.ss-step-dot {
+  width: 18px; height: 18px; border-radius: 50%;
+  font-size: .62rem; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.ss-step-label { font-size: .68rem; white-space: nowrap; }
+.ss-step-line { flex: 1; height: 1px; margin: 0 .35rem; min-width: 10px; }
+.ss-step-done .ss-step-dot { background: #75b798; color: #0f0f17; }
+.ss-step-done .ss-step-label { color: #75b798; }
+.ss-step-active .ss-step-dot { background: #6ea8fe; color: #0f0f17; }
+.ss-step-active .ss-step-label { color: #6ea8fe; font-weight: 600; }
+.ss-step-todo .ss-step-dot { background: #2a2a3a; color: #888; }
+.ss-step-todo .ss-step-label { color: #888; }
+.ss-line-done { background: #3a3a4a; }
+.ss-line-todo { background: #2a2a3a; }
+
+/* ── Sticky action footer -- pinned below #ss-content regardless of
+   content length, replaces the button rows each screen used to render
+   inline at the end of its own content ─────────────────────────────── */
+#ss-footer {
+  display: flex; gap: .5rem; align-items: center;
+  padding: .6rem 1rem;
+  background: #16161e;
+  border-top: 1px solid #333;
+  flex-shrink: 0;
+}
+#ss-footer .ss-btn-primary { margin-left: auto; }
+
 #ss-error, .ss-dialog-error {
   margin: .5rem 1rem 0;
   padding: .4rem .7rem;

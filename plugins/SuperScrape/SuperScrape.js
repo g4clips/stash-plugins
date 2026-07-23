@@ -439,9 +439,11 @@
           <button id="ss-tab-scrape" class="ss-tab ss-tab-active">Scrape</button>
           <button id="ss-tab-manage" class="ss-tab">Manage Known Stores</button>
         </div>
+        <div id="ss-steps" class="ss-steps" style="display:none"></div>
         <div id="ss-error"  style="display:none"></div>
         <div id="ss-status" style="display:none"></div>
         <div id="ss-content"></div>
+        <div id="ss-footer" class="ss-footer" style="display:none"></div>
       </div>
       <div id="ss-hover-preview"><img alt=""></div>`;
     document.body.appendChild(overlay);
@@ -506,10 +508,51 @@
     }
   }
 
+  // ── Wizard chrome: persistent step tracker + sticky footer, shared by
+  // every screen in the single-scene wizard (Parse/Match/Search/Compare &
+  // Apply -- Compare and Apply are one merged step since they already
+  // share a screen). Each render* function below owns its own chrome
+  // state and calls these at render time; screens outside the 4-step
+  // wizard (Manage Known Stores, the terminal done/deleted screens) clear
+  // both so no stale tracker/footer lingers from the previous screen. ────
+
+  const WIZARD_STEPS = [
+    { key: "parse", label: "Parse" },
+    { key: "match", label: "Match" },
+    { key: "search", label: "Search" },
+    { key: "apply", label: "Compare & Apply" },
+  ];
+
+  function renderStepTracker(activeKey) {
+    const el = document.getElementById("ss-steps");
+    if (!el) return;
+    if (!activeKey) { el.style.display = "none"; el.innerHTML = ""; return; }
+    const activeIdx = WIZARD_STEPS.findIndex(s => s.key === activeKey);
+    el.style.display = "flex";
+    el.innerHTML = WIZARD_STEPS.map((s, i) => {
+      const state = i < activeIdx ? "done" : i === activeIdx ? "active" : "todo";
+      const dot = state === "done" ? "✓" : String(i + 1);
+      const line = i < WIZARD_STEPS.length - 1
+        ? `<div class="ss-step-line ${i < activeIdx ? "ss-line-done" : "ss-line-todo"}"></div>`
+        : "";
+      return `<div class="ss-step ss-step-${state}"><span class="ss-step-dot">${dot}</span><span class="ss-step-label">${esc(s.label)}</span></div>${line}`;
+    }).join("");
+  }
+
+  function setFooter(html) {
+    const el = document.getElementById("ss-footer");
+    if (!el) return;
+    if (!html) { el.style.display = "none"; el.innerHTML = ""; return; }
+    el.style.display = "flex";
+    el.innerHTML = html;
+  }
+
   // ── Scrape flow: Step 1 — filename input ──────────────────────────────────
 
   async function renderFilenameInput(sceneId) {
     setError(""); setStatus("Loading…");
+    renderStepTracker("parse");
+    setFooter(null);
     getContent().innerHTML = `<p class="ss-hint">Loading scene info…</p>`;
 
     let current;
@@ -543,13 +586,14 @@
         `).join("")}
       </div>` : "";
 
+    renderStepTracker("parse");
     getContent().innerHTML = `
       ${quickPickHtml}
       <p class="ss-hint">Filename to parse (edit if needed):</p>
       <div class="ss-row">
         <input id="ss-filename" class="ss-input" type="text" value="${esc(basename)}" />
-        <button id="ss-parse" class="ss-btn ss-btn-primary">Parse</button>
       </div>`;
+    setFooter(`<button id="ss-parse" class="ss-btn ss-btn-primary">Parse</button>`);
 
     document.querySelectorAll(".ss-quickpick-chip").forEach(chip => {
       chip.addEventListener("click", async () => {
@@ -602,6 +646,7 @@
 
   function renderMatchState(sceneId, current, parsed, match, autoSearch = false, opts = {}) {
     setError("");
+    renderStepTracker("match");
     const isConfident = match.confidence === "confident";
 
     const suggestionsHtml = (match.suggestions || []).map(s => `
@@ -639,12 +684,12 @@
       <div class="ss-section-label">Search terms (clip title)</div>
       <div class="ss-row">
         <input id="ss-query" class="ss-input" type="text" value="${esc(parsed.titleCandidate)}" />
-      </div>
-      <div class="ss-row">
-        <button id="ss-confirm" class="ss-btn ss-btn-primary">${isConfident ? "Confirm &amp; Search" : "Search"}</button>
-        <button id="ss-back0" class="ss-btn ss-btn-secondary">← Back</button>
-        ${opts.onDismiss ? `<button id="ss-dismiss0" class="ss-btn ss-btn-danger">Dismiss</button>` : ""}
       </div>`;
+
+    setFooter(`
+      <button id="ss-back0" class="ss-btn ss-btn-secondary">← Back</button>
+      ${opts.onDismiss ? `<button id="ss-dismiss0" class="ss-btn ss-btn-danger">Dismiss</button>` : ""}
+      <button id="ss-confirm" class="ss-btn ss-btn-primary">${isConfident ? "Confirm &amp; Search" : "Search"}</button>`);
 
     document.getElementById("ss-back0").onclick = opts.onBack || (() => renderFilenameInput(sceneId));
     if (opts.onDismiss) document.getElementById("ss-dismiss0").onclick = opts.onDismiss;
@@ -748,13 +793,14 @@
 
   function renderResults(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput, opts = {}) {
     setError("");
+    renderStepTracker("search");
     const hits = searchOutput.hits || [];
 
     if (!hits.length) {
       const totalHint = searchOutput.totalInStore != null ? ` (${searchOutput.totalInStore} total)` : "";
       getContent().innerHTML = `
-        <p class="ss-hint">No results in ${esc(storeInfo.displayName)}'s store${totalHint} for that search.</p>
-        <div class="ss-row"><button id="ss-back1" class="ss-btn ss-btn-secondary">← Back</button></div>`;
+        <p class="ss-hint">No results in ${esc(storeInfo.displayName)}'s store${totalHint} for that search.</p>`;
+      setFooter(`<button id="ss-back1" class="ss-btn ss-btn-secondary">← Back</button>`);
       document.getElementById("ss-back1").onclick = () => renderMatchState(sceneId, current, parsed, match, false, opts);
       return;
     }
@@ -784,8 +830,8 @@
     getContent().innerHTML = `
       <p class="ss-hint">${countLabel} in ${esc(storeInfo.displayName)}'s store — click to select:</p>
       ${warningHtml}
-      <div class="ss-results">${cardsHtml}</div>
-      <div class="ss-row"><button id="ss-back1" class="ss-btn ss-btn-secondary">← Back</button></div>`;
+      <div class="ss-results">${cardsHtml}</div>`;
+    setFooter(`<button id="ss-back1" class="ss-btn ss-btn-secondary">← Back</button>`);
 
     bindThumbHovers();
 
@@ -843,6 +889,7 @@
 
   function renderDuplicates(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput, scrapeOutput, contentUrl, scrapedThumbnail, dupes, opts = {}) {
     setError("");
+    renderStepTracker("search");
 
     function fmtSize(bytes) {
       if (!bytes) return null;
@@ -869,11 +916,10 @@
 
     getContent().innerHTML = `
       <div class="ss-dupe-header">⚠ This scene may already exist in your library.</div>
-      <div class="ss-dupe-list">${cardsHtml}</div>
-      <div class="ss-row" style="margin-top:.5rem;flex-shrink:0">
-        <button id="ss-dupe-delete" class="ss-btn ss-btn-danger">Delete current scene</button>
-        <button id="ss-dupe-keep" class="ss-btn ss-btn-secondary">Keep current scene &amp; continue</button>
-      </div>`;
+      <div class="ss-dupe-list">${cardsHtml}</div>`;
+    setFooter(`
+      <button id="ss-dupe-delete" class="ss-btn ss-btn-danger">Delete current scene</button>
+      <button id="ss-dupe-keep" class="ss-btn ss-btn-secondary">Keep current scene &amp; continue</button>`);
 
     bindThumbHovers();
 
@@ -888,8 +934,9 @@
         await gql(`mutation($input: ScenesDestroyInput!) { scenesDestroy(input: $input) }`,
           { input: { ids: [sceneId], delete_file: false } });
         setStatus("");
-        getContent().innerHTML = `<div class="ss-success">✓ Current scene deleted.</div>
-          <div class="ss-row" style="margin-top:.75rem"><button id="ss-dupe-close" class="ss-btn ss-btn-primary">Close</button></div>`;
+        renderStepTracker(null);
+        getContent().innerHTML = `<div class="ss-success">✓ Current scene deleted.</div>`;
+        setFooter(`<button id="ss-dupe-close" class="ss-btn ss-btn-primary">Close</button>`);
         document.getElementById("ss-dupe-close").onclick = closeModal;
       } catch (e) {
         btn.disabled = false; btn.textContent = "Delete current scene";
@@ -910,6 +957,7 @@
 
   function renderApply(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput, scrapeOutput, contentUrl, scrapedThumbnail, opts = {}) {
     setError("");
+    renderStepTracker("apply");
     const scraped = scrapeOutput.scraped;
     const resolvedPerformers = scrapeOutput.resolvedPerformers || [];
     const resolvedStudio = scrapeOutput.resolvedStudio;
@@ -1004,13 +1052,6 @@
         ${perfRowHtml}
         ${descriptionRowHtml}
       </div>
-      <div class="ss-row" style="margin-top:.75rem;flex-shrink:0">
-        <button id="ss-back2"   class="ss-btn ss-btn-secondary">← Back</button>
-        <button id="ss-selall"  class="ss-btn ss-btn-secondary">All</button>
-        <button id="ss-selnone" class="ss-btn ss-btn-secondary">None</button>
-        ${opts.onDismiss ? `<button id="ss-dismiss2" class="ss-btn ss-btn-danger">Dismiss</button>` : ""}
-        <button id="ss-apply"   class="ss-btn ss-btn-primary">Apply to Scene</button>
-      </div>
       <div id="ss-tagpicker-wrap">
         <div class="ss-section-label">Add tags</div>
         <div class="ss-row" style="margin-bottom:.4rem">
@@ -1019,6 +1060,13 @@
         </div>
         <div id="ss-tag-grid" class="ss-tag-grid"><span class="ss-hint">Loading tags…</span></div>
       </div>`;
+
+    setFooter(`
+      <button id="ss-back2"   class="ss-btn ss-btn-secondary">← Back</button>
+      <button id="ss-selall"  class="ss-btn ss-btn-secondary">All</button>
+      <button id="ss-selnone" class="ss-btn ss-btn-secondary">None</button>
+      ${opts.onDismiss ? `<button id="ss-dismiss2" class="ss-btn ss-btn-danger">Dismiss</button>` : ""}
+      <button id="ss-apply"   class="ss-btn ss-btn-primary">Apply to Scene</button>`);
 
     bindThumbHovers();
     renderTagPicker(resolvedPerformers);
@@ -1214,6 +1262,8 @@
 
   function renderDone() {
     setError(""); setStatus("");
+    renderStepTracker(null);
+    setFooter(null);
     getContent().innerHTML = `<div class="ss-success">✓ Scene updated! Reloading…</div>`;
     setTimeout(() => window.location.reload(), 1500);
   }
@@ -1222,6 +1272,8 @@
 
   function renderStoreList(sceneId) {
     setError("");
+    renderStepTracker(null);
+    setFooter(null);
     getContent().innerHTML = `<p class="ss-hint">Loading known stores…</p>`;
     readConfig().then(cfg => {
       const map = cfg.performerStoreMap || {};

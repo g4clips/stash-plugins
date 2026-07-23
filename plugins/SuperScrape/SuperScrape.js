@@ -1069,13 +1069,18 @@
         ${perfRowHtml}
         ${descriptionRowHtml}
       </div>
-      <div id="ss-tagpicker-wrap">
-        <div class="ss-section-label">Add tags</div>
-        <div class="ss-row" style="margin-bottom:.4rem">
-          <input id="ss-tag-filter" class="ss-input" type="text" placeholder="Filter tags…" />
-          <button id="ss-tag-filter-clear" class="ss-btn ss-btn-secondary ss-btn-xs" type="button" style="display:none" title="Clear filter">✕</button>
+      <div id="ss-tagpicker-wrap" class="ss-tags-block">
+        <div id="ss-tags-head" class="ss-tags-head">
+          <span class="ss-tags-title">Add tags</span>
+          <span id="ss-tags-chev" class="ss-tags-chev">▼</span>
         </div>
-        <div id="ss-tag-grid" class="ss-tag-grid"><span class="ss-hint">Loading tags…</span></div>
+        <div id="ss-tags-body" class="ss-tags-body">
+          <div class="ss-row" style="margin-bottom:.4rem">
+            <input id="ss-tag-filter" class="ss-input" type="text" placeholder="Filter tags…" />
+            <button id="ss-tag-filter-clear" class="ss-btn ss-btn-secondary ss-btn-xs" type="button" style="display:none" title="Clear filter">✕</button>
+          </div>
+          <div id="ss-tag-grid"><span class="ss-hint">Loading tags…</span></div>
+        </div>
       </div>`;
 
     setFooter(`
@@ -1192,6 +1197,48 @@
   // whatever the scrape/apply flow already sets (merge, not replace). ──────
 
   let _allTagsCache = null;
+  // TagChips' own categories (id/label/tagIds), read straight out of
+  // configuration.plugins.TagChips -- confirmed live that
+  // `{ configuration { plugins } }` returns EVERY plugin's config in one
+  // response (not scoped to the calling plugin), the same query shape
+  // SuperScrape's own readConfig() already uses for its own key. null
+  // means "not fetched yet" (distinct from [] = fetched, TagChips not
+  // installed or has zero categories configured), checked once and
+  // cached like _allTagsCache.
+  let _tagChipsCategoriesCache = null;
+
+  async function fetchTagChipsCategories() {
+    try {
+      const data = await gql(`{ configuration { plugins } }`);
+      const cfg = (data.configuration.plugins || {})["TagChips"] || {};
+      return Array.isArray(cfg.categories) ? cfg.categories : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  // Mirrors TagChips' own buildCategorizedSections (TagChips.js) exactly:
+  // categories in TagChips' stored array order, tags within each section
+  // sorted by scene_count desc, anything not in any category falls into
+  // an "Uncategorized" section appended last. Duplicated rather than
+  // imported -- Stash loads each plugin's JS as an independent bundle
+  // with no cross-plugin import mechanism, same reasoning as this file's
+  // existing "visual language only, no cross-import" tag-grid CSS.
+  function buildCategorizedSections(tags, categories) {
+    const tagById = new Map(tags.map(t => [t.id, t]));
+    const usedIds = new Set();
+    const sections = categories.map(cat => {
+      const catTags = (cat.tagIds || []).map(id => tagById.get(id)).filter(Boolean);
+      catTags.forEach(t => usedIds.add(t.id));
+      catTags.sort((a, b) => (b.scene_count || 0) - (a.scene_count || 0));
+      return { id: cat.id, label: cat.label, tags: catTags };
+    });
+    const uncategorized = tags.filter(t => !usedIds.has(t.id));
+    uncategorized.sort((a, b) => (b.scene_count || 0) - (a.scene_count || 0));
+    sections.push({ id: "__uncategorized", label: "Uncategorized", tags: uncategorized });
+    return sections;
+  }
+
   // Selection lives here, independent of the DOM -- filtering the grid
   // removes non-matching chips from the DOM entirely (confirmed live: a
   // chip toggled on, then filtered out of view, then the filter cleared,
@@ -1243,6 +1290,9 @@
       grid.innerHTML = `<span class="ss-hint">Could not load tags: ${esc(e.message)}</span>`;
       return;
     }
+    if (_tagChipsCategoriesCache === null) {
+      _tagChipsCategoriesCache = await fetchTagChipsCategories();
+    }
 
     // One-time pre-population at render time only -- does not re-run if
     // performer checkboxes change later elsewhere in the comparison table
@@ -1260,7 +1310,12 @@
       filterInput.addEventListener("input", () => {
         const q = normalize(filterInput.value);
         const filtered = q ? _allTagsCache.filter(t => normalize(t.name).includes(q)) : _allTagsCache;
-        drawTagGrid(filtered);
+        // While a filter is active, show matches as one flat list regardless
+        // of category -- a match could span several categories, and forcing
+        // the grouped/collapsible layout on a short filtered result would
+        // just add visual noise for no benefit. Clearing the filter (empty
+        // query) reverts to the normal grouped view.
+        drawTagGrid(filtered, /* flat */ !!q);
         if (filterClearBtn) filterClearBtn.style.display = filterInput.value ? "" : "none";
       });
     }
@@ -1272,15 +1327,44 @@
         filterInput.focus();
       });
     }
+
+    const tagsHead = document.getElementById("ss-tags-head");
+    if (tagsHead) {
+      tagsHead.addEventListener("click", () => {
+        const body = document.getElementById("ss-tags-body");
+        const chev = document.getElementById("ss-tags-chev");
+        if (!body) return;
+        const collapsed = body.style.display === "none";
+        body.style.display = collapsed ? "" : "none";
+        if (chev) chev.textContent = collapsed ? "▼" : "▶";
+      });
+    }
   }
 
-  function drawTagGrid(tags) {
+  function drawTagGrid(tags, flat = false) {
     const grid = document.getElementById("ss-tag-grid");
     if (!grid) return;
     if (!tags.length) { grid.innerHTML = `<span class="ss-hint">No tags match.</span>`; return; }
-    grid.innerHTML = tags.map(t => `
-      <span class="ss-tag-chip${_selectedTagIds.has(t.id) ? " ss-chip-on" : ""}" data-id="${esc(t.id)}" title="${esc(t.name)}">${esc(t.name)}</span>
-    `).join("");
+
+    const chipHtml = t =>
+      `<span class="ss-tag-chip${_selectedTagIds.has(t.id) ? " ss-chip-on" : ""}" data-id="${esc(t.id)}" title="${esc(t.name)}">${esc(t.name)}</span>`;
+
+    const categories = _tagChipsCategoriesCache || [];
+    if (flat || !categories.length) {
+      // Flat fallback also covers "TagChips isn't installed / has no
+      // categories configured" -- same rendering path as an active filter.
+      grid.innerHTML = `<div class="ss-tag-grid">${tags.map(chipHtml).join("")}</div>`;
+    } else {
+      const sections = buildCategorizedSections(tags, categories);
+      grid.innerHTML = sections
+        .filter(s => s.tags.length)
+        .map(s => `
+          <p class="ss-cat-heading">${esc(s.label)}</p>
+          <hr class="ss-cat-divider" />
+          <div class="ss-tag-grid">${s.tags.map(chipHtml).join("")}</div>
+        `).join("");
+    }
+
     grid.querySelectorAll(".ss-tag-chip").forEach(chip => {
       chip.addEventListener("click", () => {
         const id = chip.dataset.id;

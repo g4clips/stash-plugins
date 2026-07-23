@@ -361,15 +361,46 @@
 
 /* ── Tag-chip picker — BELOW the action row deliberately (see
    SuperScrape.js), fixed-size CSS grid like TagChips' tag grid (visual
-   language only, different namespace, no cross-import). ──────────────── */
+   language only, different namespace, no cross-import). Collapsible
+   .ss-tags-block/.ss-tags-head/.ss-tags-body wrapper and the
+   .ss-cat-heading/.ss-cat-divider category sections mirror TagChips'
+   own scene-tab grid visually -- same reasoning, no cross-import. ────── */
 #ss-tagpicker-wrap { margin-top: .5rem; flex-shrink: 0; }
+.ss-tags-block {
+  border: 1px solid #2a2a3a;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.ss-tags-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: .5rem .7rem;
+  background: #16161e;
+  cursor: pointer;
+  user-select: none;
+}
+.ss-tags-title {
+  font-size: .75rem; font-weight: 600; color: #ccc;
+  text-transform: uppercase; letter-spacing: .04em;
+}
+.ss-tags-chev { color: #888; font-size: .7rem; }
+.ss-tags-body {
+  padding: .6rem .7rem;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.ss-cat-heading {
+  font-size: .68rem; text-transform: uppercase; letter-spacing: .04em;
+  color: #bbb; margin: .5rem 0 .3rem;
+}
+.ss-cat-heading:first-child { margin-top: 0; }
+.ss-cat-divider { border: none; border-top: 1px solid #333; margin: 0 0 .35rem; }
 .ss-tag-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
   gap: .4rem;
-  max-height: 260px;
-  overflow-y: auto;
+  margin-bottom: .4rem;
 }
+.ss-tag-grid:last-child { margin-bottom: 0; }
 .ss-tag-chip {
   width: 100%;
   height: 2rem;

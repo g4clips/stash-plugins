@@ -355,7 +355,11 @@
   // calls -- no parallel apply path. Field selection mirrors renderApply's
   // DEFAULT (untouched) state: every field checkbox starts checked, only
   // performers already found in Stash start checked, cover defaults to
-  // "keep current" if a current image exists, and tags are whatever
+  // "keep current" if a current image exists (or to the StashDB-scraped
+  // cover, unconditionally, when item.viaStashDb -- a StashDB fingerprint
+  // hit is treated as more authoritative than whatever cover the scene
+  // already has, same rationale as the rest of its fields; skipped if
+  // that cover is a GIF, matching renderApply's GIF guard), and tags are whatever
   // computePreselectedTagIds already chose during queue-building. This is
   // deliberately "what Apply would do if you changed nothing," matching the
   // premise that a "confident" item needs no manual review.
@@ -366,7 +370,10 @@
     const fieldChecks = { title: true, date: true, studio: true, urls: true, details: true, performers: true };
     const selPerfNames = resolvedPerformers.filter(p => p.found).map(p => p.name);
     const currentImageUrl = item.current.paths?.screenshot || "";
-    const coverPick = currentImageUrl ? "current" : "scraped";
+    const scrapedCoverUsable = !!item.scrapedThumbnail && !scraped.thumbnailIsGif;
+    const coverPick = (item.viaStashDb && scrapedCoverUsable)
+      ? "scraped"
+      : currentImageUrl ? "current" : (scrapedCoverUsable ? "scraped" : "current");
     await applyToScene(
       item.sceneId, fieldChecks, selPerfNames, scraped, resolvedPerformers, resolvedStudio,
       item.current, item.contentUrl, coverPick, item.scrapedThumbnail, item.preselectedTagIds, item.markOrganized
@@ -1266,7 +1273,9 @@
     const incomingIsGif = !!scraped.thumbnailIsGif;
     const currentUsable = !!currentImageUrl && !currentIsGif;
     const incomingUsable = !!scrapedThumbnail && !incomingIsGif;
-    const defaultCoverPick = currentUsable ? "current" : incomingUsable ? "scraped" : null;
+    const defaultCoverPick = (opts.viaStashDb && incomingUsable)
+      ? "scraped"
+      : currentUsable ? "current" : incomingUsable ? "scraped" : null;
     const noValidCover = (currentImageUrl || scrapedThumbnail) && !currentUsable && !incomingUsable;
 
     function coverBoxHtml(kind, url, usable, tag, selected) {

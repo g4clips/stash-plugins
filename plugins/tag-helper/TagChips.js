@@ -13,6 +13,11 @@
 // zzz-group:<name>. Those tags are no longer read specially by this file —
 // if any exist in your library they're just ordinary tags now.)
 //
+// Groups may also carry an optional performerId/studioId (add-only for
+// performer, replace-with-confirm for studio — see applyGroup()). The
+// scene-tab tag grid's sort order (usage vs. alphabetical) is likewise
+// stored per-user in the same config, under sortMode.
+//
 // See project docs: stash-plugin-dev-notes-2026-07-15-v2.md sections 3, 4, 8, 13
 // for the GraphQL / PluginApi patterns this file follows.
 
@@ -56,6 +61,10 @@
       groups: Array.isArray(cfg.groups) ? cfg.groups : [],
       // defaultCollapsed defaults to false for categories saved before this field existed
       categories: categories.map((c) => ({ defaultCollapsed: false, ...c })),
+      // "usage" (scene_count desc) matches this plugin's original, undeclared
+      // default sort; "alpha" is the only other mode. Anything else in the
+      // stored config (unset, corrupt) also falls back to "usage".
+      sortMode: cfg.sortMode === "alpha" ? "alpha" : "usage",
     };
   }
 
@@ -86,7 +95,12 @@
   }
 
   // ---------------------------------------------------------------------
-  // Scene tag mutations
+  // Scene mutations. updateSceneTagIds is used by the per-chip toggle
+  // (tag_ids only). updateScene is used by group-apply, which may also
+  // need to touch performer_ids / studio_id — only the fields actually
+  // being changed are included, since SceneUpdateInput leaves omitted
+  // fields untouched (unlike tag_ids/performer_ids, which are whole-array
+  // replace when present, per RelationshipUpdateModeSet).
   // ---------------------------------------------------------------------
   async function updateSceneTagIds(sceneId, tagIds) {
     await gql(
@@ -97,14 +111,60 @@
     );
   }
 
+  async function updateScene(sceneId, fields) {
+    await gql(
+      `mutation TagChipsSceneUpdate2($input: SceneUpdateInput!) {
+         sceneUpdate(input: $input) { id tags { id } performers { id } studio { id } }
+       }`,
+      { input: { id: sceneId, ...fields } }
+    );
+  }
+
   // ---------------------------------------------------------------------
-  // Group persistence (config-store based)
+  // Performer / studio search, for the group editor's picker (name-filter
+  // queries, same shape already used by Data18StashDB.js / SuperScrape.py
+  // in this repo).
   // ---------------------------------------------------------------------
-  async function saveGroup({ id, label, memberTagIds }) {
+  async function searchPerformers(q) {
+    const data = await gql(
+      `query TagChipsFindPerformers($q: String) {
+         findPerformers(filter: { q: $q, per_page: 8 }) { performers { id name } }
+       }`,
+      { q }
+    );
+    return data.findPerformers.performers;
+  }
+
+  async function searchStudios(q) {
+    const data = await gql(
+      `query TagChipsFindStudios($q: String) {
+         findStudios(filter: { q: $q, per_page: 8 }) { studios { id name } }
+       }`,
+      { q }
+    );
+    return data.findStudios.studios;
+  }
+
+  // ---------------------------------------------------------------------
+  // Group persistence (config-store based). A group may optionally carry
+  // a performerId/studioId (plus a cached label, so the Groups list and
+  // apply-confirmation don't need an extra fetch). Groups saved before
+  // this field existed simply have performerId/studioId undefined, which
+  // every read site already treats as "no performer/studio on this group".
+  // ---------------------------------------------------------------------
+  async function saveGroup({ id, label, memberTagIds, performerId, performerLabel, studioId, studioLabel }) {
     const current = await readConfig();
+    const data = {
+      label: label.trim(),
+      memberTagIds,
+      performerId: performerId || null,
+      performerLabel: performerId ? performerLabel : null,
+      studioId: studioId || null,
+      studioLabel: studioId ? studioLabel : null,
+    };
     const groups = id
-      ? current.groups.map((g) => (g.id === id ? { ...g, label: label.trim(), memberTagIds } : g))
-      : [...current.groups, { id: genId("grp"), label: label.trim(), memberTagIds }];
+      ? current.groups.map((g) => (g.id === id ? { ...g, ...data } : g))
+      : [...current.groups, { id: genId("grp"), ...data }];
     return writeConfig({ groups });
   }
 
@@ -166,19 +226,27 @@
   // ---------------------------------------------------------------------
   // Category grouping for the scene-tab grid.
   // Order: categories in stored array order, Uncategorized last.
-  // Within each section: sort by scene_count descending.
+  // Within each section: sorted per sortMode ("usage" = scene_count desc,
+  // the long-standing default; "alpha" = tag name).
   // ---------------------------------------------------------------------
-  function buildCategorizedSections(tags, categories) {
+  function tagComparator(sortMode) {
+    return sortMode === "alpha"
+      ? (a, b) => a.name.localeCompare(b.name)
+      : (a, b) => (b.scene_count || 0) - (a.scene_count || 0);
+  }
+
+  function buildCategorizedSections(tags, categories, sortMode) {
+    const cmp = tagComparator(sortMode);
     const tagById = new Map(tags.map((t) => [t.id, t]));
     const usedIds = new Set();
     const sections = categories.map((cat) => {
       const catTags = cat.tagIds.map((id) => tagById.get(id)).filter(Boolean);
       catTags.forEach((t) => usedIds.add(t.id));
-      catTags.sort((a, b) => (b.scene_count || 0) - (a.scene_count || 0));
+      catTags.sort(cmp);
       return { id: cat.id, label: cat.label, tags: catTags, defaultCollapsed: !!cat.defaultCollapsed };
     });
     const uncategorized = tags.filter((t) => !usedIds.has(t.id));
-    uncategorized.sort((a, b) => (b.scene_count || 0) - (a.scene_count || 0));
+    uncategorized.sort(cmp);
     sections.push({ id: "__uncategorized", label: "Uncategorized", tags: uncategorized });
     return sections;
   }
@@ -201,6 +269,112 @@
       { className: cls, title: label, onClick: pending ? undefined : onClick },
       label
     );
+  }
+
+  // ---------------------------------------------------------------------
+  // Sort-mode toggle for the scene-tab tag grid (persisted via config).
+  // ---------------------------------------------------------------------
+  function SortToggle({ mode, onChange }) {
+    return h("div", { className: "tc-sort-toggle" }, [
+      h(
+        "button",
+        {
+          key: "usage",
+          className: "tc-sort-btn" + (mode !== "alpha" ? " tc-sort-btn-active" : ""),
+          onClick: () => onChange("usage"),
+        },
+        "Most used"
+      ),
+      h(
+        "button",
+        {
+          key: "alpha",
+          className: "tc-sort-btn" + (mode === "alpha" ? " tc-sort-btn-active" : ""),
+          onClick: () => onChange("alpha"),
+        },
+        "A–Z"
+      ),
+    ]);
+  }
+
+  // ---------------------------------------------------------------------
+  // Performer/studio search-and-select, used by the group editor. Shows a
+  // debounced search box + result list while nothing is picked, or the
+  // picked name with a clear button once one is selected.
+  // ---------------------------------------------------------------------
+  function EntityPicker({ label, kind, selectedId, selectedLabel, onPick, onClear }) {
+    const [query, setQuery] = React.useState("");
+    const [results, setResults] = React.useState([]);
+    const [busy, setBusy] = React.useState(false);
+
+    React.useEffect(() => {
+      if (!query.trim()) {
+        setResults([]);
+        return;
+      }
+      let cancelled = false;
+      setBusy(true);
+      const timer = setTimeout(() => {
+        const fn = kind === "performer" ? searchPerformers : searchStudios;
+        fn(query.trim())
+          .then((r) => {
+            if (!cancelled) setResults(r);
+          })
+          .catch(() => {
+            if (!cancelled) setResults([]);
+          })
+          .finally(() => {
+            if (!cancelled) setBusy(false);
+          });
+      }, 250);
+      return () => {
+        cancelled = true;
+        clearTimeout(timer);
+      };
+    }, [query, kind]);
+
+    return h("div", { className: "tc-entity-picker" }, [
+      h("div", { key: "lbl", className: "tc-section-label" }, label),
+      selectedId
+        ? h("div", { key: "sel", className: "tc-entity-selected" }, [
+            h("span", { key: "n" }, selectedLabel || selectedId),
+            h(
+              "button",
+              { key: "x", type: "button", className: "tc-entity-clear", onClick: onClear },
+              "✕"
+            ),
+          ])
+        : h(React.Fragment, { key: "search" }, [
+            h("input", {
+              key: "in",
+              className: "tc-editor-input",
+              placeholder: `Search ${kind}s…`,
+              value: query,
+              onChange: (e) => setQuery(e.target.value),
+            }),
+            busy && h("div", { key: "busy", className: "tc-entity-hint" }, "Searching…"),
+            results.length > 0 &&
+              h(
+                "div",
+                { key: "results", className: "tc-entity-results" },
+                results.map((r) =>
+                  h(
+                    "div",
+                    {
+                      key: r.id,
+                      className: "tc-entity-result",
+                      onClick: () => {
+                        onPick(r.id, r.name);
+                        setQuery("");
+                        setResults([]);
+                      },
+                    },
+                    r.name
+                  )
+                )
+              ),
+          ]),
+    ]);
   }
 
   // ---------------------------------------------------------------------
@@ -286,6 +460,10 @@
     const [label, setLabel] = React.useState(item ? item.label : "");
     const [selectedIds, setSelectedIds] = React.useState(new Set(item ? item.selectedIds : []));
     const [defaultCollapsed, setDefaultCollapsed] = React.useState(item ? !!item.defaultCollapsed : false);
+    const [performerId, setPerformerId] = React.useState(item && item.performerId ? item.performerId : null);
+    const [performerLabel, setPerformerLabel] = React.useState(item ? item.performerLabel || "" : "");
+    const [studioId, setStudioId] = React.useState(item && item.studioId ? item.studioId : null);
+    const [studioLabel, setStudioLabel] = React.useState(item ? item.studioLabel || "" : "");
     const [busy, setBusy] = React.useState(false);
     const [error, setError] = React.useState("");
 
@@ -310,6 +488,10 @@
           label: label.trim(),
           tagIds: Array.from(selectedIds),
           defaultCollapsed,
+          performerId,
+          performerLabel,
+          studioId,
+          studioLabel,
         });
         onSaved();
       } catch (e) {
@@ -367,6 +549,39 @@
             onChange: (e) => setDefaultCollapsed(e.target.checked),
           }),
           " Start collapsed",
+        ]),
+      noun === "Group" &&
+        h("div", { className: "tc-entity-pickers" }, [
+          h(EntityPicker, {
+            key: "performer",
+            label: "Performer (optional, add-only)",
+            kind: "performer",
+            selectedId: performerId,
+            selectedLabel: performerLabel,
+            onPick: (id, name) => {
+              setPerformerId(id);
+              setPerformerLabel(name);
+            },
+            onClear: () => {
+              setPerformerId(null);
+              setPerformerLabel("");
+            },
+          }),
+          h(EntityPicker, {
+            key: "studio",
+            label: "Studio (optional, replaces the scene's studio)",
+            kind: "studio",
+            selectedId: studioId,
+            selectedLabel: studioLabel,
+            onPick: (id, name) => {
+              setStudioId(id);
+              setStudioLabel(name);
+            },
+            onClear: () => {
+              setStudioId(null);
+              setStudioLabel("");
+            },
+          }),
         ]),
       error && h("div", { className: "tc-error-bar" }, error),
       (() => {
@@ -507,13 +722,32 @@
     const [editing, setEditing] = React.useState(undefined);
 
     if (editing !== undefined) {
-      const item = editing ? { id: editing.id, label: editing.label, selectedIds: editing.memberTagIds } : null;
+      const item = editing
+        ? {
+            id: editing.id,
+            label: editing.label,
+            selectedIds: editing.memberTagIds,
+            performerId: editing.performerId,
+            performerLabel: editing.performerLabel,
+            studioId: editing.studioId,
+            studioLabel: editing.studioLabel,
+          }
+        : null;
       return h(CategoryOrGroupEditor, {
         allTags,
         item,
         noun: "Group",
         onCancel: () => setEditing(undefined),
-        onPersist: (data) => saveGroup({ id: data.id, label: data.label, memberTagIds: data.tagIds }),
+        onPersist: (data) =>
+          saveGroup({
+            id: data.id,
+            label: data.label,
+            memberTagIds: data.tagIds,
+            performerId: data.performerId,
+            performerLabel: data.performerLabel,
+            studioId: data.studioId,
+            studioLabel: data.studioLabel,
+          }),
         onSaved: () => {
           setEditing(undefined);
           onReload();
@@ -543,6 +777,8 @@
             groups.map((g) =>
               h("div", { key: g.id, className: "tc-cat-row" }, [
                 h("span", { key: "label", className: "tc-cat-label" }, g.label),
+                g.performerLabel && h("span", { key: "perf", className: "tc-entity-badge" }, `🎭 ${g.performerLabel}`),
+                g.studioLabel && h("span", { key: "studio", className: "tc-entity-badge" }, `🏢 ${g.studioLabel}`),
                 h(
                   "span",
                   { key: "count", className: "tc-cat-count" },
@@ -624,15 +860,24 @@
   // ---------------------------------------------------------------------
   function TagChipsPanel({ scene }) {
     const [allTags, setAllTags] = React.useState([]);
-    const [config, setConfig] = React.useState({ groups: [], categories: [] });
+    const [config, setConfig] = React.useState({ groups: [], categories: [], sortMode: "usage" });
     const [sceneTagIds, setSceneTagIds] = React.useState(
       () => new Set((scene.tags || []).map((t) => t.id))
     );
+    const [scenePerformerIds, setScenePerformerIds] = React.useState(
+      () => new Set((scene.performers || []).map((p) => p.id))
+    );
+    const [sceneStudioId, setSceneStudioId] = React.useState(() => (scene.studio ? scene.studio.id : null));
+    const [sceneStudioLabel, setSceneStudioLabel] = React.useState(() => (scene.studio ? scene.studio.name : ""));
     const [search, setSearch] = React.useState("");
     const [pendingIds, setPendingIds] = React.useState(new Set());
     const [errorIds, setErrorIds] = React.useState(new Set());
     const [error, setError] = React.useState("");
     const [modalOpen, setModalOpen] = React.useState(false);
+    // Set only when applyGroup() hits a studio conflict — holds everything
+    // needed to finish the apply once the user resolves the inline banner
+    // (Confirm/Cancel), instead of firing a blocking window.confirm().
+    const [groupConflict, setGroupConflict] = React.useState(null);
 
     const loadAll = React.useCallback(() => {
       Promise.all([fetchAllTags(), readConfig()])
@@ -647,10 +892,15 @@
       loadAll();
     }, [loadAll]);
 
-    // Keep local state in sync if the user edits tags elsewhere and comes back
+    // Keep local state in sync if the user edits tags/performers/studio
+    // elsewhere and comes back
     React.useEffect(() => {
       setSceneTagIds(new Set((scene.tags || []).map((t) => t.id)));
-    }, [scene.id, scene.tags]);
+      setScenePerformerIds(new Set((scene.performers || []).map((p) => p.id)));
+      setSceneStudioId(scene.studio ? scene.studio.id : null);
+      setSceneStudioLabel(scene.studio ? scene.studio.name : "");
+      setGroupConflict(null); // stale banner would reference the old scene's studio
+    }, [scene.id, scene.tags, scene.performers, scene.studio]);
 
     function markPending(id, on) {
       setPendingIds((prev) => {
@@ -690,31 +940,96 @@
       }
     }
 
+    // Entry point from a group chip click. Tags/performer/studio are still
+    // applied as one atomic write (matching the single-mutation shape the
+    // rest of this flow already uses) — so when the group's studio would
+    // replace a *different* existing studio, nothing is written yet; the
+    // whole apply (tags + performer + studio together) waits behind the
+    // inline confirm banner instead of firing immediately.
     async function applyGroup(group) {
-      const missing = group.memberTagIds.filter((id) => !sceneTagIds.has(id));
-      if (missing.length === 0) return; // nothing to do
-      const nextSet = new Set([...sceneTagIds, ...missing]);
+      const missingTagIds = group.memberTagIds.filter((id) => !sceneTagIds.has(id));
+      const addPerformerId =
+        group.performerId && !scenePerformerIds.has(group.performerId) ? group.performerId : null;
+      const changeStudio = !!group.studioId && group.studioId !== sceneStudioId;
 
-      setSceneTagIds(nextSet);
-      missing.forEach((id) => markPending(id, true));
-      missing.forEach((id) => markError(id, false));
+      if (missingTagIds.length === 0 && !addPerformerId && !changeStudio) return; // nothing to do
+
+      if (changeStudio && sceneStudioId) {
+        setGroupConflict({ group, missingTagIds, addPerformerId });
+        return;
+      }
+
+      await performGroupApply(group, missingTagIds, addPerformerId, changeStudio);
+    }
+
+    async function confirmGroupConflict() {
+      if (!groupConflict) return;
+      const { group, missingTagIds, addPerformerId } = groupConflict;
+      setGroupConflict(null);
+      await performGroupApply(group, missingTagIds, addPerformerId, true);
+    }
+
+    function cancelGroupConflict() {
+      setGroupConflict(null);
+    }
+
+    async function performGroupApply(group, missingTagIds, addPerformerId, changeStudio) {
+      const nextTagIds = new Set([...sceneTagIds, ...missingTagIds]);
+      const nextPerformerIds = new Set(scenePerformerIds);
+      if (addPerformerId) nextPerformerIds.add(addPerformerId);
+
+      const prevTagIds = sceneTagIds;
+      const prevPerformerIds = scenePerformerIds;
+      const prevStudioId = sceneStudioId;
+      const prevStudioLabel = sceneStudioLabel;
+
+      // optimistic update
+      setSceneTagIds(nextTagIds);
+      setScenePerformerIds(nextPerformerIds);
+      if (changeStudio) {
+        setSceneStudioId(group.studioId);
+        setSceneStudioLabel(group.studioLabel || "");
+      }
+      missingTagIds.forEach((id) => markPending(id, true));
+      missingTagIds.forEach((id) => markError(id, false));
       setError("");
 
+      const fields = {};
+      if (missingTagIds.length) fields.tag_ids = Array.from(nextTagIds);
+      if (addPerformerId) fields.performer_ids = Array.from(nextPerformerIds);
+      if (changeStudio) fields.studio_id = group.studioId;
+
       try {
-        await updateSceneTagIds(scene.id, Array.from(nextSet));
+        await updateScene(scene.id, fields);
       } catch (e) {
-        setSceneTagIds(sceneTagIds);
-        missing.forEach((id) => markError(id, true));
+        // revert on failure
+        setSceneTagIds(prevTagIds);
+        setScenePerformerIds(prevPerformerIds);
+        setSceneStudioId(prevStudioId);
+        setSceneStudioLabel(prevStudioLabel);
+        missingTagIds.forEach((id) => markError(id, true));
         setError(`Failed to apply group "${group.label}": ${e.message}`);
       } finally {
-        missing.forEach((id) => markPending(id, false));
+        missingTagIds.forEach((id) => markPending(id, false));
+      }
+    }
+
+    async function changeSortMode(mode) {
+      if (mode === config.sortMode) return;
+      const prev = config;
+      setConfig({ ...config, sortMode: mode }); // optimistic
+      try {
+        await writeConfig({ sortMode: mode });
+      } catch (e) {
+        setConfig(prev);
+        setError(e.message);
       }
     }
 
     const filteredTags = search.trim()
       ? allTags.filter((t) => t.name.toLowerCase().includes(search.trim().toLowerCase()))
       : allTags;
-    const sections = buildCategorizedSections(filteredTags, config.categories);
+    const sections = buildCategorizedSections(filteredTags, config.categories, config.sortMode);
 
     return h("div", { className: "tc-panel" }, [
       h("div", { key: "top", className: "tc-panel-top" }, [
@@ -727,6 +1042,7 @@
             value: search,
             onChange: (e) => setSearch(e.target.value),
           }),
+          h(SortToggle, { key: "sort", mode: config.sortMode, onChange: changeSortMode }),
           h(
             "button",
             { key: "manage", className: "btn btn-secondary btn-sm", onClick: () => setModalOpen(true) },
@@ -734,6 +1050,27 @@
           ),
         ]),
         error && h("div", { key: "err", className: "tc-error-bar" }, error),
+        groupConflict &&
+          h("div", { key: "conflict", className: "tc-warning-bar" }, [
+            h(
+              "span",
+              { key: "msg" },
+              `This group will change the studio from "${sceneStudioLabel}" to ` +
+                `"${groupConflict.group.studioLabel || groupConflict.group.studioId}".`
+            ),
+            h("div", { key: "actions", className: "tc-warning-actions" }, [
+              h(
+                "button",
+                { key: "confirm", className: "btn btn-primary btn-sm", onClick: confirmGroupConflict },
+                "Confirm"
+              ),
+              h(
+                "button",
+                { key: "cancel", className: "btn btn-secondary btn-sm", onClick: cancelGroupConflict },
+                "Cancel"
+              ),
+            ]),
+          ]),
 
         h("div", { key: "gh", className: "tc-section-label" }, "Groups"),
         h(

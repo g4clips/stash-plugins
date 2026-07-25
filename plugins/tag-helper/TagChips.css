@@ -96,6 +96,90 @@
   text-decoration: underline;
 }
 
+/* Most used / A-Z toggle above the scene-tab tag grid */
+.tc-sort-toggle {
+  display: flex;
+  gap: .25rem;
+}
+.tc-sort-btn {
+  background: #16161e;
+  border: 1px solid #3a3a4a;
+  border-radius: 4px;
+  color: #999;
+  cursor: pointer;
+  font-size: .72rem;
+  padding: .3rem .6rem;
+}
+.tc-sort-btn:hover { color: #ccc; }
+.tc-sort-btn-active {
+  color: #eee;
+  border-color: #6ea8fe;
+  background: rgba(110,168,254,.15);
+}
+
+/* Performer/studio search-and-select in the group editor */
+.tc-entity-pickers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .75rem;
+}
+.tc-entity-picker {
+  flex: 1;
+  min-width: 200px;
+  position: relative;
+}
+.tc-entity-selected {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #12121a;
+  border: 1px solid #3a3a4a;
+  border-radius: 4px;
+  padding: .3rem .5rem;
+  font-size: .85rem;
+}
+.tc-entity-clear {
+  background: none;
+  border: none;
+  color: #999;
+  cursor: pointer;
+  font-size: .8rem;
+  padding: 0 0 0 .5rem;
+}
+.tc-entity-clear:hover { color: #eee; }
+.tc-entity-hint {
+  font-size: .72rem;
+  color: #888;
+  margin-top: .2rem;
+}
+.tc-entity-results {
+  position: absolute;
+  z-index: 10;
+  top: 100%;
+  left: 0;
+  right: 0;
+  background: #1e1e2e;
+  border: 1px solid #444;
+  border-radius: 4px;
+  margin-top: .2rem;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.tc-entity-result {
+  padding: .35rem .6rem;
+  font-size: .82rem;
+  cursor: pointer;
+}
+.tc-entity-result:hover { background: #2a2a3a; }
+.tc-entity-badge {
+  font-size: .72rem;
+  color: #c29ffa;
+  background: rgba(102,16,242,.15);
+  border: 1px solid rgba(102,16,242,.35);
+  border-radius: 10px;
+  padding: .1rem .5rem;
+}
+
 .tc-error-bar {
   background: #3a1a1a;
   color: #e07a7a;
@@ -103,6 +187,26 @@
   border-radius: 4px;
   padding: .35rem .6rem;
   font-size: .8rem;
+}
+
+/* Inline studio-conflict confirmation (group apply) — same bar shape as
+   .tc-error-bar, amber instead of red since it's a decision, not a failure. */
+.tc-warning-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  background: #3a2f14;
+  color: #e0b96a;
+  border: 1px solid #6b5a2a;
+  border-radius: 4px;
+  padding: .35rem .6rem;
+  font-size: .8rem;
+}
+.tc-warning-actions {
+  display: flex;
+  gap: .4rem;
+  flex-shrink: 0;
 }
 
 /* --- Group / category editor sub-view --- */

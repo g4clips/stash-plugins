@@ -290,10 +290,12 @@
   // ── Tags (flat picker -- see renderApply) ──────────────────────────────────
 
   async function fetchAllTags() {
-    // "scene_count" is a real field but NOT a valid server-side sort key
-    // (confirmed live: findTags errors with "invalid sort: scene_count") --
-    // TagChips hits the same wall and sorts client-side after fetching by
-    // name; mirrored here rather than assumed.
+    // Server already sorts by name (ASC); this client-side re-sort just
+    // guarantees a case-insensitive ordering regardless of the server's
+    // collation, and gives drawTagGrid's flat/filtered views a stable,
+    // predictable order (previously sorted by scene_count desc, which made
+    // chips jump around unpredictably between scenes -- alphabetical fixes
+    // that).
     const data = await gql(`
       query SuperScrapeAllTags {
         findTags(filter: { per_page: -1, sort: "name", direction: ASC }) {
@@ -303,7 +305,7 @@
     `);
     return data.findTags.tags
       .slice()
-      .sort((a, b) => (b.scene_count || 0) - (a.scene_count || 0));
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
   }
 
   // Batched by id (confirmed live: PerformerFilterType has no `id`
@@ -1491,10 +1493,13 @@
     }
   }
 
-  // Mirrors TagChips' own buildCategorizedSections (TagChips.js) exactly:
-  // categories in TagChips' stored array order, tags within each section
-  // sorted by scene_count desc, anything not in any category falls into
-  // an "Uncategorized" section appended last. Duplicated rather than
+  // Mirrors TagChips' own buildCategorizedSections (TagChips.js) for
+  // category structure only: categories in TagChips' stored array order,
+  // anything not in any category falls into an "Uncategorized" section
+  // appended last. Tags within each section are sorted alphabetically
+  // (case-insensitive) rather than by scene_count like TagChips does --
+  // SuperScrape intentionally diverges here (usage-based order made chips
+  // jump around unpredictably between scenes). Duplicated rather than
   // imported -- Stash loads each plugin's JS as an independent bundle
   // with no cross-plugin import mechanism, same reasoning as this file's
   // existing "visual language only, no cross-import" tag-grid CSS.
@@ -1504,11 +1509,11 @@
     const sections = categories.map(cat => {
       const catTags = (cat.tagIds || []).map(id => tagById.get(id)).filter(Boolean);
       catTags.forEach(t => usedIds.add(t.id));
-      catTags.sort((a, b) => (b.scene_count || 0) - (a.scene_count || 0));
+      catTags.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
       return { id: cat.id, label: cat.label, tags: catTags };
     });
     const uncategorized = tags.filter(t => !usedIds.has(t.id));
-    uncategorized.sort((a, b) => (b.scene_count || 0) - (a.scene_count || 0));
+    uncategorized.sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }));
     sections.push({ id: "__uncategorized", label: "Uncategorized", tags: uncategorized });
     return sections;
   }

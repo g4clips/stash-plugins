@@ -456,7 +456,7 @@
   // plus a tag-toggle picker. Persistence + delete are injected by the
   // caller (onPersist/onDelete) so this component stays storage-agnostic.
   // ---------------------------------------------------------------------
-  function CategoryOrGroupEditor({ allTags, item, noun, onCancel, onPersist, onSaved, onDelete, onDeleted }) {
+  function CategoryOrGroupEditor({ allTags, item, noun, allGroups, onCancel, onPersist, onSaved, onDelete, onDeleted }) {
     const [label, setLabel] = React.useState(item ? item.label : "");
     const [selectedIds, setSelectedIds] = React.useState(new Set(item ? item.selectedIds : []));
     const [defaultCollapsed, setDefaultCollapsed] = React.useState(item ? !!item.defaultCollapsed : false);
@@ -466,6 +466,21 @@
     const [studioLabel, setStudioLabel] = React.useState(item ? item.studioLabel || "" : "");
     const [busy, setBusy] = React.useState(false);
     const [error, setError] = React.useState("");
+
+    // Tags already claimed by some *other* group don't show as available to
+    // pick here — makes it easier to see what's left unassigned when
+    // building groups. The group being edited never excludes its own
+    // current members (so re-opening a group still shows its own tags).
+    // Category editing is unaffected: claimedTagIds stays empty there.
+    const claimedTagIds = React.useMemo(() => {
+      if (noun !== "Group" || !allGroups) return new Set();
+      const set = new Set();
+      allGroups.forEach((g) => {
+        if (item && g.id === item.id) return;
+        (g.memberTagIds || []).forEach((id) => set.add(id));
+      });
+      return set;
+    }, [noun, allGroups, item]);
 
     function toggle(id) {
       setSelectedIds((prev) => {
@@ -585,20 +600,29 @@
         ]),
       error && h("div", { className: "tc-error-bar" }, error),
       (() => {
-        const availableTags = allTags.filter((t) => !selectedIds.has(t.id));
+        const availableTags = allTags.filter((t) => !selectedIds.has(t.id) && !claimedTagIds.has(t.id));
         const usedTags = allTags.filter((t) => selectedIds.has(t.id));
+        const hiddenByOtherGroups = allTags.filter(
+          (t) => !selectedIds.has(t.id) && claimedTagIds.has(t.id)
+        ).length;
         return h(React.Fragment, null, [
-          availableTags.length > 0 &&
-            h(React.Fragment, { key: "available" }, [
-              h("div", { key: "hd", className: "tc-section-label" }, "Available"),
+          availableTags.length > 0
+            ? h(React.Fragment, { key: "available" }, [
+                h("div", { key: "hd", className: "tc-section-label" }, "Available"),
+                h(
+                  "div",
+                  { key: "grid", className: "tc-grid" },
+                  availableTags.map((t) =>
+                    h(Chip, { key: t.id, label: t.name, active: false, onClick: () => toggle(t.id) })
+                  )
+                ),
+              ])
+            : hiddenByOtherGroups > 0 &&
               h(
                 "div",
-                { key: "grid", className: "tc-grid" },
-                availableTags.map((t) =>
-                  h(Chip, { key: t.id, label: t.name, active: false, onClick: () => toggle(t.id) })
-                )
+                { key: "none-left", style: { color: "#888", fontSize: ".8rem" } },
+                "No unassigned tags left — every remaining tag is already in another group."
               ),
-            ]),
           usedTags.length > 0 &&
             h(React.Fragment, { key: "used" }, [
               h("hr", { key: "hr", className: "tc-cat-divider" }),
@@ -737,6 +761,7 @@
         allTags,
         item,
         noun: "Group",
+        allGroups: groups,
         onCancel: () => setEditing(undefined),
         onPersist: (data) =>
           saveGroup({

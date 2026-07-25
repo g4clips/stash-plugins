@@ -1,6 +1,6 @@
 name: SuperScrape
 description: Unified scraper for iWantClips, ManyVids, Clips4Sale, and goddesssnow.com, matching against local Stash. Adds a Scrape button to scene pages.
-version: "0.14.0"
+version: "0.15.1"
 
 exec:
   - python
@@ -55,6 +55,11 @@ tasks:
       mode: scrape_clip
 
   - name: "Check Duplicates"
-    description: Checks for likely-duplicate local scenes via performer+title fuzzy match and phash. Pass 'scraped_title', 'performer_ids' (JSON), 'current_scene_id', and 'current_phashes' (JSON) as args.
+    description: Checks for likely-duplicate local scenes via stash_id match (when remote_site_id/endpoint are set), then performer+title fuzzy match, then phash. Pass 'scraped_title', 'performer_ids' (JSON), 'current_scene_id', 'current_phashes' (JSON), and optionally 'remote_site_id'/'endpoint' as args.
     defaultArgs:
       mode: check_duplicates
+
+  - name: "StashDB Fingerprint Match"
+    description: Queries a configured stash-box (StashDB) for scenes matching a local file's phash fingerprint, resolving any hit's performers/studio against local Stash like Scrape Clip does. Pass 'phash', 'stashbox_endpoint', and 'stashbox_api_key' as args.
+    defaultArgs:
+      mode: stashdb_fingerprint_match

@@ -65,7 +65,9 @@ those plugins' configs are left untouched.
                 "clips": [...], "mainTotal": N, "verticalTotal": N, "cachedAt": <epoch seconds>
             }
         },
-        "proxyUrl": "<optional HTTP/HTTPS proxy URL>"
+        "proxyUrl": "<optional HTTP/HTTPS proxy URL>",
+        "stashDbFirstEnabled": "<bool, default true -- check StashDB fingerprint before falling to site adapters>",
+        "markOrganizedDefault": "<bool, default false -- set organized:true on apply>"
     }
 
 Dependencies:
@@ -159,6 +161,8 @@ def read_config(stash_url, api_key):
         "performerStoreMap": cfg.get("performerStoreMap") or {},
         "storeCatalogCache": cfg.get("storeCatalogCache") or {},
         "proxyUrl": cfg.get("proxyUrl", ""),
+        "stashDbFirstEnabled": cfg.get("stashDbFirstEnabled", True),
+        "markOrganizedDefault": cfg.get("markOrganizedDefault", False),
     }
 
 
@@ -1963,7 +1967,12 @@ def resolve_studio(name, stash_url, api_key):
 
 # ── Duplicate detection (Data18-style warning step, adapted for a
 # no-stash-id-concept world) ─────────────────────────────────────────────
-# Two independent methods, either sufficient to flag a possible duplicate:
+# Three independent methods, either sufficient to flag a possible duplicate,
+# checked in order (stash_id short-circuits the rest -- a stash_id match is
+# definitive, no need to also run the fuzzy tiers):
+#   0. stash_id match (only when this check follows a StashDB fingerprint
+#      hit -- remote_site_id/endpoint are only ever set from that path,
+#      ported from Data18StashDB's stash_id_endpoint tier).
 #   1. performer + title fuzzy match against local scenes sharing at least
 #      one resolved performer (same FUZZY_MATCH_THRESHOLD used elsewhere).
 #   2. phash match -- confirmed live via introspection that SceneFilterType
@@ -1971,14 +1980,33 @@ def resolve_studio(name, stash_url, api_key):
 #      a real scene's own fingerprint (matches itself, self excluded by id
 #      in code, not by the query).
 
-def find_duplicate_scenes(scraped_title, performer_ids, current_scene_id, current_phashes, stash_url, api_key):
+def find_duplicate_scenes(scraped_title, performer_ids, current_scene_id, current_phashes, stash_url, api_key,
+                           remote_site_id=None, endpoint=None):
     dupes = {}
+
+    if remote_site_id and endpoint:
+        data0 = local_gql(stash_url, api_key, """
+            query DupesByStashId($stash_id: String!, $endpoint: String!) {
+                findScenes(
+                    scene_filter: { stash_id_endpoint: { stash_id: $stash_id, endpoint: $endpoint, modifier: EQUALS } }
+                    filter: { per_page: 5 }
+                ) {
+                    scenes { id title date paths { screenshot } files { size } performers { name } groups { group { id name } scene_index } }
+                }
+            }
+        """, {"stash_id": remote_site_id, "endpoint": endpoint})
+        for s in data0["findScenes"]["scenes"]:
+            if s["id"] == current_scene_id:
+                continue
+            dupes[s["id"]] = {**s, "matchReason": "StashDB stash_id match"}
+        if dupes:
+            return list(dupes.values())
 
     if performer_ids and scraped_title:
         data = local_gql(stash_url, api_key, """
             query DupesByPerformer($ids: [ID!]) {
                 findScenes(scene_filter: { performers: { value: $ids, modifier: INCLUDES } }, filter: { per_page: 50 }) {
-                    scenes { id title date paths { screenshot } files { size } performers { name } }
+                    scenes { id title date paths { screenshot } files { size } performers { name } groups { group { id name } scene_index } }
                 }
             }
         """, {"ids": performer_ids})
@@ -1996,7 +2024,7 @@ def find_duplicate_scenes(scraped_title, performer_ids, current_scene_id, curren
         data = local_gql(stash_url, api_key, """
             query DupesByPhash($value: String!) {
                 findScenes(scene_filter: { phash: { value: $value, modifier: EQUALS } }, filter: { per_page: 10 }) {
-                    scenes { id title date paths { screenshot } files { size } performers { name } }
+                    scenes { id title date paths { screenshot } files { size } performers { name } groups { group { id name } scene_index } }
                 }
             }
         """, {"value": ph})
@@ -2006,6 +2034,81 @@ def find_duplicate_scenes(scraped_title, performer_ids, current_scene_id, curren
             dupes.setdefault(s["id"], {**s, "matchReason": "identical file (phash)"})
 
     return list(dupes.values())
+
+
+# ── StashDB fingerprint-first flow — calls the configured stash-box's
+# findScenesBySceneFingerprints directly, the same call Stash's own native
+# "Scrape with <StashBox>" button makes for a direct (non-search) scrape,
+# confirmed against pkg/stashbox/scene.go's FindSceneByFingerprints and
+# resolver_query_scraper.go's ScrapeSingleScene in the stash-source clone.
+# Reuses resolve_performer/resolve_studio so a fingerprint hit produces the
+# exact same {scraped, resolvedPerformers, resolvedStudio} shape scrape_clip
+# already returns for site-adapter hits -- one contract, one apply path.
+# Deliberately never routed through the outbound proxy setting: that's
+# scoped (see its description in SuperScrape.yml) to the 4 site adapters'
+# domains, not the stash-box endpoint. ────────────────────────────────────
+
+STASHBOX_FIND_BY_FINGERPRINTS_QUERY = """
+query FindScenesBySceneFingerprints($fingerprints: [[FingerprintQueryInput!]!]!) {
+  findScenesBySceneFingerprints(fingerprints: $fingerprints) {
+    id
+    title
+    details
+    date
+    urls { url type }
+    images { url }
+    studio { id name }
+    performers { performer { id name } }
+  }
+}
+"""
+
+
+def stashbox_gql(endpoint, sb_api_key, query, variables=None):
+    session = _make_session()
+    headers = {"Content-Type": "application/json"}
+    if sb_api_key:
+        headers["ApiKey"] = sb_api_key
+    resp = session.post(endpoint, json={"query": query, "variables": variables or {}},
+                         headers=headers, timeout=20)
+    resp.raise_for_status()
+    body = resp.json()
+    if "errors" in body:
+        raise RuntimeError(body["errors"][0]["message"])
+    return body["data"]
+
+
+def _stashbox_scene_to_output(scene, endpoint, stash_url, api_key):
+    performers = [pa["performer"]["name"] for pa in (scene.get("performers") or []) if pa.get("performer")]
+    studio_name = (scene.get("studio") or {}).get("name", "")
+    images = scene.get("images") or []
+    thumbnail = images[0]["url"] if images else ""
+    session = _make_session()
+    base = endpoint.rstrip("/")
+    if base.endswith("/graphql"):
+        base = base[: -len("/graphql")]
+    return {
+        "remoteSiteId": scene["id"],
+        "scraped": {
+            "title": scene.get("title") or "",
+            "date": scene.get("date"),
+            "description": scene.get("details") or "",
+            "performers": performers,
+            "thumbnailIsGif": _thumbnail_is_gif(thumbnail, session),
+        },
+        "resolvedPerformers": [resolve_performer(p, stash_url, api_key) for p in performers],
+        "resolvedStudio": resolve_studio(studio_name, stash_url, api_key),
+        "contentUrl": f"{base}/scenes/{scene['id']}",
+        "thumbnail": thumbnail,
+    }
+
+
+def query_stashbox_fingerprint(phash, endpoint, sb_api_key, stash_url, api_key):
+    data = stashbox_gql(endpoint, sb_api_key, STASHBOX_FIND_BY_FINGERPRINTS_QUERY,
+                         {"fingerprints": [[{"hash": phash, "algorithm": "PHASH"}]]})
+    scene_lists = data.get("findScenesBySceneFingerprints") or []
+    scenes = scene_lists[0] if scene_lists else []
+    return [_stashbox_scene_to_output(s, endpoint, stash_url, api_key) for s in scenes]
 
 
 def main():
@@ -2092,9 +2195,21 @@ def main():
             performer_ids = json.loads(args.get("performer_ids", "[]"))
             current_scene_id = args.get("current_scene_id", "")
             current_phashes = json.loads(args.get("current_phashes", "[]"))
+            remote_site_id = args.get("remote_site_id") or None
+            endpoint = args.get("endpoint") or None
             dupes = find_duplicate_scenes(scraped_title, performer_ids, current_scene_id,
-                                           current_phashes, stash_url, api_key)
+                                           current_phashes, stash_url, api_key,
+                                           remote_site_id=remote_site_id, endpoint=endpoint)
             result = {"ok": True, "output": {"duplicates": dupes}}
+
+        elif mode == "stashdb_fingerprint_match":
+            phash = args.get("phash", "")
+            endpoint = args.get("stashbox_endpoint", "")
+            sb_api_key = args.get("stashbox_api_key", "")
+            if not phash or not endpoint:
+                raise RuntimeError("stashdb_fingerprint_match requires phash and stashbox_endpoint")
+            scenes = query_stashbox_fingerprint(phash, endpoint, sb_api_key, stash_url, api_key)
+            result = {"ok": True, "output": {"scenes": scenes}}
 
         else:
             result = {"ok": False, "error": f"Unknown mode: {mode!r}"}

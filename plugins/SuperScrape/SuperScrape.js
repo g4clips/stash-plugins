@@ -93,6 +93,7 @@
     if (site === "manyvids") return "ManyVids";
     if (site === "clips4sale") return "Clips4Sale";
     if (site === "goddesssnow") return "Goddess Snow";
+    if (site === "stashdb") return "StashDB";
     return site || "?";
   }
 
@@ -172,6 +173,8 @@
       performerStoreMap: cfg.performerStoreMap || {},
       storeCatalogCache: cfg.storeCatalogCache || {},
       proxyUrl: cfg.proxyUrl || "",
+      stashDbFirstEnabled: cfg.stashDbFirstEnabled !== undefined ? !!cfg.stashDbFirstEnabled : true,
+      markOrganizedDefault: !!cfg.markOrganizedDefault,
     };
   }
 
@@ -246,6 +249,7 @@
           studio { id name }
           performers { id name }
           tags { id name }
+          groups { group { id name } scene_index }
           paths { screenshot }
         }
       }
@@ -257,6 +261,10 @@
     const file = (current.files || [])[0];
     if (!file) return [];
     return (file.fingerprints || []).filter(f => f.type === "phash").map(f => f.value);
+  }
+
+  function primaryPhash(current) {
+    return currentScenePhashes(current)[0] || null;
   }
 
   // ── Create performer/studio in local Stash (name only) ─────────────────────
@@ -316,7 +324,7 @@
 
   // ── Apply scraped metadata directly via GraphQL ───────────────────────────
 
-  async function applyToScene(sceneId, fieldChecks, selPerfNames, scraped, resolvedPerformers, resolvedStudio, current, contentUrl, coverPick, scrapedThumbnail, selectedTagIds) {
+  async function applyToScene(sceneId, fieldChecks, selPerfNames, scraped, resolvedPerformers, resolvedStudio, current, contentUrl, coverPick, scrapedThumbnail, selectedTagIds, organized) {
     const input = { id: sceneId };
     if (fieldChecks.title && scraped.title) input.title = scraped.title;
     if (fieldChecks.date && scraped.date) input.date = scraped.date;
@@ -338,6 +346,7 @@
       const existingIds = (current.tags || []).map(t => t.id);
       input.tag_ids = Array.from(new Set([...existingIds, ...selectedTagIds]));
     }
+    if (organized) input.organized = true;
     await gql(`mutation U($input:SceneUpdateInput!){sceneUpdate(input:$input){id}}`, { input });
   }
 
@@ -360,7 +369,7 @@
     const coverPick = currentImageUrl ? "current" : "scraped";
     await applyToScene(
       item.sceneId, fieldChecks, selPerfNames, scraped, resolvedPerformers, resolvedStudio,
-      item.current, item.contentUrl, coverPick, item.scrapedThumbnail, item.preselectedTagIds
+      item.current, item.contentUrl, coverPick, item.scrapedThumbnail, item.preselectedTagIds, item.markOrganized
     );
     await bumpLastUsed(item.storeKey, item.storeInfo);
   }
@@ -502,7 +511,7 @@
     document.getElementById("ss-tab-manage").classList.toggle("ss-tab-active", tab === "manage");
     setError(""); setStatus("");
     if (tab === "scrape") {
-      renderFilenameInput(sceneId);
+      startScrapeFlow(sceneId);
     } else {
       renderStoreList(sceneId);
     }
@@ -523,20 +532,194 @@
     { key: "apply", label: "Compare & Apply" },
   ];
 
-  function renderStepTracker(activeKey) {
+  const STASHDB_STEP = { key: "stashdb", label: "StashDB" };
+
+  // showStashDb prepends STASHDB_STEP for this render only -- callers pass
+  // opts.stashDbStepShown (true whenever a phash lookup actually ran this
+  // session, set once in startScrapeFlow/processBatchScene and threaded
+  // through opts everywhere else, regardless of whether the lookup found
+  // anything). No phash to check at all -- the common/expected case for
+  // now -- and this stays false, so the tracker looks exactly like it did
+  // before this feature existed.
+  function renderStepTracker(activeKey, showStashDb = false) {
     const el = document.getElementById("ss-steps");
     if (!el) return;
     if (!activeKey) { el.style.display = "none"; el.innerHTML = ""; return; }
-    const activeIdx = WIZARD_STEPS.findIndex(s => s.key === activeKey);
+    const steps = showStashDb ? [STASHDB_STEP, ...WIZARD_STEPS] : WIZARD_STEPS;
+    const activeIdx = steps.findIndex(s => s.key === activeKey);
     el.style.display = "flex";
-    el.innerHTML = WIZARD_STEPS.map((s, i) => {
+    el.innerHTML = steps.map((s, i) => {
       const state = i < activeIdx ? "done" : i === activeIdx ? "active" : "todo";
       const dot = state === "done" ? "✓" : String(i + 1);
-      const line = i < WIZARD_STEPS.length - 1
+      const line = i < steps.length - 1
         ? `<div class="ss-step-line ${i < activeIdx ? "ss-line-done" : "ss-line-todo"}"></div>`
         : "";
       return `<div class="ss-step ss-step-${state}"><span class="ss-step-dot">${dot}</span><span class="ss-step-label">${esc(s.label)}</span></div>${line}`;
     }).join("");
+  }
+
+  // ── StashDB-first: fingerprint pre-check, replaces the old direct
+  // renderFilenameInput(sceneId) entry point when a phash exists locally
+  // and the "Check StashDB fingerprint match first" toggle is on. Calls
+  // Stash's own native fingerprint path (findScenesBySceneFingerprints,
+  // via the new "StashDB Fingerprint Match" task -- see SuperScrape.py)
+  // rather than the fuzzy searchScene text search. Never hardcodes a
+  // stash-box index: scans configuration.general.stashBoxes for an
+  // endpoint containing "stashdb.org", same pattern Data18StashDB's
+  // createPerformerInStash uses. Any failure to check (not configured, no
+  // phash, lookup errors) falls straight through to today's flow with no
+  // message -- only a phash that actually gets checked earns a leading
+  // tracker step, whatever the outcome. ─────────────────────────────────
+
+  async function findStashDbBox() {
+    const data = await gql(`{ configuration { general { stashBoxes { endpoint api_key } } } }`);
+    const boxes = data.configuration.general.stashBoxes || [];
+    return boxes.find(b => b.endpoint.includes("stashdb.org")) || null;
+  }
+
+  function renderStashDbChecking() {
+    setError("");
+    renderStepTracker("stashdb", true);
+    setFooter(null);
+    getContent().innerHTML = `<p class="ss-hint">Checking StashDB for a fingerprint match…</p>`;
+  }
+
+  async function startScrapeFlow(sceneId) {
+    setError(""); setStatus("");
+    renderStepTracker(null);
+    setFooter(null);
+
+    let cfg;
+    try { cfg = await readConfig(); } catch (_) { cfg = { stashDbFirstEnabled: true, markOrganizedDefault: false }; }
+    const baseOpts = { markOrganized: !!cfg.markOrganizedDefault };
+
+    if (!cfg.stashDbFirstEnabled) {
+      renderFilenameInput(sceneId, baseOpts);
+      return;
+    }
+
+    let current;
+    try {
+      current = await fetchCurrentScene(sceneId);
+    } catch (_) {
+      renderFilenameInput(sceneId, baseOpts);
+      return;
+    }
+
+    const phash = primaryPhash(current);
+    if (!phash) {
+      renderFilenameInput(sceneId, baseOpts);
+      return;
+    }
+
+    let box;
+    try { box = await findStashDbBox(); } catch (_) { box = null; }
+    if (!box) {
+      renderFilenameInput(sceneId, baseOpts);
+      return;
+    }
+
+    renderStashDbChecking();
+    setStatus("Checking StashDB…");
+    let output;
+    try {
+      output = await runTask("StashDB Fingerprint Match", {
+        phash, stashbox_endpoint: box.endpoint, stashbox_api_key: box.api_key,
+      });
+    } catch (_) {
+      setStatus("");
+      renderFilenameInput(sceneId, baseOpts);
+      return;
+    }
+    setStatus("");
+
+    const scenes = output.scenes || [];
+    const checkedOpts = { ...baseOpts, stashDbStepShown: true };
+
+    if (!scenes.length) {
+      renderFilenameInput(sceneId, checkedOpts);
+      return;
+    }
+
+    const matchOpts = { ...checkedOpts, viaStashDb: true, stashDbBox: box };
+    if (scenes.length === 1) {
+      await resolveStashDbHit(sceneId, current, scenes[0], matchOpts, () => renderFilenameInput(sceneId, checkedOpts));
+      return;
+    }
+    renderStashDbResults(sceneId, current, scenes, matchOpts);
+  }
+
+  // Multiple fingerprint hits -- visually identical to renderResults'
+  // card list (same ss-result-card/-thumb/-info classes) with a badge
+  // marking these as StashDB fingerprint matches rather than a fuzzy text
+  // search. A new sibling function rather than a branch inside
+  // renderResults: that function's click handler runs the site-adapter
+  // "Scrape Clip" task, which doesn't apply here -- StashDB already gave
+  // us full scene data, so a click goes straight to dupe-check/apply.
+  function renderStashDbResults(sceneId, current, scenes, opts) {
+    setError("");
+    renderStepTracker("search", opts.stashDbStepShown);
+
+    const cardsHtml = scenes.map((s, i) => `
+      <div class="ss-result-card" data-idx="${i}">
+        ${thumbWithHover(s.thumbnail, "ss-result-thumb")}
+        <div class="ss-result-info">
+          <div class="ss-result-title">${esc(s.scraped.title || "(no title)")} <span class="ss-badge ss-badge-stashdb">via StashDB fingerprint</span></div>
+          <div class="ss-result-sub">${esc(s.scraped.date || "")}</div>
+          ${s.scraped.description ? `<div class="ss-result-desc">${esc(s.scraped.description.length > 120 ? s.scraped.description.slice(0, 117) + "…" : s.scraped.description)}</div>` : ""}
+        </div>
+      </div>`).join("");
+
+    getContent().innerHTML = `
+      <p class="ss-hint">${scenes.length} StashDB fingerprint matches — click to select:</p>
+      <div class="ss-results">${cardsHtml}</div>`;
+    setFooter(`<button id="ss-back1" class="ss-btn ss-btn-secondary">← Back</button>`);
+
+    bindThumbHovers();
+
+    document.querySelectorAll(".ss-result-card").forEach(card => {
+      card.addEventListener("click", async () => {
+        card.classList.add("ss-card-loading");
+        await resolveStashDbHit(sceneId, current, scenes[+card.dataset.idx], opts,
+          () => renderStashDbResults(sceneId, current, scenes, opts));
+      });
+    });
+
+    document.getElementById("ss-back1").onclick = () =>
+      renderFilenameInput(sceneId, { markOrganized: opts.markOrganized, stashDbStepShown: opts.stashDbStepShown });
+  }
+
+  // Runs the (extended) "Check Duplicates" task with remote_site_id/
+  // endpoint set, so find_duplicate_scenes' stash_id tier fires, then
+  // routes to the existing renderDuplicates/renderApply exactly like the
+  // site-adapter path does -- no parallel dupe-resolution screen.
+  async function resolveStashDbHit(sceneId, current, sceneMatch, opts, onBack) {
+    setError("");
+    setStatus("Checking for duplicates…");
+    const storeInfo = { site: "stashdb", displayName: "StashDB" };
+    const applyOpts = { ...opts, onBack };
+    try {
+      const resolvedPerfs = sceneMatch.resolvedPerformers || [];
+      const perfIds = resolvedPerfs.filter(p => p.localId).map(p => p.localId);
+      const dupeOutput = await runTask("Check Duplicates", {
+        scraped_title: sceneMatch.scraped.title || "",
+        performer_ids: perfIds,
+        current_scene_id: sceneId,
+        current_phashes: currentScenePhashes(current),
+        remote_site_id: sceneMatch.remoteSiteId,
+        endpoint: opts.stashDbBox.endpoint,
+      });
+      setStatus("");
+      const dupes = (dupeOutput.duplicates || []).filter(d => d.id !== sceneId);
+      if (dupes.length) {
+        renderDuplicates(sceneId, current, null, null, storeInfo, null, null, sceneMatch, sceneMatch.contentUrl, sceneMatch.thumbnail, dupes, applyOpts);
+      } else {
+        renderApply(sceneId, current, null, null, storeInfo, null, null, sceneMatch, sceneMatch.contentUrl, sceneMatch.thumbnail, applyOpts);
+      }
+    } catch (e) {
+      setStatus("");
+      setError(e.message);
+    }
   }
 
   function setFooter(html) {
@@ -547,11 +730,19 @@
     el.innerHTML = html;
   }
 
+  function setBatchFooter(html) {
+    const el = document.getElementById("ss-batch-footer");
+    if (!el) return;
+    if (!html) { el.style.display = "none"; el.innerHTML = ""; return; }
+    el.style.display = "flex";
+    el.innerHTML = html;
+  }
+
   // ── Scrape flow: Step 1 — filename input ──────────────────────────────────
 
-  async function renderFilenameInput(sceneId) {
+  async function renderFilenameInput(sceneId, opts = {}) {
     setError(""); setStatus("Loading…");
-    renderStepTracker("parse");
+    renderStepTracker("parse", opts.stashDbStepShown);
     setFooter(null);
     getContent().innerHTML = `<p class="ss-hint">Loading scene info…</p>`;
 
@@ -571,7 +762,7 @@
     try {
       cfg = await readConfig();
     } catch (_) {
-      cfg = { performerStoreMap: {} };
+      cfg = { performerStoreMap: {}, stashDbFirstEnabled: true, markOrganizedDefault: false };
     }
     const recentEntries = Object.entries(cfg.performerStoreMap)
       .filter(([, e]) => e.lastUsedAt)
@@ -586,14 +777,35 @@
         `).join("")}
       </div>` : "";
 
-    renderStepTracker("parse");
+    renderStepTracker("parse", opts.stashDbStepShown);
     getContent().innerHTML = `
+      <div class="ss-row">
+        <label class="ss-item-label" style="margin:0">
+          <input type="checkbox" id="ss-toggle-stashdb-first" ${cfg.stashDbFirstEnabled ? "checked" : ""} />
+          <span>Check StashDB fingerprint match first</span>
+        </label>
+        <label class="ss-item-label" style="margin:0">
+          <input type="checkbox" id="ss-toggle-mark-organized" ${cfg.markOrganizedDefault ? "checked" : ""} />
+          <span>Mark scene as Organized when applying</span>
+        </label>
+      </div>
       ${quickPickHtml}
       <p class="ss-hint">Filename to parse (edit if needed):</p>
       <div class="ss-row">
         <input id="ss-filename" class="ss-input" type="text" value="${esc(basename)}" />
       </div>`;
     setFooter(`<button id="ss-parse" class="ss-btn ss-btn-primary">Parse</button>`);
+
+    document.getElementById("ss-toggle-stashdb-first").addEventListener("change", e => {
+      writeConfig({ stashDbFirstEnabled: e.target.checked }).catch(() => {});
+    });
+    document.getElementById("ss-toggle-mark-organized").addEventListener("change", e => {
+      writeConfig({ markOrganizedDefault: e.target.checked }).catch(() => {});
+    });
+
+    function currentOpts() {
+      return { ...opts, markOrganized: document.getElementById("ss-toggle-mark-organized")?.checked ?? cfg.markOrganizedDefault };
+    }
 
     document.querySelectorAll(".ss-quickpick-chip").forEach(chip => {
       chip.addEventListener("click", async () => {
@@ -608,7 +820,7 @@
           renderMatchState(sceneId, current,
             { performerCandidate: entry.displayName || entry.modelUsername || entry.profileId || entry.studioId, titleCandidate: parsed.titleCandidate },
             { confidence: "confident", source: "quickpick", match: entry, score: 1, suggestions: [] },
-            /* autoSearch */ true);
+            /* autoSearch */ true, currentOpts());
         } catch (e) {
           setStatus("");
           setError(e.message);
@@ -631,7 +843,7 @@
         setStatus("Checking known stores…");
         const match = await runTask("Discover Store", { performer_name: parsed.performerCandidate });
         setStatus("");
-        renderMatchState(sceneId, current, parsed, match);
+        renderMatchState(sceneId, current, parsed, match, false, currentOpts());
       } catch (e) {
         setError(e.message);
         btn.disabled = false; btn.textContent = "Parse"; setStatus("");
@@ -646,7 +858,7 @@
 
   function renderMatchState(sceneId, current, parsed, match, autoSearch = false, opts = {}) {
     setError("");
-    renderStepTracker("match");
+    renderStepTracker("match", opts.stashDbStepShown);
     const isConfident = match.confidence === "confident";
 
     const suggestionsHtml = (match.suggestions || []).map(s => `
@@ -691,7 +903,7 @@
       ${opts.onDismiss ? `<button id="ss-dismiss0" class="ss-btn ss-btn-danger">Dismiss</button>` : ""}
       <button id="ss-confirm" class="ss-btn ss-btn-primary">${isConfident ? "Confirm &amp; Search" : "Search"}</button>`);
 
-    document.getElementById("ss-back0").onclick = opts.onBack || (() => renderFilenameInput(sceneId));
+    document.getElementById("ss-back0").onclick = opts.onBack || (() => renderFilenameInput(sceneId, opts));
     if (opts.onDismiss) document.getElementById("ss-dismiss0").onclick = opts.onDismiss;
 
     let selectedStore = isConfident ? match.match : null;
@@ -793,7 +1005,7 @@
 
   function renderResults(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput, opts = {}) {
     setError("");
-    renderStepTracker("search");
+    renderStepTracker("search", opts.stashDbStepShown);
     const hits = searchOutput.hits || [];
 
     if (!hits.length) {
@@ -885,20 +1097,32 @@
   // action offered is deleting the CURRENT scene -- the one about to be
   // scraped into -- not the found duplicate, since the premise is "this
   // scene turns out to already exist elsewhere, remove the redundant one
-  // I was about to process") ──────────────────────────────────────────────
+  // I was about to process". When opts.viaStashDb is set (this dupe came
+  // from a StashDB fingerprint match, so the existing scene may carry a
+  // matching stash_id/group), two extra actions become available,
+  // reusing the SAME dupes/renderApply plumbing -- not a parallel screen:
+  // "apply metadata to existing scene" and, if the current scene already
+  // belongs to a local group, "link existing to that group" too. ─────────
 
   function renderDuplicates(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput, scrapeOutput, contentUrl, scrapedThumbnail, dupes, opts = {}) {
     setError("");
-    renderStepTracker("search");
+    renderStepTracker("search", opts.stashDbStepShown);
 
     function fmtSize(bytes) {
       if (!bytes) return null;
       return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(2)} GB` : `${(bytes / 1e6).toFixed(1)} MB`;
     }
 
+    const currentGroup = (current.groups || [])[0] || null;
+    const richActions = !!opts.viaStashDb;
+
+    const goApply = (targetId, targetCurrent) =>
+      renderApply(targetId, targetCurrent, parsed, match, storeInfo, storeKey, searchOutput, scrapeOutput, contentUrl, scrapedThumbnail, opts);
+
     const cardsHtml = dupes.map((d, i) => {
       const size = fmtSize((d.files || [])[0]?.size);
       const thumb = d.paths?.screenshot;
+      const groupLabels = (d.groups || []).map(g => g.group.name + (g.scene_index ? ` #${g.scene_index}` : "")).join(", ");
       return `
         <div class="ss-dupe-card">
           ${thumbWithHover(thumb, "ss-result-thumb")}
@@ -906,10 +1130,15 @@
             <div class="ss-result-title">${esc(d.title || "(no title)")}</div>
             <div class="ss-result-sub">${esc(d.matchReason || "")}</div>
             ${d.date ? `<div class="ss-result-sub">${esc(d.date)}</div>` : ""}
+            ${groupLabels ? `<div class="ss-result-sub">Group: ${esc(groupLabels)}</div>` : ""}
             ${size  ? `<div class="ss-result-sub">Size: ${size}</div>` : ""}
           </div>
           <div class="ss-dupe-actions">
             <a class="ss-btn ss-btn-secondary ss-btn-xs" href="/scenes/${esc(d.id)}" target="_blank" rel="noopener">View existing</a>
+            ${richActions ? `
+              <button class="ss-btn ss-btn-secondary ss-btn-xs ss-dupe-use" data-idx="${i}" type="button">Apply metadata to existing scene</button>
+              ${currentGroup ? `<button class="ss-btn ss-btn-secondary ss-btn-xs ss-dupe-link" data-idx="${i}" type="button">Keep existing &amp; link to group</button>` : ""}
+              <span class="ss-perf-inline-msg" data-idx="${i}"></span>` : ""}
           </div>
         </div>`;
     }).join("");
@@ -923,8 +1152,7 @@
 
     bindThumbHovers();
 
-    document.getElementById("ss-dupe-keep").onclick = () =>
-      renderApply(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput, scrapeOutput, contentUrl, scrapedThumbnail, opts);
+    document.getElementById("ss-dupe-keep").onclick = () => goApply(sceneId, current);
 
     document.getElementById("ss-dupe-delete").onclick = async () => {
       const btn = document.getElementById("ss-dupe-delete");
@@ -944,6 +1172,43 @@
         setError(e.message);
       }
     };
+
+    if (richActions) {
+      document.querySelectorAll(".ss-dupe-use").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const dupe = dupes[+btn.dataset.idx];
+          const msg = btn.closest(".ss-dupe-actions")?.querySelector(".ss-perf-inline-msg");
+          btn.disabled = true; btn.textContent = "Loading…";
+          try {
+            const dupeScene = await fetchCurrentScene(dupe.id);
+            goApply(dupe.id, dupeScene);
+          } catch (e) {
+            btn.disabled = false; btn.textContent = "Apply metadata to existing scene";
+            if (msg) { msg.className = "ss-perf-inline-msg ss-msg-err"; msg.textContent = `✗ ${e.message}`; }
+          }
+        });
+      });
+
+      document.querySelectorAll(".ss-dupe-link").forEach(btn => {
+        btn.addEventListener("click", async () => {
+          const dupe = dupes[+btn.dataset.idx];
+          const msg = btn.closest(".ss-dupe-actions")?.querySelector(".ss-perf-inline-msg");
+          btn.disabled = true; btn.textContent = "Linking…";
+          try {
+            const existing = (dupe.groups || []).map(g => ({ group_id: g.group.id, scene_index: g.scene_index }));
+            const newEntry = { group_id: currentGroup.group.id, scene_index: currentGroup.scene_index };
+            const merged = existing.some(g => g.group_id === newEntry.group_id) ? existing : [...existing, newEntry];
+            await gql(`mutation($input: SceneUpdateInput!) { sceneUpdate(input: $input) { id } }`,
+              { input: { id: dupe.id, groups: merged } });
+            const dupeScene = await fetchCurrentScene(dupe.id);
+            goApply(dupe.id, dupeScene);
+          } catch (e) {
+            btn.disabled = false; btn.textContent = "Keep existing & link to group";
+            if (msg) { msg.className = "ss-perf-inline-msg ss-msg-err"; msg.textContent = `✗ ${e.message}`; }
+          }
+        });
+      });
+    }
   }
 
   // ── Scrape flow: Step 4 — comparison table (unified: used regardless of
@@ -957,7 +1222,7 @@
 
   function renderApply(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput, scrapeOutput, contentUrl, scrapedThumbnail, opts = {}) {
     setError("");
-    renderStepTracker("apply");
+    renderStepTracker("apply", opts.stashDbStepShown);
     const scraped = scrapeOutput.scraped;
     const resolvedPerformers = scrapeOutput.resolvedPerformers || [];
     const resolvedStudio = scrapeOutput.resolvedStudio;
@@ -1134,7 +1399,7 @@
       setStatus("Writing to scene…");
 
       try {
-        await applyToScene(sceneId, fieldChecks, selPerfs, scrapedForApply, resolvedPerformers, resolvedStudio, current, contentUrl, coverPick, scrapedThumbnail, selectedTagIds);
+        await applyToScene(sceneId, fieldChecks, selPerfs, scrapedForApply, resolvedPerformers, resolvedStudio, current, contentUrl, coverPick, scrapedThumbnail, selectedTagIds, opts.markOrganized);
         await bumpLastUsed(storeKey, storeInfo);
         setStatus("");
         if (opts.onApplied) opts.onApplied(); else renderDone();
@@ -1553,7 +1818,7 @@
         <div id="ss-batch-error"  class="ss-dialog-error"  style="display:none"></div>
         <div id="ss-batch-status" class="ss-dialog-status" style="display:none"></div>
         <div id="ss-batch-content" class="ss-dialog-content"></div>
-        <div id="ss-footer" class="ss-footer" style="display:none"></div>
+        <div id="ss-batch-footer" class="ss-footer" style="display:none"></div>
       </div>`;
     document.body.appendChild(overlay);
     document.getElementById("ss-batch-close").onclick = closeBatchModal;
@@ -1736,11 +2001,12 @@
   // pre-selected tags) plus a classification + human-readable reason.
   // Never throws -- any failing step is caught and turns into an "error"
   // classification so one bad scene can't take down the whole batch.
-  async function processBatchScene(sceneId, performerStoreMap) {
+  async function processBatchScene(sceneId, performerStoreMap, runOpts = {}) {
     const item = {
       sceneId, current: null, parsed: null, storeInfo: null, storeKey: null,
       searchOutput: null, scrapeOutput: null, contentUrl: null, scrapedThumbnail: null,
       duplicates: [], preselectedTagIds: [], classification: "no-match", reason: "",
+      viaStashDb: false, stashDbScenes: null, stashDbBox: null, markOrganized: !!runOpts.markOrganized,
     };
 
     try {
@@ -1749,6 +2015,64 @@
       item.classification = "error";
       item.reason = e.message;
       return item;
+    }
+
+    if (runOpts.stashDbFirstEnabled && runOpts.stashDbBox) {
+      const phash = primaryPhash(item.current);
+      if (phash) {
+        try {
+          const output = await runTask("StashDB Fingerprint Match", {
+            phash, stashbox_endpoint: runOpts.stashDbBox.endpoint, stashbox_api_key: runOpts.stashDbBox.api_key,
+          });
+          const scenes = output.scenes || [];
+          if (scenes.length === 1) {
+            const sceneMatch = scenes[0];
+            const resolvedPerfs = sceneMatch.resolvedPerformers || [];
+            const perfIds = resolvedPerfs.filter(p => p.localId).map(p => p.localId);
+            const dupeOutput = await runTask("Check Duplicates", {
+              scraped_title: sceneMatch.scraped.title || "",
+              performer_ids: perfIds,
+              current_scene_id: sceneId,
+              current_phashes: currentScenePhashes(item.current),
+              remote_site_id: sceneMatch.remoteSiteId,
+              endpoint: runOpts.stashDbBox.endpoint,
+            });
+            const dupes = (dupeOutput.duplicates || []).filter(d => d.id !== sceneId);
+            item.viaStashDb = true;
+            item.stashDbBox = runOpts.stashDbBox;
+            item.storeInfo = { site: "stashdb", displayName: "StashDB" };
+            item.scrapeOutput = sceneMatch;
+            item.contentUrl = sceneMatch.contentUrl;
+            item.scrapedThumbnail = sceneMatch.thumbnail;
+            item.duplicates = dupes;
+            try {
+              item.preselectedTagIds = [...(await computePreselectedTagIds(resolvedPerfs))];
+            } catch (_) {
+              item.preselectedTagIds = [];
+            }
+            if (dupes.length) {
+              item.classification = "needs-review";
+              item.reason = `Possible duplicate (StashDB match): ${dupes[0].title || dupes[0].matchReason || "existing scene"}`;
+            } else {
+              item.classification = "confident";
+              item.reason = "Matched via StashDB fingerprint";
+            }
+            return item;
+          }
+          if (scenes.length > 1) {
+            item.viaStashDb = true;
+            item.stashDbBox = runOpts.stashDbBox;
+            item.stashDbScenes = scenes;
+            item.classification = "needs-review";
+            item.reason = `${scenes.length} StashDB fingerprint matches — ambiguous, needs a manual pick`;
+            return item;
+          }
+          // zero hits -- fall through to the normal per-scene pipeline below
+        } catch (_) {
+          // StashDB check failed (offline, misconfigured, etc.) -- non-fatal,
+          // fall through rather than losing the whole scene to an outage.
+        }
+      }
     }
 
     const basename = (item.current.files || [])[0]?.basename || "";
@@ -1884,7 +2208,7 @@
       <div class="ss-live-bar-track"><div class="ss-live-bar-fill" style="width:${pct}%"></div></div>
       <p class="ss-live-tally">So far: <b class="ss-live-c">${tally.confident} confident</b> · <b class="ss-live-r">${tally["needs-review"]} needs review</b> · <b class="ss-live-e">${tally.error} error${tally.error !== 1 ? "s" : ""}</b></p>`;
 
-    setFooter(`<button id="ss-batch-stop" class="ss-btn ss-btn-secondary" ${_batchStopRequested ? "disabled" : ""}>${_batchStopRequested ? "Stopping after current scene…" : "Stop"}</button>`);
+    setBatchFooter(`<button id="ss-batch-stop" class="ss-btn ss-btn-secondary" ${_batchStopRequested ? "disabled" : ""}>${_batchStopRequested ? "Stopping after current scene…" : "Stop"}</button>`);
     const stopBtn = document.getElementById("ss-batch-stop");
     if (stopBtn && !_batchStopRequested) {
       stopBtn.onclick = () => {
@@ -1917,6 +2241,7 @@
     const name = item.current?.title || (item.current?.files || [])[0]?.basename || `Scene ${item.sceneId}`;
     const storeBit = item.storeInfo ? ` — ${esc(item.storeInfo.displayName)} (${siteLabel(item.storeInfo.site)})` : "";
     const thumbUrl = item.scrapedThumbnail || item.current?.paths?.screenshot || "";
+    const stashDbBadge = item.viaStashDb ? `<span class="ss-batch-badge ss-batch-badge-stashdb">via StashDB</span>` : "";
     let actionHtml = "";
     if (item.classification === "confident" && item.status !== "applied") {
       actionHtml = `<button class="ss-batch-row-next" data-action="apply-next" data-idx="${idx}" type="button">Apply &amp; Next →</button>`;
@@ -1927,6 +2252,7 @@
       <div class="ss-batch-queue-row" data-idx="${idx}" role="button" tabindex="0">
         ${thumbWithHover(thumbUrl, "ss-batch-row-thumb")}
         ${batchClassificationBadge(item)}
+        ${stashDbBadge}
         <span class="ss-batch-queue-name">${esc(name)}${storeBit}</span>
         <span class="ss-batch-queue-reason">${esc(item.reason || "")}</span>
         ${actionHtml}
@@ -1936,11 +2262,11 @@
   function renderBatchQueueResults() {
     const content = document.getElementById("ss-batch-content");
     if (!content) return;
-    // The processing screen's Stop button lives in #ss-footer -- clear it
+    // The processing screen's Stop button lives in #ss-batch-footer -- clear it
     // here so it doesn't linger once the run finishes and this results
     // screen (unchanged otherwise; its own footer/actions are Stage 5)
     // takes over.
-    setFooter(null);
+    setBatchFooter(null);
     const tally = tallyBatchQueue();
     const headerMsg = _batchQueue.length
       ? `Processed ${_batchQueue.length} scene${_batchQueue.length !== 1 ? "s" : ""}${_batchStopRequested ? " (stopped early)" : ""} — ${tally.confident} confident, ${tally["needs-review"]} needs review, ${tally["no-match"]} no match, ${tally.error} error${tally.error !== 1 ? "s" : ""}`
@@ -2088,12 +2414,30 @@
     }
 
     const opts = {
+      stashDbStepShown: item.viaStashDb,
+      viaStashDb: item.viaStashDb,
+      markOrganized: item.markOrganized,
+      stashDbBox: item.stashDbBox,
       onBack: () => { closeModal(); renderBatchQueueResults(); },
       onDismiss: () => { removeFromBatchQueue(item); closeModal(); renderBatchQueueResults(); },
       onApplied: () => { removeFromBatchQueue(item); closeModal(); renderBatchQueueResults(); },
     };
 
-    if (item.scrapeOutput) {
+    if (item.viaStashDb && item.stashDbScenes) {
+      openModal(item.sceneId, () => renderStashDbResults(item.sceneId, item.current, item.stashDbScenes, opts));
+    } else if (item.scrapeOutput && item.duplicates?.length) {
+      // Pre-existing gap, not new to this session: this branch never
+      // checked item.duplicates before, so ANY batch item flagged
+      // needs-review for a duplicate (site-adapter or StashDB-sourced)
+      // jumped straight to renderApply on review, skipping dupe
+      // resolution entirely. renderDuplicates itself already routes into
+      // renderApply via its Keep/Delete/(rich) buttons using the same
+      // opts, so this needs no further wiring beyond the branch itself.
+      openModal(item.sceneId, () => renderDuplicates(
+        item.sceneId, item.current, item.parsed, null, item.storeInfo, item.storeKey,
+        item.searchOutput, item.scrapeOutput, item.contentUrl, item.scrapedThumbnail, item.duplicates, opts
+      ));
+    } else if (item.scrapeOutput) {
       openModal(item.sceneId, () => renderApply(
         item.sceneId, item.current, item.parsed, null, item.storeInfo, item.storeKey,
         item.searchOutput, item.scrapeOutput, item.contentUrl, item.scrapedThumbnail, opts
@@ -2119,12 +2463,18 @@
       return;
     }
 
+    let stashDbBox = null;
+    if (cfg.stashDbFirstEnabled) {
+      try { stashDbBox = await findStashDbBox(); } catch (_) { stashDbBox = null; }
+    }
+    const runOpts = { stashDbFirstEnabled: !!cfg.stashDbFirstEnabled, stashDbBox, markOrganized: !!cfg.markOrganizedDefault };
+
     const total = selectedIds.length;
     renderBatchProgress(0, total);
 
     for (let i = 0; i < total; i++) {
       if (_batchStopRequested) break;
-      const item = await processBatchScene(selectedIds[i], cfg.performerStoreMap);
+      const item = await processBatchScene(selectedIds[i], cfg.performerStoreMap, runOpts);
       _batchQueue.push(item);
       renderBatchProgress(i + 1, total);
     }
@@ -2138,9 +2488,12 @@
     content.innerHTML = `<p class="ss-hint">Loading scenes…</p>`;
 
     const decoded = isScenesLibraryPage() ? decodeStashFilterCriteria() : {};
-    let scenes;
+    let cfg, scenes;
     try {
-      scenes = await fetchBatchCandidateScenes(decoded);
+      [cfg, scenes] = await Promise.all([
+        readConfig().catch(() => ({ stashDbFirstEnabled: true, markOrganizedDefault: false })),
+        fetchBatchCandidateScenes(decoded),
+      ]);
     } catch (e) {
       setBatchStatus("");
       setBatchError(e.message);
@@ -2164,6 +2517,16 @@
     content.innerHTML = `
       ${summaryHtml}
       <div class="ss-row">
+        <label class="ss-item-label" style="margin:0">
+          <input type="checkbox" id="ss-batch-toggle-stashdb-first" ${cfg.stashDbFirstEnabled ? "checked" : ""} />
+          <span>Check StashDB fingerprint match first</span>
+        </label>
+        <label class="ss-item-label" style="margin:0">
+          <input type="checkbox" id="ss-batch-toggle-mark-organized" ${cfg.markOrganizedDefault ? "checked" : ""} />
+          <span>Mark scenes as Organized when applying</span>
+        </label>
+      </div>
+      <div class="ss-row">
         <input id="ss-batch-namefilter" class="ss-input" type="text" placeholder="Filter by filename/title…" />
       </div>
       <div class="ss-row" style="justify-content:space-between">
@@ -2179,6 +2542,13 @@
       </div>`;
 
     drawBatchSceneList();
+
+    document.getElementById("ss-batch-toggle-stashdb-first").addEventListener("change", e => {
+      writeConfig({ stashDbFirstEnabled: e.target.checked }).catch(() => {});
+    });
+    document.getElementById("ss-batch-toggle-mark-organized").addEventListener("change", e => {
+      writeConfig({ markOrganizedDefault: e.target.checked }).catch(() => {});
+    });
 
     document.getElementById("ss-batch-namefilter").addEventListener("input", e => {
       _batchNameFilter = e.target.value;

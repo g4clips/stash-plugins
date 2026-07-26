@@ -642,7 +642,6 @@ if (window._markerScenesLoaded) {
 
   waitForPluginApi((PluginApi) => {
     console.log(`[${PLUGIN_ID}] PluginApi found, registering tab...`);
-    startListening();
 
     const { React } = PluginApi;
     const { useState, useEffect, useCallback } = React;
@@ -823,6 +822,8 @@ if (window._markerScenesLoaded) {
       );
       return [...React.Children.toArray(children), newPane];
     });
+
+    startListening();
 
   });
 

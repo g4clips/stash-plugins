@@ -812,7 +812,10 @@ if (window._markerScenesLoaded) {
       const newTab = React.createElement(Nav.Item, null,
         React.createElement(Nav.Link, { eventKey: "virtual-scenes-panel" }, "Virtual Scenes")
       );
-      return [...React.Children.toArray(children), newTab];
+      return React.createElement(React.Fragment, null,
+        ...React.Children.toArray(children),
+        newTab
+      );
     });
 
     PluginApi.patch.after("ScenePage.TabContent", function({ children, ...props }) {
@@ -820,7 +823,10 @@ if (window._markerScenesLoaded) {
       const newPane = React.createElement(Tab.Pane, { eventKey: "virtual-scenes-panel" },
         React.createElement(VirtualScenesTab, { scene })
       );
-      return [...React.Children.toArray(children), newPane];
+      return React.createElement(React.Fragment, null,
+        ...React.Children.toArray(children),
+        newPane
+      );
     });
 
     startListening();

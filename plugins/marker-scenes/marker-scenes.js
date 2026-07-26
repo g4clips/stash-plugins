@@ -630,23 +630,29 @@ if (window._markerScenesLoaded) {
 
   // ── React Tab UI ──────────────────────────────────────────────────────────
 
-  function waitForPluginApi(callback, attempts = 0) {
-    if (window.PluginApi) {
-      callback(window.PluginApi);
-    } else if (attempts < 50) {
-      setTimeout(() => waitForPluginApi(callback, attempts + 1), 200);
-    } else {
-      console.error(`[${PLUGIN_ID}] PluginApi never became available.`);
-    }
-  }
+  // ── Tab injection — register patches immediately at top level ────────────
+  // Do NOT wrap in waitForPluginApi — patches must register synchronously
+  // before React renders, not after a setTimeout delay.
 
-  waitForPluginApi((PluginApi) => {
-    console.log(`[${PLUGIN_ID}] PluginApi found, registering tab...`);
+  (function registerPatches() {
+    const waitForApi = (cb, attempts = 0) => {
+      if (window.PluginApi) cb(window.PluginApi);
+      else if (attempts < 50) setTimeout(() => waitForApi(cb, attempts + 1), 200);
+    };
 
-    const { React } = PluginApi;
-    const { useState, useEffect, useCallback } = React;
+    // Register patches immediately — PluginApi may already be available
+    const tryRegister = () => {
+      const api = window.PluginApi;
+      if (!api) {
+        setTimeout(tryRegister, 50);
+        return;
+      }
 
-    function VirtualScenesTab({ scene }) {
+      const { React } = api;
+      const { Nav, Tab } = api.libraries.Bootstrap;
+      const { useState, useEffect, useCallback } = React;
+
+      function VirtualScenesTab({ scene }) {
       const [tagId, setTagId] = useState(null);
       const [scenes, setScenes] = useState([]);
       const [error, setError] = useState(null);
@@ -802,36 +808,40 @@ if (window._markerScenesLoaded) {
           }, busy ? "Working..." : `+ Create scene ${nextSceneNum}`)
         )
       );
-    }
+      }
 
-    // ── Tab injection ─────────────────────────────────────────────────────
+      api.patch.after("ScenePage.Tabs", function({ children, ...props }) {
+        const newTab = React.createElement(Nav.Item, null,
+          React.createElement(Nav.Link, { eventKey: "virtual-scenes-panel" }, "Virtual Scenes")
+        );
+        return React.createElement(React.Fragment, null,
+          ...React.Children.toArray(children),
+          newTab
+        );
+      });
 
-    const { Nav, Tab } = PluginApi.libraries.Bootstrap;
+      api.patch.after("ScenePage.TabContent", function({ children, ...props }) {
+        const scene = props.scene;
+        const newPane = React.createElement(Tab.Pane, { eventKey: "virtual-scenes-panel" },
+          React.createElement(VirtualScenesTab, { scene })
+        );
+        return React.createElement(React.Fragment, null,
+          ...React.Children.toArray(children),
+          newPane
+        );
+      });
 
-    PluginApi.patch.after("ScenePage.Tabs", function({ children, ...props }) {
-      const newTab = React.createElement(Nav.Item, null,
-        React.createElement(Nav.Link, { eventKey: "virtual-scenes-panel" }, "Virtual Scenes")
-      );
-      return React.createElement(React.Fragment, null,
-        ...React.Children.toArray(children),
-        newTab
-      );
-    });
+      console.log(`[${PLUGIN_ID}] Tab patches registered.`);
 
-    PluginApi.patch.after("ScenePage.TabContent", function({ children, ...props }) {
-      const scene = props.scene;
-      const newPane = React.createElement(Tab.Pane, { eventKey: "virtual-scenes-panel" },
-        React.createElement(VirtualScenesTab, { scene })
-      );
-      return React.createElement(React.Fragment, null,
-        ...React.Children.toArray(children),
-        newPane
-      );
-    });
+      // startListening handles DOM injection (button, redirect) — needs PluginApi.Event
+      waitForApi(() => {
+        console.log(`[${PLUGIN_ID}] Starting location listener...`);
+        startListening();
+      });
+    };
 
-    startListening();
-
-  });
+    tryRegister();
+  })();
 
 })();
 }

@@ -609,239 +609,193 @@ if (window._markerScenesLoaded) {
     setTimeout(() => injectButton(scene), 800);
   }
 
-  function startListening() {
-    if (window.PluginApi?.Event) {
-      window.PluginApi.Event.addEventListener("stash:location", () => {
-        onLocationChange();
-        maybeAutoPlay();
-      });
-    } else {
-      let last = "";
-      setInterval(() => {
-        if (window.location.pathname !== last) {
-          last = window.location.pathname;
-          onLocationChange();
-        }
-      }, 500);
-    }
-    onLocationChange();
-    maybeAutoPlay();
-  }
-
   // ── React Tab UI ──────────────────────────────────────────────────────────
 
-  // ── Tab injection — register patches immediately at top level ────────────
-  // Do NOT wrap in waitForPluginApi — patches must register synchronously
-  // before React renders, not after a setTimeout delay.
+  // ── Tab injection ─────────────────────────────────────────────────────────
+  // PluginApi is already available when plugin JS loads — no waiting needed.
 
-  (function registerPatches() {
-    const waitForApi = (cb, attempts = 0) => {
-      if (window.PluginApi) cb(window.PluginApi);
-      else if (attempts < 50) setTimeout(() => waitForApi(cb, attempts + 1), 200);
-    };
+  const { React } = PluginApi;
+  const { Nav, Tab } = PluginApi.libraries.Bootstrap;
+  const { useState, useEffect } = React;
 
-    // Register patches immediately — PluginApi may already be available
-    const tryRegister = () => {
-      const api = window.PluginApi;
-      if (!api) {
-        setTimeout(tryRegister, 50);
-        return;
+  function VirtualScenesTab({ scene }) {
+    const [tagId, setTagId] = useState(null);
+    const [scenes, setScenes] = useState([]);
+    const [error, setError] = useState(null);
+    const [busy, setBusy] = useState(false);
+    const [initialized, setInitialized] = useState(false);
+
+    useEffect(() => {
+      setTagId(null);
+      setScenes([]);
+      setError(null);
+      setBusy(false);
+      setInitialized(false);
+    }, [scene.id]);
+
+    useEffect(() => {
+      if (initialized) return;
+      (async () => {
+        try {
+          const data = await gql(FIND_TAG_BY_NAME, { name: "zzz-virtual" });
+          const tags = data.findTags?.tags ?? [];
+          if (tags.length === 0) {
+            setError('Tag "zzz-virtual" not found. Please create it in Stash first.');
+          } else {
+            setTagId(tags[0].id);
+          }
+        } catch (err) {
+          setError(`Failed to load: ${err.message}`);
+        } finally {
+          setInitialized(true);
+        }
+      })();
+    }, [initialized]);
+
+    async function handleCreate(isLast) {
+      if (busy) return;
+      const timestamp = Math.floor(getCurrentTimestamp());
+      const sceneIndex = scenes.length + 1;
+      const group = scene.groups?.[0]?.group;
+      const origin = window.location.origin;
+
+      if (!group) { setError("Scene has no group."); return; }
+
+      setBusy(true);
+      setError(null);
+
+      if (scenes.length > 0) {
+        scenes[scenes.length - 1].end = timestamp;
       }
 
-      const { React } = api;
-      const { Nav, Tab } = api.libraries.Bootstrap;
-      const { useState, useEffect, useCallback } = React;
-
-      function VirtualScenesTab({ scene }) {
-      const [tagId, setTagId] = useState(null);
-      const [scenes, setScenes] = useState([]);
-      const [error, setError] = useState(null);
-      const [busy, setBusy] = useState(false);
-      const [initialized, setInitialized] = useState(false);
-
-      useEffect(() => {
-        setTagId(null);
-        setScenes([]);
-        setError(null);
-        setBusy(false);
-        setInitialized(false);
-      }, [scene.id]);
-
-      useEffect(() => {
-        if (initialized) return;
-        (async () => {
-          try {
-            const data = await gql(FIND_TAG_BY_NAME, { name: "zzz-virtual" });
-            const tags = data.findTags?.tags ?? [];
-            if (tags.length === 0) {
-              setError('Tag "zzz-virtual" not found. Please create it in Stash first.');
-            } else {
-              setTagId(tags[0].id);
-            }
-          } catch (err) {
-            setError(`Failed to load: ${err.message}`);
-          } finally {
-            setInitialized(true);
+      try {
+        await gql(MARKER_CREATE, {
+          input: {
+            scene_id: scene.id,
+            title: `Scene ${sceneIndex}`,
+            seconds: timestamp,
+            primary_tag_id: tagId,
           }
-        })();
-      }, [initialized]);
+        });
 
-      async function handleCreate(isLast) {
-        if (busy) return;
-        const timestamp = Math.floor(getCurrentTimestamp());
-        const sceneIndex = scenes.length + 1;
-        const group = scene.groups?.[0]?.group;
-        const origin = window.location.origin;
+        const input = {
+          title: `${group.name} - Scene ${sceneIndex}`,
+          urls: [`${origin}/scenes/${scene.id}?t=${timestamp}`],
+          organized: false,
+          groups: [{ group_id: group.id, scene_index: sceneIndex }],
+        };
+        if (scene.studio) input.studio_id = scene.studio.id;
+        await gql(SCENE_CREATE, { input });
 
-        if (!group) { setError("Scene has no group."); return; }
-
-        setBusy(true);
-        setError(null);
-
-        // Update end time of previous scene
-        if (scenes.length > 0) {
-          scenes[scenes.length - 1].end = timestamp;
-        }
-
-        try {
-          await gql(MARKER_CREATE, {
+        if (sceneIndex === 1) {
+          await gql(SCENE_UPDATE, {
             input: {
-              scene_id: scene.id,
-              title: `Scene ${sceneIndex}`,
-              seconds: timestamp,
-              primary_tag_id: tagId,
+              id: scene.id,
+              groups: [{ group_id: group.id, scene_index: 99 }],
             }
           });
-
-          const input = {
-            title: `${group.name} - Scene ${sceneIndex}`,
-            urls: [`${origin}/scenes/${scene.id}?t=${timestamp}`],
-            organized: false,
-            groups: [{ group_id: group.id, scene_index: sceneIndex }],
-          };
-          if (scene.studio) input.studio_id = scene.studio.id;
-          await gql(SCENE_CREATE, { input });
-
-          if (sceneIndex === 1) {
-            await gql(SCENE_UPDATE, {
-              input: {
-                id: scene.id,
-                groups: [{ group_id: group.id, scene_index: 99 }],
-              }
-            });
-          }
-
-          setScenes(prev => [...prev, {
-            index: sceneIndex,
-            start: timestamp,
-            end: isLast ? (scene.files?.[0]?.duration ?? null) : null,
-          }]);
-
-        } catch (err) {
-          setError(err.message);
-        } finally {
-          setBusy(false);
         }
+
+        setScenes(prev => [...prev, {
+          index: sceneIndex,
+          start: timestamp,
+          end: isLast ? (scene.files?.[0]?.duration ?? null) : null,
+        }]);
+
+      } catch (err) {
+        setError(err.message);
+      } finally {
+        setBusy(false);
       }
+    }
 
-      const nextSceneNum = scenes.length + 1;
-      const currentTime = Math.floor(getCurrentTimestamp());
-      const group = scene.groups?.[0]?.group;
+    const nextSceneNum = scenes.length + 1;
+    const currentTime = Math.floor(getCurrentTimestamp());
+    const group = scene.groups?.[0]?.group;
 
-      if (!initialized) {
-        return React.createElement("div", { style: { padding: "1rem", color: "#aaa" } }, "Loading...");
-      }
+    if (!initialized) {
+      return React.createElement("div", { style: { padding: "1rem", color: "#aaa" } }, "Loading...");
+    }
 
-      return React.createElement("div", { style: { padding: "1rem", maxWidth: "500px" } },
-
-        // Header info
-        React.createElement("div", {
-          style: { display: "flex", justifyContent: "space-between", background: "#2a2a2a", borderRadius: "6px", padding: "10px", marginBottom: "12px" }
-        },
-          React.createElement("div", null,
-            React.createElement("div", { style: { fontSize: "11px", color: "#888", marginBottom: "2px" } }, "Current timestamp"),
-            React.createElement("div", { style: { fontSize: "20px", fontWeight: "500", fontFamily: "monospace" } }, formatTime(currentTime))
-          ),
-          React.createElement("div", { style: { textAlign: "right" } },
-            React.createElement("div", { style: { fontSize: "11px", color: "#888", marginBottom: "2px" } }, "Scene to create"),
-            React.createElement("div", { style: { fontSize: "20px", fontWeight: "500", color: "#5b9bd5" } }, `Scene ${nextSceneNum}`)
-          )
+    return React.createElement("div", { style: { padding: "1rem", maxWidth: "500px" } },
+      React.createElement("div", {
+        style: { display: "flex", justifyContent: "space-between", background: "#2a2a2a", borderRadius: "6px", padding: "10px", marginBottom: "12px" }
+      },
+        React.createElement("div", null,
+          React.createElement("div", { style: { fontSize: "11px", color: "#888", marginBottom: "2px" } }, "Current timestamp"),
+          React.createElement("div", { style: { fontSize: "20px", fontWeight: "500", fontFamily: "monospace" } }, formatTime(currentTime))
         ),
-
-        // Scenes list
-        React.createElement("div", { style: { marginBottom: "12px" } },
-          React.createElement("div", { style: { fontSize: "12px", color: "#aaa", marginBottom: "6px", fontWeight: "500" } }, "Scenes created so far"),
-          scenes.length === 0
-            ? React.createElement("p", { style: { color: "#888", margin: "0", fontSize: "13px" } }, "No scenes created yet.")
-            : scenes.map(s => React.createElement("div", {
-                key: s.index,
-                style: { display: "flex", justifyContent: "space-between", padding: "6px 8px", background: "#2a2a2a", borderRadius: "4px", marginBottom: "4px" }
-              },
-                React.createElement("span", null, `Scene ${s.index}`),
-                React.createElement("span", { style: { color: "#aaa", fontFamily: "monospace" } }, `${formatTime(s.start)} → ${s.end !== null ? formatTime(s.end) : "?"}`)
-              ))
-        ),
-
-        // Instruction
-        React.createElement("div", {
-          style: { background: "#1e3a52", border: "1px solid #2d6a9f", borderRadius: "4px", padding: "8px 10px", marginBottom: "12px", fontSize: "13px", color: "#7ab3e0" }
-        }, `Scrub to the start of scene ${nextSceneNum}, then click "Create scene ${nextSceneNum}".`),
-
-        // Error
-        error ? React.createElement("div", {
-          style: { background: "#3a1a1a", border: "1px solid #7a2a2a", borderRadius: "4px", padding: "8px 10px", marginBottom: "12px", fontSize: "13px", color: "#e07a7a" }
-        }, error) : null,
-
-        // Buttons
-        React.createElement("div", { style: { display: "flex", gap: "8px" } },
-          React.createElement("button", {
-            className: "btn btn-secondary",
-            style: { flex: 1, fontSize: "13px" },
-            disabled: busy,
-            onClick: () => handleCreate(true)
-          }, "🏁 Last scene"),
-          React.createElement("button", {
-            className: "btn btn-primary",
-            style: { flex: 1, fontSize: "13px" },
-            disabled: busy || !tagId,
-            onClick: () => handleCreate(false)
-          }, busy ? "Working..." : `+ Create scene ${nextSceneNum}`)
+        React.createElement("div", { style: { textAlign: "right" } },
+          React.createElement("div", { style: { fontSize: "11px", color: "#888", marginBottom: "2px" } }, "Scene to create"),
+          React.createElement("div", { style: { fontSize: "20px", fontWeight: "500", color: "#5b9bd5" } }, `Scene ${nextSceneNum}`)
         )
-      );
+      ),
+      React.createElement("div", { style: { marginBottom: "12px" } },
+        React.createElement("div", { style: { fontSize: "12px", color: "#aaa", marginBottom: "6px", fontWeight: "500" } }, "Scenes created so far"),
+        scenes.length === 0
+          ? React.createElement("p", { style: { color: "#888", margin: "0", fontSize: "13px" } }, "No scenes created yet.")
+          : scenes.map(s => React.createElement("div", {
+              key: s.index,
+              style: { display: "flex", justifyContent: "space-between", padding: "6px 8px", background: "#2a2a2a", borderRadius: "4px", marginBottom: "4px" }
+            },
+              React.createElement("span", null, `Scene ${s.index}`),
+              React.createElement("span", { style: { color: "#aaa", fontFamily: "monospace" } }, `${formatTime(s.start)} → ${s.end !== null ? formatTime(s.end) : "?"}`)
+            ))
+      ),
+      React.createElement("div", {
+        style: { background: "#1e3a52", border: "1px solid #2d6a9f", borderRadius: "4px", padding: "8px 10px", marginBottom: "12px", fontSize: "13px", color: "#7ab3e0" }
+      }, `Scrub to the start of scene ${nextSceneNum}, then click "Create scene ${nextSceneNum}".`),
+      error ? React.createElement("div", {
+        style: { background: "#3a1a1a", border: "1px solid #7a2a2a", borderRadius: "4px", padding: "8px 10px", marginBottom: "12px", fontSize: "13px", color: "#e07a7a" }
+      }, error) : null,
+      React.createElement("div", { style: { display: "flex", gap: "8px" } },
+        React.createElement("button", {
+          className: "btn btn-secondary",
+          style: { flex: 1, fontSize: "13px" },
+          disabled: busy,
+          onClick: () => handleCreate(true)
+        }, "🏁 Last scene"),
+        React.createElement("button", {
+          className: "btn btn-primary",
+          style: { flex: 1, fontSize: "13px" },
+          disabled: busy || !tagId,
+          onClick: () => handleCreate(false)
+        }, busy ? "Working..." : `+ Create scene ${nextSceneNum}`)
+      )
+    );
+  }
+
+  PluginApi.patch.after("ScenePage.Tabs", function({ children, ...props }) {
+    const newTab = React.createElement(Nav.Item, null,
+      React.createElement(Nav.Link, { eventKey: "virtual-scenes-panel" }, "Virtual Scenes")
+    );
+    return [...React.Children.toArray(children), newTab];
+  });
+
+  PluginApi.patch.after("ScenePage.TabContent", function({ children, ...props }) {
+    const scene = props.scene;
+    const newPane = React.createElement(Tab.Pane, { eventKey: "virtual-scenes-panel" },
+      React.createElement(VirtualScenesTab, { scene })
+    );
+    return [...React.Children.toArray(children), newPane];
+  });
+
+  if (window.PluginApi?.Event) {
+    window.PluginApi.Event.addEventListener("stash:location", () => {
+      onLocationChange();
+      maybeAutoPlay();
+    });
+  } else {
+    let last = "";
+    setInterval(() => {
+      if (window.location.pathname !== last) {
+        last = window.location.pathname;
+        onLocationChange();
       }
-
-      api.patch.after("ScenePage.Tabs", function({ children, ...props }) {
-        const newTab = React.createElement(Nav.Item, null,
-          React.createElement(Nav.Link, { eventKey: "virtual-scenes-panel" }, "Virtual Scenes")
-        );
-        return React.createElement(React.Fragment, null,
-          ...React.Children.toArray(children),
-          newTab
-        );
-      });
-
-      api.patch.after("ScenePage.TabContent", function({ children, ...props }) {
-        const scene = props.scene;
-        const newPane = React.createElement(Tab.Pane, { eventKey: "virtual-scenes-panel" },
-          React.createElement(VirtualScenesTab, { scene })
-        );
-        return React.createElement(React.Fragment, null,
-          ...React.Children.toArray(children),
-          newPane
-        );
-      });
-
-      console.log(`[${PLUGIN_ID}] Tab patches registered.`);
-
-      // startListening handles DOM injection (button, redirect) — needs PluginApi.Event
-      waitForApi(() => {
-        console.log(`[${PLUGIN_ID}] Starting location listener...`);
-        startListening();
-      });
-    };
-
-    tryRegister();
-  })();
+    }, 500);
+  }
+  onLocationChange();
+  maybeAutoPlay();
 
 })();
 }

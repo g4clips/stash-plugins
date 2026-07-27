@@ -1,0 +1,38 @@
+name: TabToggler
+description: Toggle which tabs are shown on the Scene page (Details, Queue, Markers, Groups, Filters, File Info, History, Edit)
+version: "0.1.0"
+
+ui:
+  javascript:
+    - TabToggler.js
+
+# Each field is a simple BOOLEAN, rendered as a checkbox automatically under
+# Settings > Plugins > TabToggler. Unset/missing = treated as "true" (visible)
+# by the JS, so a fresh install shows every tab exactly as today.
+settings:
+  showDetails:
+    displayName: Show Details tab
+    description: Scene details / description panel
+    type: BOOLEAN
+  showQueue:
+    displayName: Show Queue tab
+    description: Playlist / queue panel
+    type: BOOLEAN
+  showMarkers:
+    displayName: Show Markers tab
+    type: BOOLEAN
+  showGroups:
+    displayName: Show Groups tab
+    type: BOOLEAN
+  showFilters:
+    displayName: Show Filters tab
+    type: BOOLEAN
+  showFileInfo:
+    displayName: Show File Info tab
+    type: BOOLEAN
+  showHistory:
+    displayName: Show History tab
+    type: BOOLEAN
+  showEdit:
+    displayName: Show Edit tab
+    type: BOOLEAN

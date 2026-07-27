@@ -1,6 +1,6 @@
 name: TabToggler
 description: Toggle which tabs are shown on the Scene page (Details, Queue, Markers, Groups, Filters, File Info, History, Edit)
-version: "0.1.0"
+version: "0.1.1"
 
 ui:
   javascript:

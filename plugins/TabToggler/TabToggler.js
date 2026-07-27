@@ -3,11 +3,12 @@
 
   // Substring match (lowercased) against each nav-link's text content.
   // NOT yet verified against live DOM. Verification checklist:
-  //   1. Confirm `configuration { plugins }` returns `TabToggler: { showX: false }`
-  //      when a setting is unchecked in Settings > Plugins, rather than omitting
-  //      the key. THIS IS THE BIGGEST RISK: if the key is omitted instead, every
-  //      toggle reads as "visible" by default and hiding silently never happens,
-  //      even though nothing throws or looks broken.
+  //   1. [RESOLVED] Confirmed via stashapp/stash pkg/plugin/config.go that the
+  //      BOOLEAN settings schema has no `default` field — checkboxes render
+  //      unchecked until a value is explicitly written. Fixed below via
+  //      seedDefaultsIfNeeded(), which writes `true` for any of the 8 keys
+  //      missing from configuration.plugins.TabToggler on first load, so a
+  //      fresh install shows every checkbox checked (matching "all tabs visible").
   //   2. Confirm the real `.nav-link` text for all 8 tabs on a scene page matches
   //      the substrings below (adjust from real DOM output, not assumption).
   //   3. Confirm hiding the currently-active tab correctly falls back to the
@@ -38,6 +39,37 @@
   let cachedConfig = null;
   let configFetchedAt = 0;
   const CONFIG_TTL_MS = 5000; // short TTL so a settings change is picked up without a full page reload
+
+  // Stash's BOOLEAN settings schema has no `default` field (verified against
+  // pkg/plugin/config.go), so a fresh install has no config.plugins.TabToggler
+  // entry at all, and the Settings UI renders every checkbox unchecked even
+  // though our own JS defaults missing keys to "visible". This writes an
+  // explicit `true` for any of the 8 keys not yet present, once, so the
+  // checkbox state matches actual tab visibility. Never overwrites a key that
+  // already exists (including an explicit `false` from a user toggle).
+  async function seedDefaultsIfNeeded() {
+    try {
+      const data = await gql(`query { configuration { plugins } }`);
+      const all = data?.configuration?.plugins || {};
+      const current = all[PLUGIN_ID] || {};
+      const missingKeys = TAB_DEFS.map((t) => t.key).filter((k) => !(k in current));
+      if (!missingKeys.length) {
+        cachedConfig = current;
+        configFetchedAt = Date.now();
+        return;
+      }
+      const seeded = { ...current };
+      missingKeys.forEach((k) => { seeded[k] = true; });
+      await gql(
+        `mutation TabTogglerConfigure($id: ID!, $input: Map!) { configurePlugin(plugin_id: $id, input: $input) }`,
+        { id: PLUGIN_ID, input: seeded }
+      );
+      cachedConfig = seeded;
+      configFetchedAt = Date.now();
+    } catch (e) {
+      console.error("[TabToggler] failed to seed default settings", e);
+    }
+  }
 
   async function getConfig() {
     const now = Date.now();
@@ -132,5 +164,6 @@
       }
     }, 500);
   }
+  seedDefaultsIfNeeded();
   onLocationChange();
 })();

@@ -47,6 +47,13 @@
   // explicit `true` for any of the 8 keys not yet present, once, so the
   // checkbox state matches actual tab visibility. Never overwrites a key that
   // already exists (including an explicit `false` from a user toggle).
+  //
+  // Observed live: on a genuinely fresh install, the Settings page can
+  // briefly render all 8 checkboxes unchecked on first load, because it
+  // fetches configuration on mount before this function's write finishes.
+  // The backend is correct within ~1s and a page reload always shows the
+  // right state — this is a one-time cosmetic flash, not a bug. Not fixing
+  // it; documenting it so it isn't mistaken for the seeding logic failing.
   async function seedDefaultsIfNeeded() {
     try {
       const data = await gql(`query { configuration { plugins } }`);

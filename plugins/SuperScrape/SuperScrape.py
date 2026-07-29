@@ -199,6 +199,55 @@ def normalize(s):
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
+# ── Keyword/tag extraction helpers, shared by all three site adapters below
+# (iwc_extract, mv_extract, c4s_extract) -- a "Keywords:" line embedded in
+# the free-text description is a separate, uploader-driven signal from each
+# site's own structured Category/Keywords/hashtag fields, so both are
+# always unioned rather than one replacing the other. ──────────────────────
+
+_KEYWORDS_LINE_RE = re.compile(r"(?im)^\s*Keywords:\s*(.+)$")
+
+
+def _extract_keywords_line(text):
+    """A free-text 'Keywords: foo, bar, baz' line some uploaders put in the
+    description -- confirmed pattern on iwantclips/clips4sale (ScarlettBelle),
+    independent of each site's own structured category/hashtag fields."""
+    if not text:
+        return []
+    m = _KEYWORDS_LINE_RE.search(text)
+    if not m:
+        return []
+    return [p.strip() for p in m.group(1).split(",") if p.strip()]
+
+
+_HASHTAG_RE = re.compile(r"#(\w+)")
+
+
+def _extract_hashtags(text):
+    if not text:
+        return []
+    return [m.group(1) for m in _HASHTAG_RE.finditer(text)]
+
+
+def _union_keywords(*groups):
+    """Union keywords across sources, deduped by the same normalize() used
+    everywhere else in this file for name matching -- so 'RolePlay' and
+    'Role Play' collapse to one entry before ever reaching resolve_tags."""
+    seen = set()
+    out = []
+    for group in groups:
+        for kw in group:
+            kw = (kw or "").strip()
+            if not kw:
+                continue
+            norm = normalize(kw)
+            if not norm or norm in seen:
+                continue
+            seen.add(norm)
+            out.append(kw)
+    return out
+
+
 def _make_session(proxy_url=""):
     session = requests.Session()
     session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"})
@@ -596,6 +645,24 @@ def _iwc_extract_published_date(page_html):
         return None
 
 
+def _iwc_extract_keywords(page_html, description):
+    """Ported from CommunityScrapers' IWantClips-NoCDP.yml sceneScraper.Tags
+    xpath (//div[@class="...category fix"]/a | //div[@class="...hashtags
+    hashtags-grey fix"]/span/em), confirmed still matching via BeautifulSoup
+    class-token selection. The hashtags block sometimes carries a literal
+    'Keywords:' label inside its own text -- stripped the same way that
+    scraper's postProcess regex did."""
+    soup = BeautifulSoup(page_html, "html.parser")
+    categories = [a.get_text(strip=True) for a in soup.select("div.category a")]
+
+    hashtag_terms = []
+    for em in soup.select("div.hashtags span em"):
+        text = re.sub(r"^\s*Keywords:\s*", "", em.get_text(strip=True))
+        hashtag_terms.extend(p.strip() for p in text.split(",") if p.strip())
+
+    return _union_keywords(categories, hashtag_terms, _extract_keywords_line(description))
+
+
 def iwc_extract(clip_url, proxy_url=""):
     session = _make_session(proxy_url)
     resp = session.get(clip_url, timeout=20)
@@ -634,6 +701,8 @@ def iwc_extract(clip_url, proxy_url=""):
 
     if not data["title"]:
         raise RuntimeError(f"Could not extract clip metadata (no JSON-LD 'name' field) from: {clip_url}")
+
+    data["keywords"] = _iwc_extract_keywords(resp.text, data["description"])
 
     return data
 
@@ -891,7 +960,13 @@ def mv_extract(clip_url, proxy_url=""):
     creator_name = creator.get("name") if isinstance(creator, dict) else None
     performers = [html_lib.unescape(creator_name)] if creator_name else []
 
-    return {"title": title, "date": date, "performers": performers, "description": description}
+    # No structured tag list is reachable from this adapter's JSON-LD scrape
+    # (CommunityScrapers' ManyVids.yml reads a separate BFF JSON API's
+    # data.tagList field, not available here) -- hashtags embedded in the
+    # description are the next-best signal, per investigation.
+    keywords = _union_keywords(_extract_hashtags(description), _extract_keywords_line(description))
+
+    return {"title": title, "date": date, "performers": performers, "description": description, "keywords": keywords}
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -1271,12 +1346,29 @@ def c4s_extract(clip_url, proxy_url=""):
         if studio_name:
             performers = [studio_name]
 
+    # Field names (category_name / related_category_links / keyword_links)
+    # match CommunityScrapers' Clips4Sale.py exactly -- confirmed same Remix
+    # loader-data route as this adapter's own clip_data fetch above, just a
+    # different entry point into it.
+    keyword_terms = []
+    category_name = clip.get("category_name")
+    if category_name:
+        keyword_terms.append(category_name)
+    for r in (clip.get("related_category_links") or []):
+        if r.get("category"):
+            keyword_terms.append(r["category"])
+    for k in (clip.get("keyword_links") or []):
+        if k.get("keyword"):
+            keyword_terms.append(k["keyword"])
+    keywords = _union_keywords(keyword_terms, _extract_keywords_line(description))
+
     return {
         "title": title,
         "date": date,
         "performers": performers,
         "description": description,
         "thumbnail": _c4s_best_thumbnail(clip),
+        "keywords": keywords,
     }
 
 
@@ -1965,6 +2057,72 @@ def resolve_studio(name, stash_url, api_key):
     return {"name": name, "localId": None, "found": False}
 
 
+def resolve_tag(name, stash_url, api_key):
+    """Same exact/alias/fuzzy tiers as resolve_performer -- confirmed
+    against the stash-source clone that TagFilterType.aliases and
+    Tag.aliases both exist, so the alias-matching OR-query pattern that
+    fixed resolve_performer applies identically here."""
+    clean_name = name.strip()
+    norm = normalize(clean_name)
+    token = _query_token(clean_name)
+
+    def query(search_value):
+        data = local_gql(stash_url, api_key, """
+            query TagByNameOrAlias($value: String!) {
+                findTags(tag_filter: {
+                    name: { value: $value, modifier: INCLUDES }
+                    OR: { aliases: { value: $value, modifier: INCLUDES } }
+                }) {
+                    tags { id name aliases }
+                }
+            }
+        """, {"value": search_value})
+        return data["findTags"]["tags"]
+
+    tags = query(token)
+    if not tags and len(token) > 1:
+        for i in range(len(token) - 1, 0, -1):
+            tags = query(token[:i])
+            if tags:
+                break
+
+    for t in tags:
+        t["_normName"] = normalize(t["name"])
+        t["_normAliases"] = [normalize(a) for a in (t.get("aliases") or [])]
+
+    for t in tags:
+        if t["_normName"] == norm:
+            return {"name": name, "localId": t["id"], "found": True, "matchType": "exact"}
+    for t in tags:
+        if norm in t["_normAliases"]:
+            return {"name": name, "localId": t["id"], "found": True, "matchType": "alias"}
+
+    best, best_score = None, 0
+    for t in tags:
+        score = SequenceMatcher(None, norm, t["_normName"]).ratio()
+        if score > best_score:
+            best_score, best = score, t
+    if best and best_score >= FUZZY_MATCH_THRESHOLD:
+        return {"name": name, "localId": best["id"], "found": True, "matchType": "fuzzy", "score": round(best_score, 3)}
+
+    return {"name": name, "localId": None, "found": False}
+
+
+def resolve_tags(names, stash_url, api_key):
+    """Dedupes by normalize() before resolving -- a scene's keyword list can
+    legitimately contain near-duplicates from different sources (e.g. a
+    Category and a hashtag both saying 'Role Play')."""
+    seen = set()
+    out = []
+    for n in names or []:
+        norm = normalize(n)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        out.append(resolve_tag(n, stash_url, api_key))
+    return out
+
+
 # ── Duplicate detection (Data18-style warning step, adapted for a
 # no-stash-id-concept world) ─────────────────────────────────────────────
 # Three independent methods, either sufficient to flag a possible duplicate,
@@ -2059,6 +2217,7 @@ query FindScenesBySceneFingerprints($fingerprints: [[FingerprintQueryInput!]!]!)
     images { url }
     studio { id name }
     performers { performer { id name } }
+    tags { name }
   }
 }
 """
@@ -2081,6 +2240,7 @@ def stashbox_gql(endpoint, sb_api_key, query, variables=None):
 def _stashbox_scene_to_output(scene, endpoint, stash_url, api_key):
     performers = [pa["performer"]["name"] for pa in (scene.get("performers") or []) if pa.get("performer")]
     studio_name = (scene.get("studio") or {}).get("name", "")
+    tag_names = [t["name"] for t in (scene.get("tags") or []) if t.get("name")]
     images = scene.get("images") or []
     thumbnail = images[0]["url"] if images else ""
     session = _make_session()
@@ -2094,10 +2254,12 @@ def _stashbox_scene_to_output(scene, endpoint, stash_url, api_key):
             "date": scene.get("date"),
             "description": scene.get("details") or "",
             "performers": performers,
+            "keywords": tag_names,
             "thumbnailIsGif": _thumbnail_is_gif(thumbnail, session),
         },
         "resolvedPerformers": [resolve_performer(p, stash_url, api_key) for p in performers],
         "resolvedStudio": resolve_studio(studio_name, stash_url, api_key),
+        "resolvedTags": resolve_tags(tag_names, stash_url, api_key),
         "contentUrl": f"{base}/scenes/{scene['id']}",
         "thumbnail": thumbnail,
     }
@@ -2181,12 +2343,14 @@ def main():
             scraped = extract(url, site, hit, proxy_url=settings.get("proxyUrl", ""))
             resolved_performers = [resolve_performer(p, stash_url, api_key) for p in scraped["performers"]]
             resolved_studio = resolve_studio(studio_name, stash_url, api_key)
+            resolved_tags = resolve_tags(scraped.get("keywords") or [], stash_url, api_key)
             result = {
                 "ok": True,
                 "output": {
                     "scraped": scraped,
                     "resolvedPerformers": resolved_performers,
                     "resolvedStudio": resolved_studio,
+                    "resolvedTags": resolved_tags,
                 },
             }
 

@@ -1413,7 +1413,8 @@
           </div>
           <div id="ss-tag-grid"><span class="ss-hint">Loading tags…</span></div>
         </div>
-      </div>`;
+      </div>
+      <div id="ss-unmatched-wrap" class="ss-tags-block ss-unmatched-block" style="display:none"></div>`;
 
     setFooter(`
       <button id="ss-back2"   class="ss-btn ss-btn-secondary">← Back</button>
@@ -1423,7 +1424,7 @@
       <button id="ss-apply"   class="ss-btn ss-btn-primary">Apply to Scene</button>`);
 
     bindThumbHovers();
-    renderTagPicker(resolvedPerformers);
+    renderTagPicker(resolvedPerformers, scrapeOutput.resolvedTags);
 
     // Whole-thumbnail click-to-select for the cover boxes -- the actual
     // selection state still lives on the hidden ss-cover-pick radios (so
@@ -1596,7 +1597,7 @@
   // against yet). Extracted out of renderTagPicker so the batch queue-
   // builder can run the exact same pre-selection at queue time (per its
   // own "tags carry through" requirement) without duplicating this logic.
-  async function computePreselectedTagIds(resolvedPerformers) {
+  async function computePreselectedTagIds(resolvedPerformers, resolvedTags) {
     const ids = new Set();
     const matchedIds = [...new Set((resolvedPerformers || [])
       .filter(p => p.found && p.localId)
@@ -1612,10 +1613,16 @@
         // the picker to function; falls through with nothing pre-checked.
       }
     }
+    // Additive: matched scraped keywords (resolve_tags found:true entries)
+    // join whatever performer-tag pre-selection already produced above --
+    // never a replacement for it.
+    for (const t of (resolvedTags || [])) {
+      if (t.found && t.localId) ids.add(t.localId);
+    }
     return ids;
   }
 
-  async function renderTagPicker(resolvedPerformers) {
+  async function renderTagPicker(resolvedPerformers, resolvedTags) {
     // Deliberately does NOT pre-highlight tags the scene already has: the
     // picker only ever ADDS (see applyToScene's merge, never a replace),
     // so pre-checking an existing tag and letting the user "uncheck" it
@@ -1638,9 +1645,10 @@
     // pre-selected this way are exactly as toggleable as any manually-
     // clicked chip -- same "picker only ever adds" invariant as above,
     // nothing locked.
-    _selectedTagIds = await computePreselectedTagIds(resolvedPerformers);
+    _selectedTagIds = await computePreselectedTagIds(resolvedPerformers, resolvedTags);
 
     drawTagGrid(_allTagsCache);
+    renderUnmatchedKeywords(resolvedTags);
 
     const filterInput = document.getElementById("ss-tag-filter");
     const filterClearBtn = document.getElementById("ss-tag-filter-clear");
@@ -1708,6 +1716,67 @@
         const id = chip.dataset.id;
         if (_selectedTagIds.has(id)) { _selectedTagIds.delete(id); chip.classList.remove("ss-chip-on"); }
         else { _selectedTagIds.add(id); chip.classList.add("ss-chip-on"); }
+      });
+    });
+  }
+
+  // ── Unmatched-keyword section — collapsible, BELOW the tag-chip picker,
+  // collapsed by default (unlike the "Add tags" picker above): these are
+  // scraped keywords with no local Stash tag match at all, so an expanded
+  // default would just be noise on the common case where everything
+  // already matched. Uses <details>/<summary> -- same proven collapsible
+  // pattern as Data18StashDB's own unmatched-tags section (.d18-unmatched-
+  // toggle), not a hand-rolled click-toggle -- native disclosure state,
+  // no JS needed for expand/collapse. Each keyword gets its own Create
+  // button (not a bulk button), same inline find-or-create pattern as
+  // ss-perf-create/ss-studio-create above: clicking Create makes the tag
+  // in Stash, adds it to the chip grid pre-checked, and removes the
+  // keyword's own unmatched row, all without a full re-render.
+  function renderUnmatchedKeywords(resolvedTags) {
+    const wrap = document.getElementById("ss-unmatched-wrap");
+    if (!wrap) return;
+    const unmatched = (resolvedTags || []).filter(t => !t.found);
+    if (!unmatched.length) { wrap.style.display = "none"; wrap.innerHTML = ""; return; }
+    wrap.style.display = "";
+
+    const rowsHtml = unmatched.map(t => `
+      <div class="ss-perf-row">
+        <span>${esc(t.name)}</span>
+        <button class="ss-btn ss-btn-secondary ss-btn-xs ss-keyword-create" data-name="${esc(t.name)}" type="button">Create</button>
+        <span class="ss-perf-inline-msg"></span>
+      </div>`).join("");
+
+    wrap.innerHTML = `
+      <details id="ss-unmatched-details">
+        <summary id="ss-unmatched-summary" class="ss-unmatched-toggle">Unmatched keywords (${unmatched.length})</summary>
+        <div id="ss-unmatched-body" class="ss-tags-body">${rowsHtml}</div>
+      </details>`;
+
+    wrap.querySelectorAll(".ss-keyword-create").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const name = btn.dataset.name;
+        const row = btn.closest(".ss-perf-row");
+        const msgEl = row?.querySelector(".ss-perf-inline-msg");
+        btn.disabled = true; btn.textContent = "Creating…";
+        try {
+          const id = await findOrCreateTagByName(name);
+          if (!_allTagsCache.some(t => t.id === id)) {
+            _allTagsCache.push({ id, name, scene_count: 0 });
+          }
+          _selectedTagIds.add(id);
+          drawTagGrid(_allTagsCache);
+          row.remove();
+          const remaining = wrap.querySelectorAll(".ss-perf-row").length;
+          if (!remaining) {
+            wrap.style.display = "none"; wrap.innerHTML = "";
+          } else {
+            const summaryEl = document.getElementById("ss-unmatched-summary");
+            if (summaryEl) summaryEl.textContent = `Unmatched keywords (${remaining})`;
+          }
+        } catch (e) {
+          btn.disabled = false; btn.textContent = "Create";
+          if (msgEl) { msgEl.className = "ss-perf-inline-msg ss-msg-err"; msgEl.textContent = `✗ ${e.message}`; }
+        }
       });
     });
   }
@@ -2120,7 +2189,7 @@
             item.scrapedThumbnail = sceneMatch.thumbnail;
             item.duplicates = dupes;
             try {
-              item.preselectedTagIds = [...(await computePreselectedTagIds(resolvedPerfs))];
+              item.preselectedTagIds = [...(await computePreselectedTagIds(resolvedPerfs, sceneMatch.resolvedTags))];
             } catch (_) {
               item.preselectedTagIds = [];
             }
@@ -2241,7 +2310,7 @@
     item.duplicates = dupes;
 
     try {
-      item.preselectedTagIds = [...(await computePreselectedTagIds(resolvedPerfs))];
+      item.preselectedTagIds = [...(await computePreselectedTagIds(resolvedPerfs, scrapeOutput.resolvedTags))];
     } catch (_) {
       item.preselectedTagIds = [];
     }

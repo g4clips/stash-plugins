@@ -428,6 +428,25 @@
   color: #9fe0b8;
 }
 
+/* ── Unmatched-keyword section -- <details>/<summary>, same proven
+   collapsible pattern as Data18StashDB's .d18-unmatched-toggle. ────────── */
+#ss-unmatched-wrap { margin-top: .5rem; flex-shrink: 0; }
+.ss-unmatched-toggle {
+  cursor: pointer;
+  color: #aaa;
+  font-size: .75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  padding: .5rem .7rem;
+  background: #16161e;
+  user-select: none;
+  list-style: none;
+}
+.ss-unmatched-toggle::-webkit-details-marker { display: none; }
+details[open] .ss-unmatched-toggle::before        { content: "▼ "; }
+details:not([open]) .ss-unmatched-toggle::before  { content: "▶ "; }
+
 /* ── Manage Known Stores list ──────────────────────────────────── */
 .ss-store-list { display: flex; flex-direction: column; gap: .3rem; }
 .ss-store-row {

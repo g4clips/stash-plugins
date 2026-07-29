@@ -175,6 +175,7 @@
       proxyUrl: cfg.proxyUrl || "",
       stashDbFirstEnabled: cfg.stashDbFirstEnabled !== undefined ? !!cfg.stashDbFirstEnabled : true,
       markOrganizedDefault: !!cfg.markOrganizedDefault,
+      addZzzUploadTagDefault: !!cfg.addZzzUploadTagDefault,
     };
   }
 
@@ -245,6 +246,7 @@
       query FindScene($id: ID!) {
         findScene(id: $id) {
           id title date details urls
+          stash_ids { stash_id endpoint }
           files { basename fingerprints { type value } }
           studio { id name }
           performers { id name }
@@ -287,6 +289,26 @@
     return result.studioCreate;
   }
 
+  // Look up a tag by exact name, creating it if it doesn't exist yet --
+  // same find-or-create shape as marker-scenes' zzz-virtual lookup, but
+  // this one creates on miss instead of erroring, since zzz-upload is a
+  // plugin-owned marker tag rather than something the user is expected to
+  // have pre-created.
+  async function findOrCreateTagByName(name) {
+    const data = await gql(
+      `query F($name:String!){ findTags(tag_filter:{ name:{ value:$name, modifier: EQUALS } }, filter:{ per_page: 1 }){ tags{ id name } } }`,
+      { name }
+    );
+    const found = (data.findTags.tags || [])[0];
+    if (found) return found.id;
+    const result = await gql(
+      `mutation($input: TagCreateInput!){ tagCreate(input:$input){ id name } }`,
+      { input: { name } }
+    );
+    if (!result.tagCreate) throw new Error("Create mutation returned no result");
+    return result.tagCreate.id;
+  }
+
   // ── Tags (flat picker -- see renderApply) ──────────────────────────────────
 
   async function fetchAllTags() {
@@ -326,7 +348,7 @@
 
   // ── Apply scraped metadata directly via GraphQL ───────────────────────────
 
-  async function applyToScene(sceneId, fieldChecks, selPerfNames, scraped, resolvedPerformers, resolvedStudio, current, contentUrl, coverPick, scrapedThumbnail, selectedTagIds, organized) {
+  async function applyToScene(sceneId, fieldChecks, selPerfNames, scraped, resolvedPerformers, resolvedStudio, current, contentUrl, coverPick, scrapedThumbnail, selectedTagIds, organized, addZzzUploadTag, stashDbIds) {
     const input = { id: sceneId };
     if (fieldChecks.title && scraped.title) input.title = scraped.title;
     if (fieldChecks.date && scraped.date) input.date = scraped.date;
@@ -344,11 +366,29 @@
     // Tags are always additive (merge, not replace), independent of the
     // per-field "Use" checkboxes above -- whatever's toggled on in the
     // chip picker gets added to whatever the scene already has.
-    if (selectedTagIds && selectedTagIds.length) {
+    const extraTagIds = selectedTagIds ? [...selectedTagIds] : [];
+    if (addZzzUploadTag) {
+      try {
+        extraTagIds.push(await findOrCreateTagByName("zzz-upload"));
+      } catch (e) {
+        throw new Error(`Failed to find/create "zzz-upload" tag: ${e.message}`);
+      }
+    }
+    if (extraTagIds.length) {
       const existingIds = (current.tags || []).map(t => t.id);
-      input.tag_ids = Array.from(new Set([...existingIds, ...selectedTagIds]));
+      input.tag_ids = Array.from(new Set([...existingIds, ...extraTagIds]));
     }
     if (organized) input.organized = true;
+    // StashDB-sourced matches (opts.viaStashDb) write their remote scene id
+    // into stash_ids, merged with (not replacing) whatever endpoints the
+    // scene already has, so find_duplicate_scenes' stash_id tier picks up
+    // scenes scraped via SuperScrape, not just Data18StashDB.
+    if (stashDbIds) {
+      const existing = (current.stash_ids || [])
+        .filter(s => !(s.stash_id === stashDbIds.stash_id && s.endpoint === stashDbIds.endpoint))
+        .map(s => ({ stash_id: s.stash_id, endpoint: s.endpoint }));
+      input.stash_ids = [...existing, { stash_id: stashDbIds.stash_id, endpoint: stashDbIds.endpoint }];
+    }
     await gql(`mutation U($input:SceneUpdateInput!){sceneUpdate(input:$input){id}}`, { input });
   }
 
@@ -376,9 +416,13 @@
     const coverPick = (item.viaStashDb && scrapedCoverUsable)
       ? "scraped"
       : currentImageUrl ? "current" : (scrapedCoverUsable ? "scraped" : "current");
+    const stashDbIds = (item.viaStashDb && item.scrapeOutput?.remoteSiteId && item.stashDbBox?.endpoint)
+      ? { stash_id: item.scrapeOutput.remoteSiteId, endpoint: item.stashDbBox.endpoint }
+      : null;
     await applyToScene(
       item.sceneId, fieldChecks, selPerfNames, scraped, resolvedPerformers, resolvedStudio,
-      item.current, item.contentUrl, coverPick, item.scrapedThumbnail, item.preselectedTagIds, item.markOrganized
+      item.current, item.contentUrl, coverPick, item.scrapedThumbnail, item.preselectedTagIds, item.markOrganized,
+      item.addZzzUploadTag, stashDbIds
     );
     await bumpLastUsed(item.storeKey, item.storeInfo);
   }
@@ -599,8 +643,8 @@
     setFooter(null);
 
     let cfg;
-    try { cfg = await readConfig(); } catch (_) { cfg = { stashDbFirstEnabled: true, markOrganizedDefault: false }; }
-    const baseOpts = { markOrganized: !!cfg.markOrganizedDefault };
+    try { cfg = await readConfig(); } catch (_) { cfg = { stashDbFirstEnabled: true, markOrganizedDefault: false, addZzzUploadTagDefault: false }; }
+    const baseOpts = { markOrganized: !!cfg.markOrganizedDefault, addZzzUploadTag: !!cfg.addZzzUploadTagDefault };
 
     if (!cfg.stashDbFirstEnabled) {
       renderFilenameInput(sceneId, baseOpts);
@@ -695,7 +739,7 @@
     });
 
     document.getElementById("ss-back1").onclick = () =>
-      renderFilenameInput(sceneId, { markOrganized: opts.markOrganized, stashDbStepShown: opts.stashDbStepShown });
+      renderFilenameInput(sceneId, { markOrganized: opts.markOrganized, addZzzUploadTag: opts.addZzzUploadTag, stashDbStepShown: opts.stashDbStepShown });
   }
 
   // Runs the (extended) "Check Duplicates" task with remote_site_id/
@@ -771,7 +815,7 @@
     try {
       cfg = await readConfig();
     } catch (_) {
-      cfg = { performerStoreMap: {}, stashDbFirstEnabled: true, markOrganizedDefault: false };
+      cfg = { performerStoreMap: {}, stashDbFirstEnabled: true, markOrganizedDefault: false, addZzzUploadTagDefault: false };
     }
     const recentEntries = Object.entries(cfg.performerStoreMap)
       .filter(([, e]) => e.lastUsedAt)
@@ -797,6 +841,10 @@
           <input type="checkbox" id="ss-toggle-mark-organized" ${cfg.markOrganizedDefault ? "checked" : ""} />
           <span>Mark scene as Organized when applying</span>
         </label>
+        <label class="ss-item-label" style="margin:0">
+          <input type="checkbox" id="ss-toggle-zzz-upload" ${cfg.addZzzUploadTagDefault ? "checked" : ""} />
+          <span>Add "zzz-upload" tag when applying</span>
+        </label>
       </div>
       ${quickPickHtml}
       <p class="ss-hint">Filename to parse (edit if needed):</p>
@@ -811,9 +859,16 @@
     document.getElementById("ss-toggle-mark-organized").addEventListener("change", e => {
       writeConfig({ markOrganizedDefault: e.target.checked }).catch(() => {});
     });
+    document.getElementById("ss-toggle-zzz-upload").addEventListener("change", e => {
+      writeConfig({ addZzzUploadTagDefault: e.target.checked }).catch(() => {});
+    });
 
     function currentOpts() {
-      return { ...opts, markOrganized: document.getElementById("ss-toggle-mark-organized")?.checked ?? cfg.markOrganizedDefault };
+      return {
+        ...opts,
+        markOrganized: document.getElementById("ss-toggle-mark-organized")?.checked ?? cfg.markOrganizedDefault,
+        addZzzUploadTag: document.getElementById("ss-toggle-zzz-upload")?.checked ?? cfg.addZzzUploadTagDefault,
+      };
     }
 
     document.querySelectorAll(".ss-quickpick-chip").forEach(chip => {
@@ -1235,6 +1290,7 @@
     const scraped = scrapeOutput.scraped;
     const resolvedPerformers = scrapeOutput.resolvedPerformers || [];
     const resolvedStudio = scrapeOutput.resolvedStudio;
+    const currentBasename = (current.files || [])[0]?.basename || "";
 
     const perfRowHtml = resolvedPerformers.length ? `
       <div class="ss-compare-row">
@@ -1307,7 +1363,7 @@
       </div>` : "";
 
     const scalarFields = [
-      ["title",   "Title",              current.title,               scraped.title],
+      ["title",   "Title",              current.title || currentBasename, scraped.title],
       ["date",    "Date",               current.date,                scraped.date],
       ["studio",  "Studio",             current.studio?.name,        studioIncomingHtml],
       ["urls",    "URLs (will merge)",  (current.urls || []).join(", "), contentUrl],
@@ -1410,7 +1466,10 @@
       setStatus("Writing to scene…");
 
       try {
-        await applyToScene(sceneId, fieldChecks, selPerfs, scrapedForApply, resolvedPerformers, resolvedStudio, current, contentUrl, coverPick, scrapedThumbnail, selectedTagIds, opts.markOrganized);
+        const stashDbIds = (opts.viaStashDb && scrapeOutput?.remoteSiteId && opts.stashDbBox?.endpoint)
+          ? { stash_id: scrapeOutput.remoteSiteId, endpoint: opts.stashDbBox.endpoint }
+          : null;
+        await applyToScene(sceneId, fieldChecks, selPerfs, scrapedForApply, resolvedPerformers, resolvedStudio, current, contentUrl, coverPick, scrapedThumbnail, selectedTagIds, opts.markOrganized, opts.addZzzUploadTag, stashDbIds);
         await bumpLastUsed(storeKey, storeInfo);
         setStatus("");
         if (opts.onApplied) opts.onApplied(); else renderDone();
@@ -2021,6 +2080,7 @@
       searchOutput: null, scrapeOutput: null, contentUrl: null, scrapedThumbnail: null,
       duplicates: [], preselectedTagIds: [], classification: "no-match", reason: "",
       viaStashDb: false, stashDbScenes: null, stashDbBox: null, markOrganized: !!runOpts.markOrganized,
+      addZzzUploadTag: !!runOpts.addZzzUploadTag,
     };
 
     try {
@@ -2431,6 +2491,7 @@
       stashDbStepShown: item.viaStashDb,
       viaStashDb: item.viaStashDb,
       markOrganized: item.markOrganized,
+      addZzzUploadTag: item.addZzzUploadTag,
       stashDbBox: item.stashDbBox,
       onBack: () => { closeModal(); renderBatchQueueResults(); },
       onDismiss: () => { removeFromBatchQueue(item); closeModal(); renderBatchQueueResults(); },
@@ -2481,7 +2542,7 @@
     if (cfg.stashDbFirstEnabled) {
       try { stashDbBox = await findStashDbBox(); } catch (_) { stashDbBox = null; }
     }
-    const runOpts = { stashDbFirstEnabled: !!cfg.stashDbFirstEnabled, stashDbBox, markOrganized: !!cfg.markOrganizedDefault };
+    const runOpts = { stashDbFirstEnabled: !!cfg.stashDbFirstEnabled, stashDbBox, markOrganized: !!cfg.markOrganizedDefault, addZzzUploadTag: !!cfg.addZzzUploadTagDefault };
 
     const total = selectedIds.length;
     renderBatchProgress(0, total);
@@ -2505,7 +2566,7 @@
     let cfg, scenes;
     try {
       [cfg, scenes] = await Promise.all([
-        readConfig().catch(() => ({ stashDbFirstEnabled: true, markOrganizedDefault: false })),
+        readConfig().catch(() => ({ stashDbFirstEnabled: true, markOrganizedDefault: false, addZzzUploadTagDefault: false })),
         fetchBatchCandidateScenes(decoded),
       ]);
     } catch (e) {
@@ -2539,6 +2600,10 @@
           <input type="checkbox" id="ss-batch-toggle-mark-organized" ${cfg.markOrganizedDefault ? "checked" : ""} />
           <span>Mark scenes as Organized when applying</span>
         </label>
+        <label class="ss-item-label" style="margin:0">
+          <input type="checkbox" id="ss-batch-toggle-zzz-upload" ${cfg.addZzzUploadTagDefault ? "checked" : ""} />
+          <span>Add "zzz-upload" tag when applying</span>
+        </label>
       </div>
       <div class="ss-row">
         <input id="ss-batch-namefilter" class="ss-input" type="text" placeholder="Filter by filename/title…" />
@@ -2562,6 +2627,9 @@
     });
     document.getElementById("ss-batch-toggle-mark-organized").addEventListener("change", e => {
       writeConfig({ markOrganizedDefault: e.target.checked }).catch(() => {});
+    });
+    document.getElementById("ss-batch-toggle-zzz-upload").addEventListener("change", e => {
+      writeConfig({ addZzzUploadTagDefault: e.target.checked }).catch(() => {});
     });
 
     document.getElementById("ss-batch-namefilter").addEventListener("input", e => {

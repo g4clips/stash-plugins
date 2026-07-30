@@ -488,6 +488,23 @@ def _iwc_extract_model_path(store_url):
     return f"store/{m.group(1)}/{m.group(2)}"
 
 
+_IWC_THUMB_DIR_RE = re.compile(r"^(.*_400_225__)[^/]+\.gif$")
+
+
+def _iwc_static_thumbnail(doc):
+    """thumbnail_url/thumbnail_path 404s on this CDN path, and preview_url/preview_path
+    is a multi-MB animated GIF -- confirmed live against real clips. The bare `thumbnail`
+    field is a static-JPG filename that lives in the same _400_225__ sized directory as
+    the dead GIF URL, so swap it in instead of ever selecting a GIF or dead link. No
+    static derivation possible -> no thumbnail at all, rather than falling back to a GIF."""
+    gif_url = doc.get("thumbnail_url") or doc.get("thumbnail_path") or ""
+    filename = doc.get("thumbnail") or ""
+    m = _IWC_THUMB_DIR_RE.match(gif_url) if gif_url else None
+    if m and filename:
+        return m.group(1) + filename
+    return ""
+
+
 def iwc_search(store_info, title_candidate, proxy_url="", per_page=20):
     config = _iwc_fetch_typesense_client_config(store_info["storeUrl"], proxy_url=proxy_url)
     model_path = _iwc_extract_model_path(store_info["storeUrl"])
@@ -520,7 +537,7 @@ def iwc_search(store_info, title_candidate, proxy_url="", per_page=20):
             "category": doc.get("category", ""),
             "publishDate": doc.get("publish_date"),
             "description": doc.get("description", ""),
-            "thumbnail": doc.get("thumbnail_url") or doc.get("preview_url") or "",
+            "thumbnail": _iwc_static_thumbnail(doc),
             "score": None,  # Typesense already returns hits ranked by relevance, no numeric score surfaced
         })
     return {"found": body.get("found", len(hits)), "totalInStore": None, "largeResultWarning": False, "hits": hits}

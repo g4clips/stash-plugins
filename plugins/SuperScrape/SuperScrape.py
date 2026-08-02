@@ -67,7 +67,9 @@ those plugins' configs are left untouched.
         },
         "proxyUrl": "<optional HTTP/HTTPS proxy URL>",
         "stashDbFirstEnabled": "<bool, default true -- check StashDB fingerprint before falling to site adapters>",
-        "markOrganizedDefault": "<bool, default false -- set organized:true on apply>"
+        "markOrganizedDefault": "<bool, default false -- set organized:true on apply>",
+        "addZzzUploadTagDefault": "<bool, default false -- JS-only, Python read_config() intentionally omits this>",
+        "skipZzzUploadForStashDbDefault": "<bool, default true -- JS-only, Python read_config() intentionally omits this; when on, addZzzUploadTagDefault is suppressed for StashDB-sourced matches>"
     }
 
 Dependencies:

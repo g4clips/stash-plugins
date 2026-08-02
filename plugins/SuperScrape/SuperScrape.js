@@ -176,6 +176,7 @@
       stashDbFirstEnabled: cfg.stashDbFirstEnabled !== undefined ? !!cfg.stashDbFirstEnabled : true,
       markOrganizedDefault: !!cfg.markOrganizedDefault,
       addZzzUploadTagDefault: !!cfg.addZzzUploadTagDefault,
+      skipZzzUploadForStashDbDefault: cfg.skipZzzUploadForStashDbDefault !== undefined ? !!cfg.skipZzzUploadForStashDbDefault : true,
     };
   }
 
@@ -419,10 +420,11 @@
     const stashDbIds = (item.viaStashDb && item.scrapeOutput?.remoteSiteId && item.stashDbBox?.endpoint)
       ? { stash_id: item.scrapeOutput.remoteSiteId, endpoint: item.stashDbBox.endpoint }
       : null;
+    const effectiveZzzUpload = item.addZzzUploadTag && !(item.skipZzzUploadForStashDb && item.viaStashDb);
     await applyToScene(
       item.sceneId, fieldChecks, selPerfNames, scraped, resolvedPerformers, resolvedStudio,
       item.current, item.contentUrl, coverPick, item.scrapedThumbnail, item.preselectedTagIds, item.markOrganized,
-      item.addZzzUploadTag, stashDbIds
+      effectiveZzzUpload, stashDbIds
     );
     await bumpLastUsed(item.storeKey, item.storeInfo);
   }
@@ -643,8 +645,8 @@
     setFooter(null);
 
     let cfg;
-    try { cfg = await readConfig(); } catch (_) { cfg = { stashDbFirstEnabled: true, markOrganizedDefault: false, addZzzUploadTagDefault: false }; }
-    const baseOpts = { markOrganized: !!cfg.markOrganizedDefault, addZzzUploadTag: !!cfg.addZzzUploadTagDefault };
+    try { cfg = await readConfig(); } catch (_) { cfg = { stashDbFirstEnabled: true, markOrganizedDefault: false, addZzzUploadTagDefault: false, skipZzzUploadForStashDbDefault: true }; }
+    const baseOpts = { markOrganized: !!cfg.markOrganizedDefault, addZzzUploadTag: !!cfg.addZzzUploadTagDefault, skipZzzUploadForStashDb: !!cfg.skipZzzUploadForStashDbDefault };
 
     if (!cfg.stashDbFirstEnabled) {
       renderFilenameInput(sceneId, baseOpts);
@@ -815,7 +817,7 @@
     try {
       cfg = await readConfig();
     } catch (_) {
-      cfg = { performerStoreMap: {}, stashDbFirstEnabled: true, markOrganizedDefault: false, addZzzUploadTagDefault: false };
+      cfg = { performerStoreMap: {}, stashDbFirstEnabled: true, markOrganizedDefault: false, addZzzUploadTagDefault: false, skipZzzUploadForStashDbDefault: true };
     }
     const recentEntries = Object.entries(cfg.performerStoreMap)
       .filter(([, e]) => e.lastUsedAt)
@@ -845,6 +847,10 @@
           <input type="checkbox" id="ss-toggle-zzz-upload" ${cfg.addZzzUploadTagDefault ? "checked" : ""} />
           <span>Add "zzz-upload" tag when applying</span>
         </label>
+        <label class="ss-item-label" style="margin:0">
+          <input type="checkbox" id="ss-toggle-skip-zzz-stashdb" ${cfg.skipZzzUploadForStashDbDefault ? "checked" : ""} />
+          <span>Skip zzz-upload tag for StashDB matches</span>
+        </label>
       </div>
       ${quickPickHtml}
       <p class="ss-hint">Filename to parse (edit if needed):</p>
@@ -862,12 +868,16 @@
     document.getElementById("ss-toggle-zzz-upload").addEventListener("change", e => {
       writeConfig({ addZzzUploadTagDefault: e.target.checked }).catch(() => {});
     });
+    document.getElementById("ss-toggle-skip-zzz-stashdb").addEventListener("change", e => {
+      writeConfig({ skipZzzUploadForStashDbDefault: e.target.checked }).catch(() => {});
+    });
 
     function currentOpts() {
       return {
         ...opts,
         markOrganized: document.getElementById("ss-toggle-mark-organized")?.checked ?? cfg.markOrganizedDefault,
         addZzzUploadTag: document.getElementById("ss-toggle-zzz-upload")?.checked ?? cfg.addZzzUploadTagDefault,
+        skipZzzUploadForStashDb: document.getElementById("ss-toggle-skip-zzz-stashdb")?.checked ?? cfg.skipZzzUploadForStashDbDefault,
       };
     }
 
@@ -1470,7 +1480,8 @@
         const stashDbIds = (opts.viaStashDb && scrapeOutput?.remoteSiteId && opts.stashDbBox?.endpoint)
           ? { stash_id: scrapeOutput.remoteSiteId, endpoint: opts.stashDbBox.endpoint }
           : null;
-        await applyToScene(sceneId, fieldChecks, selPerfs, scrapedForApply, resolvedPerformers, resolvedStudio, current, contentUrl, coverPick, scrapedThumbnail, selectedTagIds, opts.markOrganized, opts.addZzzUploadTag, stashDbIds);
+        const effectiveZzzUpload = opts.addZzzUploadTag && !(opts.skipZzzUploadForStashDb && opts.viaStashDb);
+        await applyToScene(sceneId, fieldChecks, selPerfs, scrapedForApply, resolvedPerformers, resolvedStudio, current, contentUrl, coverPick, scrapedThumbnail, selectedTagIds, opts.markOrganized, effectiveZzzUpload, stashDbIds);
         await bumpLastUsed(storeKey, storeInfo);
         setStatus("");
         if (opts.onApplied) opts.onApplied(); else renderDone();
@@ -2150,6 +2161,7 @@
       duplicates: [], preselectedTagIds: [], classification: "no-match", reason: "",
       viaStashDb: false, stashDbScenes: null, stashDbBox: null, markOrganized: !!runOpts.markOrganized,
       addZzzUploadTag: !!runOpts.addZzzUploadTag,
+      skipZzzUploadForStashDb: !!runOpts.skipZzzUploadForStashDb,
     };
 
     try {
@@ -2561,6 +2573,7 @@
       viaStashDb: item.viaStashDb,
       markOrganized: item.markOrganized,
       addZzzUploadTag: item.addZzzUploadTag,
+      skipZzzUploadForStashDb: item.skipZzzUploadForStashDb,
       stashDbBox: item.stashDbBox,
       onBack: () => { closeModal(); renderBatchQueueResults(); },
       onDismiss: () => { removeFromBatchQueue(item); closeModal(); renderBatchQueueResults(); },
@@ -2611,7 +2624,7 @@
     if (cfg.stashDbFirstEnabled) {
       try { stashDbBox = await findStashDbBox(); } catch (_) { stashDbBox = null; }
     }
-    const runOpts = { stashDbFirstEnabled: !!cfg.stashDbFirstEnabled, stashDbBox, markOrganized: !!cfg.markOrganizedDefault, addZzzUploadTag: !!cfg.addZzzUploadTagDefault };
+    const runOpts = { stashDbFirstEnabled: !!cfg.stashDbFirstEnabled, stashDbBox, markOrganized: !!cfg.markOrganizedDefault, addZzzUploadTag: !!cfg.addZzzUploadTagDefault, skipZzzUploadForStashDb: !!cfg.skipZzzUploadForStashDbDefault };
 
     const total = selectedIds.length;
     renderBatchProgress(0, total);
@@ -2635,7 +2648,7 @@
     let cfg, scenes;
     try {
       [cfg, scenes] = await Promise.all([
-        readConfig().catch(() => ({ stashDbFirstEnabled: true, markOrganizedDefault: false, addZzzUploadTagDefault: false })),
+        readConfig().catch(() => ({ stashDbFirstEnabled: true, markOrganizedDefault: false, addZzzUploadTagDefault: false, skipZzzUploadForStashDbDefault: true })),
         fetchBatchCandidateScenes(decoded),
       ]);
     } catch (e) {
@@ -2673,6 +2686,10 @@
           <input type="checkbox" id="ss-batch-toggle-zzz-upload" ${cfg.addZzzUploadTagDefault ? "checked" : ""} />
           <span>Add "zzz-upload" tag when applying</span>
         </label>
+        <label class="ss-item-label" style="margin:0">
+          <input type="checkbox" id="ss-batch-toggle-skip-zzz-stashdb" ${cfg.skipZzzUploadForStashDbDefault ? "checked" : ""} />
+          <span>Skip zzz-upload tag for StashDB matches</span>
+        </label>
       </div>
       <div class="ss-row">
         <input id="ss-batch-namefilter" class="ss-input" type="text" placeholder="Filter by filename/title…" />
@@ -2699,6 +2716,9 @@
     });
     document.getElementById("ss-batch-toggle-zzz-upload").addEventListener("change", e => {
       writeConfig({ addZzzUploadTagDefault: e.target.checked }).catch(() => {});
+    });
+    document.getElementById("ss-batch-toggle-skip-zzz-stashdb").addEventListener("change", e => {
+      writeConfig({ skipZzzUploadForStashDbDefault: e.target.checked }).catch(() => {});
     });
 
     document.getElementById("ss-batch-namefilter").addEventListener("input", e => {

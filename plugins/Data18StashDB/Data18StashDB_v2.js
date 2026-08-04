@@ -424,9 +424,9 @@
       if (isMovie) {
         try {
           const movie = await runTask("Scrape Data18 Movie",
-            { mode: "scrape_movie", url }, "Scraping movie page…");
+            { mode: "scrape_movie", url, group_id: groupId }, "Scraping movie page…");
           setStatus("");
-          renderScenePicker(sceneId, movie, groupId);
+          renderScenePicker(sceneId, movie, groupId, movie.fromCache);
         } catch (e) {
           setError(e.message); btn.disabled = false; btn.textContent = "Go"; setStatus("");
         }
@@ -435,7 +435,7 @@
           const data = await runTask("Scrape Data18 Scene",
             { mode: "scrape_scene", url, group_id: groupId }, "Scraping scene…");
           setStatus("");
-          renderQuery(sceneId, data.scraped, data.query, groupId, data.fromCache);
+          renderQuery(sceneId, data.scraped, data.query, groupId);
         } catch (e) {
           setError(e.message); btn.disabled = false; btn.textContent = "Go"; setStatus("");
         }
@@ -456,7 +456,7 @@
 
   // ── Step 1b: Movie scene picker ────────────────────────────────────────────
 
-  function renderScenePicker(sceneId, movie, groupId = "") {
+  function renderScenePicker(sceneId, movie, groupId = "", fromCache = false) {
     setError("");
     const cardsHtml = movie.scenes.map((s, i) => `
       <div class="d18-scene-pick-card" data-idx="${i}">
@@ -477,6 +477,9 @@
           ${movie.movieImage ? `<img class="d18-movie-thumb" src="${esc(movie.movieImage)}" alt="">` : ""}
           <div class="d18-movie-title">${esc(movie.movieTitle)}</div>
         </div>` : ""}
+      ${fromCache
+        ? `<div class="d18-hint" style="color:#75b798;margin-top:.2rem">⚡ Scene list from cache</div>`
+        : ""}
       <p class="d18-hint">Select the scene that matches the one you are editing:</p>
       <div class="d18-scene-pick-list">${cardsHtml}</div>
       <div class="d18-row" style="margin-top:.5rem">
@@ -492,7 +495,7 @@
             { mode: "scrape_scene", url: scene.sceneUrl, group_id: groupId },
             "Scraping scene…");
           setStatus("");
-          renderQuery(sceneId, data.scraped, data.query, groupId, data.fromCache);
+          renderQuery(sceneId, data.scraped, data.query, groupId);
         } catch (e) {
           setError(e.message); setStatus("");
           card.classList.remove("d18-card-loading");
@@ -504,7 +507,7 @@
 
   // ── Step 2: Query builder ─────────────────────────────────────────────────
 
-  function renderQuery(sceneId, scraped, initialQuery, groupId = "", fromCache = false) {
+  function renderQuery(sceneId, scraped, initialQuery, groupId = "") {
     setError("");
     const perfs = scraped.performers || [];
     const parts = [];
@@ -529,9 +532,6 @@
         </div>
       </div>
       <p class="d18-hint" style="margin-top:.6rem">Click tokens to add/remove from query, or edit freely:</p>
-      ${fromCache
-        ? `<div class="d18-hint" style="color:#75b798;margin-top:.2rem">⚡ StashDB results from cache</div>`
-        : ""}
       <div class="d18-pills">${pillsHtml}</div>
       <div class="d18-row">
         <input id="d18-query" class="d18-input" type="text"

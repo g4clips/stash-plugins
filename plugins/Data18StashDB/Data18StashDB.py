@@ -604,42 +604,47 @@ def main():
 
     try:
         if mode == "scrape_movie":
-            result = {"output": scrape_movie(url)}
-
-        elif mode == "scrape_scene":
             group_id = args.get("group_id", "").strip()
 
-            # Check cache first if we have a group ID
-            cached_movie = None
+            # Check cache first
+            cached = None
             if group_id:
                 cache = read_cache(stash_url, api_key)
-                cached_movie = cache.get(group_id)
-                if cached_movie:
-                    log(f"Cache hit for group {group_id}")
+                cached = cache.get(group_id)
+                if cached:
+                    log(f"Cache hit for group {group_id} — skipping Data18 movie fetch")
 
-            scraped = scrape_scene(url)
+            if cached:
+                result = {"output": {**cached, "fromCache": True}}
+                store_result(stash_url, api_key, result)
+                print(json.dumps(result))
+                return
+
+            data = scrape_movie(url)
+            result = {"output": {**data, "fromCache": False}}
+
+            # Store in cache if we have a group ID
+            if group_id and data.get("scenes"):
+                cache = read_cache(stash_url, api_key)
+                cache[group_id] = {
+                    "groupId":  group_id,
+                    "cachedAt": int(time.time()),
+                    "movieUrl": url,
+                    **data,  # movieTitle, movieImage, scenes
+                }
+                write_cache(stash_url, api_key, cache)
+                log(f"Cached movie scrape for group {group_id} ({len(data['scenes'])} scenes)")
+
+            store_result(stash_url, api_key, result)
+            print(json.dumps(result))
+            return
+
+        elif mode == "scrape_scene":
+            # Scrape scene AND search StashDB in one task
+            scraped    = scrape_scene(url)
             # Allow JS to pass a custom query override (for re-search)
-            query   = args.get("query_override", "").strip() or build_query(scraped)
-
-            if cached_movie:
-                # Use cached candidates — skip StashDB search entirely
-                candidates   = cached_movie.get("candidates", [])
-                cached_query = cached_movie.get("query", query)
-            else:
-                # Full StashDB search
-                candidates   = search_stashdb(query)
-                cached_query = query
-
-                # Store in cache if we have a group ID
-                if group_id and candidates:
-                    cache = read_cache(stash_url, api_key)
-                    cache[group_id] = {
-                        "groupId":    group_id,
-                        "cachedAt":   int(time.time()),
-                        "query":      query,
-                        "candidates": candidates,
-                    }
-                    write_cache(stash_url, api_key, cache)
+            query      = args.get("query_override", "").strip() or build_query(scraped)
+            candidates = search_stashdb(query)
 
             # Resolve each candidate's performers, studio, and tags against
             # local Stash (including aliases) so the JS picker can show
@@ -653,12 +658,7 @@ def main():
                 candidate["resolved_studio"]     = resolve_studio(stash_url, api_key, studio_name)
                 candidate["resolved_tags"]        = resolve_tags(stash_url, api_key, tag_names)
 
-            result = {"output": {
-                "scraped":    scraped,
-                "candidates": candidates,
-                "query":      cached_query,
-                "fromCache":  cached_movie is not None,
-            }}
+            result = {"output": {"scraped": scraped, "candidates": candidates, "query": query}}
 
         elif mode == "clear_cache_if_done":
             group_id = args.get("group_id", "").strip()

@@ -385,7 +385,9 @@
         const u = (g.group?.urls || []).find(url => url.includes("data18.com/movies/"));
         if (u) { groupUrl = u; groupName = g.group.name; break; }
       }
-      renderInput(sceneId, groupUrl, groupName);
+      const primaryGroup = (scene?.groups || []).find(g => g.scene_index !== 99);
+      const groupId = primaryGroup?.group?.id || "";
+      renderInput(sceneId, groupUrl, groupName, groupId);
     }).catch(() => {
       setStatus("");
       renderInput(sceneId);
@@ -394,7 +396,7 @@
 
   // ── Step 1: URL input ──────────────────────────────────────────────────────
 
-  function renderInput(sceneId, prefillUrl, groupName) {
+  function renderInput(sceneId, prefillUrl, groupName, groupId = "") {
     setError(""); setStatus("");
     getContent().innerHTML = `
       <p class="d18-hint">
@@ -424,16 +426,16 @@
           const movie = await runTask("Scrape Data18 Movie",
             { mode: "scrape_movie", url }, "Scraping movie page…");
           setStatus("");
-          renderScenePicker(sceneId, movie);
+          renderScenePicker(sceneId, movie, groupId);
         } catch (e) {
           setError(e.message); btn.disabled = false; btn.textContent = "Go"; setStatus("");
         }
       } else {
         try {
           const data = await runTask("Scrape Data18 Scene",
-            { mode: "scrape_scene", url }, "Scraping scene…");
+            { mode: "scrape_scene", url, group_id: groupId }, "Scraping scene…");
           setStatus("");
-          renderQuery(sceneId, data.scraped, data.query);
+          renderQuery(sceneId, data.scraped, data.query, groupId, data.fromCache);
         } catch (e) {
           setError(e.message); btn.disabled = false; btn.textContent = "Go"; setStatus("");
         }
@@ -454,7 +456,7 @@
 
   // ── Step 1b: Movie scene picker ────────────────────────────────────────────
 
-  function renderScenePicker(sceneId, movie) {
+  function renderScenePicker(sceneId, movie, groupId = "") {
     setError("");
     const cardsHtml = movie.scenes.map((s, i) => `
       <div class="d18-scene-pick-card" data-idx="${i}">
@@ -487,22 +489,22 @@
         card.classList.add("d18-card-loading");
         try {
           const data = await runTask("Scrape Data18 Scene",
-            { mode: "scrape_scene", url: scene.sceneUrl },
+            { mode: "scrape_scene", url: scene.sceneUrl, group_id: groupId },
             "Scraping scene…");
           setStatus("");
-          renderQuery(sceneId, data.scraped, data.query);
+          renderQuery(sceneId, data.scraped, data.query, groupId, data.fromCache);
         } catch (e) {
           setError(e.message); setStatus("");
           card.classList.remove("d18-card-loading");
         }
       });
     });
-    document.getElementById("d18-back-pick").onclick = () => renderInput(sceneId);
+    document.getElementById("d18-back-pick").onclick = () => renderInput(sceneId, undefined, undefined, groupId);
   }
 
   // ── Step 2: Query builder ─────────────────────────────────────────────────
 
-  function renderQuery(sceneId, scraped, initialQuery) {
+  function renderQuery(sceneId, scraped, initialQuery, groupId = "", fromCache = false) {
     setError("");
     const perfs = scraped.performers || [];
     const parts = [];
@@ -527,6 +529,9 @@
         </div>
       </div>
       <p class="d18-hint" style="margin-top:.6rem">Click tokens to add/remove from query, or edit freely:</p>
+      ${fromCache
+        ? `<div class="d18-hint" style="color:#75b798;margin-top:.2rem">⚡ StashDB results from cache</div>`
+        : ""}
       <div class="d18-pills">${pillsHtml}</div>
       <div class="d18-row">
         <input id="d18-query" class="d18-input" type="text"
@@ -643,13 +648,15 @@
             findDuplicates(match, resolvedPerfs),
           ]);
           setStatus("");
+          const primaryGroup = (current.groups || []).find(g => g.scene_index !== 99);
+          const groupId = primaryGroup?.group?.id || "";
           const dupes = allDupes.filter(d => d.id !== sceneId);
           if (dupes.length) {
             renderDuplicates(sceneId, current, match, scraped, results, query,
-                             resolvedPerfs, resolvedStudio, resolvedTags, dupes);
+                             resolvedPerfs, resolvedStudio, resolvedTags, dupes, groupId);
           } else {
             renderApply(sceneId, current, match, scraped, results, query,
-                        resolvedPerfs, resolvedStudio, resolvedTags);
+                        resolvedPerfs, resolvedStudio, resolvedTags, groupId);
           }
         } catch(e) {
           setError(e.message); setStatus("");
@@ -718,7 +725,7 @@
   // ── Step 2b: Duplicate scene warning ─────────────────────────────────────
 
   function renderDuplicates(sceneId, current, match, scraped, results, query,
-                            resolvedPerfs, studioMatch, resolvedTags, dupes) {
+                            resolvedPerfs, studioMatch, resolvedTags, dupes, groupId = "") {
     setError("");
 
     function fmtSize(bytes) {
@@ -730,7 +737,7 @@
 
     const goApply = (targetId, targetCurrent) =>
       renderApply(targetId, targetCurrent, match, scraped, results, query,
-                  resolvedPerfs, studioMatch, resolvedTags);
+                  resolvedPerfs, studioMatch, resolvedTags, groupId);
 
     const cardsHtml = dupes.map((d, i) => {
       const groupLabels = (d.groups || [])
@@ -871,7 +878,7 @@
   }
 
   function renderApply(sceneId, current, match, scraped, results, query,
-                       resolvedPerfs, studioMatch, resolvedTags) {
+                       resolvedPerfs, studioMatch, resolvedTags, groupId = "") {
     setError("");
 
     const currentPerfs = (current.performers || []).map(p => p.name);
@@ -1000,6 +1007,11 @@
         await applyToScene(sceneId, match, fieldChecks, selPerfs, selTags,
                            resolvedPerfs, studioMatch, resolvedTags, current);
         setStatus("");
+        if (groupId) {
+          runTask("Clear Cache If Done",
+            { mode: "clear_cache_if_done", group_id: groupId },
+            "").catch(() => {});
+        }
         renderDone(sceneId);
       } catch (e) {
         setError(e.message);

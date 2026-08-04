@@ -1,6 +1,6 @@
 name: Data18StashDB
 description: Scrape Data18 and match against StashDB. Adds a Data18 button to scene pages.
-version: "3.2.0"
+version: "3.3.0"
 
 exec:
   - python
@@ -33,3 +33,8 @@ tasks:
     description: Fetches a data18.com/scenes/ page and searches StashDB in one step.
     defaultArgs:
       mode: scrape_scene
+
+  - name: Clear Cache If Done
+    description: Clears the movie cache for a group once all scenes have been scraped.
+    defaultArgs:
+      mode: clear_cache_if_done

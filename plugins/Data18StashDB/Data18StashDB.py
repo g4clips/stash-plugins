@@ -16,6 +16,7 @@ Dependencies:
 import json
 import re
 import sys
+import time
 from datetime import datetime
 
 import urllib3
@@ -498,6 +499,78 @@ def store_result(stash_url, api_key, result):
     log("Result stored")
 
 
+def read_cache(stash_url, api_key):
+    """Read the movieCache from plugin config, keyed by group ID."""
+    try:
+        data = local_gql(stash_url, api_key,
+            "query { configuration { plugins } }")
+        plugins = data["configuration"]["plugins"] or {}
+        cfg = plugins.get("Data18StashDB") or {}
+        return cfg.get("movieCache") or {}
+    except Exception as e:
+        log(f"Cache read failed: {e}")
+        return {}
+
+
+def write_cache(stash_url, api_key, movie_cache):
+    """Write updated movieCache back to plugin config (read-modify-write)."""
+    try:
+        data = local_gql(stash_url, api_key,
+            "query { configuration { plugins } }")
+        plugins = data["configuration"]["plugins"] or {}
+        current = dict(plugins.get("Data18StashDB") or {})
+        current["movieCache"] = movie_cache
+        local_gql(stash_url, api_key,
+            "mutation C($id:ID!,$input:Map!){configurePlugin(plugin_id:$id,input:$input)}",
+            {"id": "Data18StashDB", "input": current})
+        log(f"Cache updated ({len(movie_cache)} entries)")
+    except Exception as e:
+        log(f"Cache write failed: {e}")
+
+
+def count_unscraped_scenes(stash_url, api_key, group_id):
+    """
+    Count scenes in the group that don't yet have a stashdb.org stash_id.
+    Uses scene_count - 1 to exclude the source movie file at scene_index 99.
+    Returns count of scenes still needing scraping, or -1 on error.
+
+    Confirmed working query shape via playground introspection:
+    findGroup.scene_count = total scenes including #99
+    findGroup.scenes = [{ id, stash_ids: [{ endpoint }] }]
+    scene_index is NOT available on this query — exclusion handled via count - 1.
+    """
+    try:
+        data = local_gql(stash_url, api_key, """
+            query FindGroup($id: ID!) {
+                findGroup(id: $id) {
+                    scene_count
+                    scenes {
+                        id
+                        stash_ids { endpoint }
+                    }
+                }
+            }
+        """, {"id": group_id})
+        group = data["findGroup"]
+        if not group:
+            return -1
+
+        total = (group.get("scene_count") or 0) - 1  # subtract 1 for scene #99
+        if total <= 0:
+            return -1
+
+        already_scraped = sum(
+            1 for s in (group.get("scenes") or [])
+            if any("stashdb.org" in (sid.get("endpoint") or "")
+                   for sid in (s.get("stash_ids") or []))
+        )
+
+        return max(0, total - already_scraped)
+    except Exception as e:
+        log(f"Unscraped count failed: {e}")
+        return -1
+
+
 # ── Main ───────────────────────────────────────────────────────────────────────
 
 def get_stash_connection(plugin_input):
@@ -534,11 +607,39 @@ def main():
             result = {"output": scrape_movie(url)}
 
         elif mode == "scrape_scene":
-            # Scrape scene AND search StashDB in one task
-            scraped    = scrape_scene(url)
+            group_id = args.get("group_id", "").strip()
+
+            # Check cache first if we have a group ID
+            cached_movie = None
+            if group_id:
+                cache = read_cache(stash_url, api_key)
+                cached_movie = cache.get(group_id)
+                if cached_movie:
+                    log(f"Cache hit for group {group_id}")
+
+            scraped = scrape_scene(url)
             # Allow JS to pass a custom query override (for re-search)
-            query      = args.get("query_override", "").strip() or build_query(scraped)
-            candidates = search_stashdb(query)
+            query   = args.get("query_override", "").strip() or build_query(scraped)
+
+            if cached_movie:
+                # Use cached candidates — skip StashDB search entirely
+                candidates   = cached_movie.get("candidates", [])
+                cached_query = cached_movie.get("query", query)
+            else:
+                # Full StashDB search
+                candidates   = search_stashdb(query)
+                cached_query = query
+
+                # Store in cache if we have a group ID
+                if group_id and candidates:
+                    cache = read_cache(stash_url, api_key)
+                    cache[group_id] = {
+                        "groupId":    group_id,
+                        "cachedAt":   int(time.time()),
+                        "query":      query,
+                        "candidates": candidates,
+                    }
+                    write_cache(stash_url, api_key, cache)
 
             # Resolve each candidate's performers, studio, and tags against
             # local Stash (including aliases) so the JS picker can show
@@ -552,7 +653,28 @@ def main():
                 candidate["resolved_studio"]     = resolve_studio(stash_url, api_key, studio_name)
                 candidate["resolved_tags"]        = resolve_tags(stash_url, api_key, tag_names)
 
-            result = {"output": {"scraped": scraped, "candidates": candidates, "query": query}}
+            result = {"output": {
+                "scraped":    scraped,
+                "candidates": candidates,
+                "query":      cached_query,
+                "fromCache":  cached_movie is not None,
+            }}
+
+        elif mode == "clear_cache_if_done":
+            group_id = args.get("group_id", "").strip()
+            if group_id:
+                remaining = count_unscraped_scenes(stash_url, api_key, group_id)
+                if remaining == 0:
+                    cache = read_cache(stash_url, api_key)
+                    if group_id in cache:
+                        del cache[group_id]
+                        write_cache(stash_url, api_key, cache)
+                        log(f"Cache cleared for group {group_id} — all scenes scraped")
+                    result = {"output": {"cleared": True, "remaining": 0}}
+                else:
+                    result = {"output": {"cleared": False, "remaining": remaining}}
+            else:
+                result = {"output": {"cleared": False, "remaining": -1}}
 
         else:
             result = {"error": f"Unknown mode: {mode!r}"}

@@ -736,15 +736,15 @@ if (window._markerScenesLoaded) {
         ${scenesHtml}
       </div>
       <div style="background:#1e3a52;border:1px solid #2d6a9f;border-radius:4px;padding:8px 10px;margin-bottom:12px;font-size:13px;color:#7ab3e0;">
-        Scrub to the start of scene ${nextSceneNum}, then click "Create scene ${nextSceneNum}".
+        Scrub to the end of scene ${nextSceneNum}, then click "Mark end of scene ${nextSceneNum}".
       </div>
       ${errorHtml}
       <div style="display:flex;gap:8px;">
         <button id="ms-last-btn" class="btn btn-secondary" style="flex:1;font-size:13px;" ${_tabState.busy ? "disabled" : ""}>
-          🏁 Last scene
+          🏁 This is the last scene
         </button>
         <button id="ms-create-btn" class="btn btn-primary" style="flex:1;font-size:13px;" ${(_tabState.busy || !_tabState.tagId) ? "disabled" : ""}>
-          ${_tabState.busy ? "Working..." : `+ Create scene ${nextSceneNum}`}
+          ${_tabState.busy ? "Working..." : `Mark end of scene ${nextSceneNum}`}
         </button>
       </div>
     `;
@@ -756,40 +756,44 @@ if (window._markerScenesLoaded) {
 
     async function handleCreate(isLast) {
       if (_tabState.busy) return;
-      const timestamp = Math.floor(getCurrentTimestamp());
+      const endTimestamp = Math.floor(getCurrentTimestamp());
       const sceneIndex = _tabState.scenes.length + 1;
       const group = scene.groups?.[0]?.group;
       const origin = window.location.origin;
 
       if (!group) { _tabState.error = "Scene has no group."; rerender(); return; }
 
+      // Start of this scene = end of previous scene (or 0 for first scene)
+      const startTimestamp = _tabState.scenes.length > 0
+        ? _tabState.scenes[_tabState.scenes.length - 1].end
+        : 0;
+
       _tabState.busy = true;
       _tabState.error = null;
       rerender();
 
-      if (_tabState.scenes.length > 0) {
-        _tabState.scenes[_tabState.scenes.length - 1].end = timestamp;
-      }
-
       try {
+        // Create marker at the START of this scene
         await gql(MARKER_CREATE, {
           input: {
             scene_id: scene.id,
             title: `Scene ${sceneIndex}`,
-            seconds: timestamp,
+            seconds: startTimestamp,
             primary_tag_id: _tabState.tagId,
           }
         });
 
+        // Create virtual scene with URL pointing to start of this scene
         const input = {
           title: `${group.name} - Scene ${sceneIndex}`,
-          urls: [`${origin}/scenes/${scene.id}?t=${timestamp}`],
+          urls: [`${origin}/scenes/${scene.id}?t=${startTimestamp}`],
           organized: false,
           groups: [{ group_id: group.id, scene_index: sceneIndex }],
         };
         if (scene.studio) input.studio_id = scene.studio.id;
         await gql(SCENE_CREATE, { input });
 
+        // On first scene, update original to index 99
         if (sceneIndex === 1) {
           await gql(SCENE_UPDATE, {
             input: {
@@ -799,11 +803,43 @@ if (window._markerScenesLoaded) {
           });
         }
 
+        // Record this scene with its start and end
         _tabState.scenes.push({
           index: sceneIndex,
-          start: timestamp,
-          end: isLast ? (scene.files?.[0]?.duration ?? null) : null,
+          start: startTimestamp,
+          end: isLast ? (scene.files?.[0]?.duration ?? null) : endTimestamp,
         });
+
+        // If this is the last scene, also create the final scene
+        if (isLast) {
+          const lastSceneIndex = sceneIndex + 1;
+          const lastStart = endTimestamp;
+          const lastEnd = scene.files?.[0]?.duration ?? null;
+
+          await gql(MARKER_CREATE, {
+            input: {
+              scene_id: scene.id,
+              title: `Scene ${lastSceneIndex}`,
+              seconds: lastStart,
+              primary_tag_id: _tabState.tagId,
+            }
+          });
+
+          const lastInput = {
+            title: `${group.name} - Scene ${lastSceneIndex}`,
+            urls: [`${origin}/scenes/${scene.id}?t=${lastStart}`],
+            organized: false,
+            groups: [{ group_id: group.id, scene_index: lastSceneIndex }],
+          };
+          if (scene.studio) lastInput.studio_id = scene.studio.id;
+          await gql(SCENE_CREATE, { input: lastInput });
+
+          _tabState.scenes.push({
+            index: lastSceneIndex,
+            start: lastStart,
+            end: lastEnd,
+          });
+        }
 
       } catch (err) {
         _tabState.error = err.message;

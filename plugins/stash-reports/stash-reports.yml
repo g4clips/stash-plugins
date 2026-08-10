@@ -1,0 +1,31 @@
+name: Stash Reports
+description: >
+  Library-wide reports on top of what Stash's built-in stats already show —
+  starting with a video/audio codec breakdown, drill-down to the scenes
+  behind each codec pair, and a one-click "not Firefox-optimal" report
+  (anything that isn't h264 video + aac audio).
+version: "1.0.0"
+
+ui:
+  javascript:
+    - stash-reports.js
+  css:
+    - stash-reports.css
+
+# Exposed in Settings -> Plugins -> Stash Reports. Read at report-run time
+# via `configuration.plugins["stash-reports"]` (see stash-plugin-dev-notes
+# 2026-07-19 #1 for why configurePlugin/settings, not a fake tag, is used
+# for plugin-owned config). Both fall back to "h264"/"aac" if unset.
+settings:
+  targetVideoCodec:
+    displayName: "Optimal video codec"
+    description: >
+      Video codec (ffprobe codec name, e.g. "h264") treated as fully
+      browser-compatible when building the "not optimal" report.
+    type: STRING
+  targetAudioCodec:
+    displayName: "Optimal audio codec"
+    description: >
+      Audio codec (ffprobe codec name, e.g. "aac") treated as fully
+      browser-compatible when building the "not optimal" report.
+    type: STRING

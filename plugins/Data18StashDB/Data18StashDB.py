@@ -329,6 +329,22 @@ def scrape_scene(url):
     return result
 
 
+def scrape_all_scenes(scene_urls):
+    """
+    Pre-scrape all scene pages from a movie in sequence.
+    Returns dict keyed by scene URL, value is full scrape result.
+    Failures are logged and skipped — partial results are fine.
+    """
+    results = {}
+    for url in scene_urls:
+        try:
+            log(f"Pre-scraping scene: {url}")
+            results[url] = scrape_scene(url)
+        except Exception as e:
+            log(f"Pre-scrape failed for {url}: {e}")
+    return results
+
+
 # ── StashDB search ─────────────────────────────────────────────────────────────
 
 def build_query(scraped):
@@ -625,15 +641,26 @@ def main():
 
             # Store in cache if we have a group ID
             if group_id and data.get("scenes"):
+                scene_urls = [s["sceneUrl"] for s in data["scenes"] if s.get("sceneUrl")]
+                log(f"Pre-scraping {len(scene_urls)} scenes for group {group_id}")
+                scene_data = scrape_all_scenes(scene_urls)
+
+                # Attach pre-scraped data to each scene stub so the picker can show it
+                for scene in data["scenes"]:
+                    su = scene.get("sceneUrl", "")
+                    if su in scene_data:
+                        scene["cachedSceneData"] = scene_data[su]
+
                 cache = read_cache(stash_url, api_key)
                 cache[group_id] = {
-                    "groupId":  group_id,
-                    "cachedAt": int(time.time()),
-                    "movieUrl": url,
-                    **data,  # movieTitle, movieImage, scenes
+                    "groupId":   group_id,
+                    "cachedAt":  int(time.time()),
+                    "movieUrl":  url,
+                    "sceneData": scene_data,
+                    **data,  # movieTitle, movieImage, scenes (with cachedSceneData attached)
                 }
                 write_cache(stash_url, api_key, cache)
-                log(f"Cached movie scrape for group {group_id} ({len(data['scenes'])} scenes)")
+                log(f"Cached movie + {len(scene_data)} scenes for group {group_id}")
 
             store_result(stash_url, api_key, result)
             print(json.dumps(result))
@@ -641,7 +668,20 @@ def main():
 
         elif mode == "scrape_scene":
             # Scrape scene AND search StashDB in one task
-            scraped    = scrape_scene(url)
+            group_id = args.get("group_id", "").strip()
+
+            # Check movie cache for pre-scraped scene data
+            cached_scene = None
+            if group_id:
+                cache = read_cache(stash_url, api_key)
+                cached_movie = cache.get(group_id)
+                if cached_movie:
+                    scene_data = cached_movie.get("sceneData") or {}
+                    cached_scene = scene_data.get(url)
+                    if cached_scene:
+                        log(f"Scene cache hit for {url}")
+
+            scraped = cached_scene if cached_scene else scrape_scene(url)
             # Allow JS to pass a custom query override (for re-search)
             query      = args.get("query_override", "").strip() or build_query(scraped)
             candidates = search_stashdb(query)
@@ -658,7 +698,12 @@ def main():
                 candidate["resolved_studio"]     = resolve_studio(stash_url, api_key, studio_name)
                 candidate["resolved_tags"]        = resolve_tags(stash_url, api_key, tag_names)
 
-            result = {"output": {"scraped": scraped, "candidates": candidates, "query": query}}
+            result = {"output": {
+                "scraped":    scraped,
+                "candidates": candidates,
+                "query":      query,
+                "fromCache":  cached_scene is not None,
+            }}
 
         elif mode == "clear_cache_if_done":
             group_id = args.get("group_id", "").strip()

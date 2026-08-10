@@ -463,6 +463,7 @@
         <div class="d18-scene-pick-thumb">
           ${s.image ? `<img src="${esc(s.image)}" alt="">` : `<div class="d18-no-img"></div>`}
           <span class="d18-scene-num">Scene ${s.sceneIndex}</span>
+          ${s.cachedSceneData ? `<span class="d18-cache-badge" title="Scene data pre-cached">⚡</span>` : ""}
         </div>
         <div class="d18-scene-pick-info">
           <div class="d18-scene-pick-title">${esc(s.title || "Scene " + s.sceneIndex)}</div>

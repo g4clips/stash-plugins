@@ -24,9 +24,8 @@ fix from real errors, not just review the diff.
 
 ## What it does
 
-- **Floating launcher button** (bottom-right, always present) opens a
-  full-screen report panel. There's also a Settings → Tools entry using
-  the same anchor-clone pattern as FindDuplicates/marker-scenes.
+- **Settings → Tools entry** opens a full-screen report panel, using the
+  same anchor-clone pattern as FindDuplicates/marker-scenes.
 - **Overview screen:** total scenes/size/duration, an optimal-vs-not
   compatibility bar (target codec pair configurable — see below), and
   breakdown tables by video+audio codec pair, video codec alone, audio
@@ -63,12 +62,15 @@ fix from real errors, not just review the diff.
   (Settings → Plugins → Stash Reports), read via
   `configuration.plugins["stash-reports"]` — same config-store mechanism
   documented in dev-notes-2026-07-19 #1. Defaults to `h264`/`aac` if unset.
-- **Entry point is a floating button, not a navbar item.** The team's own
-  notes flag that guessing Stash's internal navbar class names (e.g.
-  `.navbar-buttons`) needs live verification before relying on it. A fixed
-  `position: fixed` button avoids that risk entirely — it doesn't depend
-  on any Stash-internal selector. The Settings→Tools entry is included too
-  since that *is* a documented, previously-proven injection point.
+- **Entry point is Settings → Tools only, not a `/stats`-page button.** A
+  `/stats` injection was investigated and rejected: `Stats.tsx` (confirmed
+  against a shallow clone of stashapp/stash) has no
+  `PatchComponent`/`PatchContainerComponent` hook, and the only DOM anchors
+  on that page are fragile/ambiguous — three `.stats` divs (one per stat
+  group, not unique) and `div.mt-5` (unique but untested as an anchor). The
+  Settings→Tools anchor-clone pattern (`a[href="/sceneDuplicateChecker"]`,
+  `a[href="/sceneFilenameParser"]`) is already proven elsewhere in this
+  repo, so that's the only entry point.
 - **Plain-DOM modal, not `patch.after`.** This plugin does async data
   loading (paginated GraphQL) as its core function, so per
   dev-notes-2026-07-26 §5 ("if your plugin calls an async function before
@@ -101,10 +103,10 @@ fix from real errors, not just review the diff.
       library, but confirm load time is tolerable for your actual scene
       count. No loading-time optimization (e.g. requesting fewer fields
       for the aggregation pass) has been attempted yet.
-- [ ] Test the Settings → Tools injection against the live Tools page —
-      the anchor selectors (`/sceneDuplicateChecker`, `/sceneFilenameParser`)
-      are copied from working code in FindDuplicates-era notes but haven't
-      been re-confirmed on the current Stash version.
+- [ ] Confirm the `a[href="/sceneDuplicateChecker"]` and
+      `a[href="/sceneFilenameParser"]` anchor selectors are still valid on
+      the live Tools page for the current Stash version — this plugin's
+      only entry point depends on them.
 - [ ] Test with 0 scenes, and with a library that has zero fileless scenes
       (make sure the "excluded from the count below" copy doesn't show up
       when `filelessCount === 0` — it's gated correctly in code, just

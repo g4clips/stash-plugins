@@ -4,7 +4,7 @@ description: >
   starting with a video/audio codec breakdown, drill-down to the scenes
   behind each codec pair, and a one-click "not Firefox-optimal" report
   (anything that isn't h264 video + aac audio).
-version: "1.0.0"
+version: "1.1.0"
 
 ui:
   javascript:

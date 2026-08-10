@@ -1,6 +1,6 @@
 // Stash Reports
-// Adds a "Reports" launcher (floating button + Settings > Tools entry) that
-// opens a full-screen panel with library-wide codec reports:
+// Adds a "Reports" entry under Settings > Tools that opens a full-screen
+// panel with library-wide codec reports:
 //   - summary cards + Firefox-compatibility callout (h264/aac by default,
 //     configurable in Settings -> Plugins -> Stash Reports)
 //   - breakdown table by video+audio codec pair (and by video / audio alone)
@@ -811,22 +811,10 @@
   }
 
   // ---------------------------------------------------------------------
-  // Entry points — floating launcher button (robust, no selector guessing)
-  // and a Settings > Tools panel entry (documented pattern, see
+  // Entry point — Settings > Tools panel entry (documented pattern, see
   // stash-plugin-dev-notes-2026-07-15-v2.md "Injecting into Settings ->
   // Tools page").
   // ---------------------------------------------------------------------
-  function injectLauncherButton() {
-    if (document.getElementById("sr-launcher-btn")) return;
-    const btn = document.createElement("button");
-    btn.id = "sr-launcher-btn";
-    btn.type = "button";
-    btn.title = "Stash Reports";
-    btn.textContent = "📊";
-    btn.addEventListener("click", openModal);
-    document.body.appendChild(btn);
-  }
-
   function injectToolsEntry() {
     if (document.getElementById("sr-tools-entry")) return true;
 
@@ -866,7 +854,6 @@
   }
 
   function onLocationChange() {
-    injectLauncherButton();
     if (isToolsPage()) {
       if (!injectToolsEntry()) {
         // Tools panel content mounts async — retry briefly.

@@ -4,30 +4,6 @@
    already proven out in Data18StashDB / TagChips (see
    stash-plugin-ui-patterns-2026-07-15.md and dev-notes-v2 #13). */
 
-#sr-launcher-btn {
-  position: fixed;
-  right: 22px;
-  bottom: 22px;
-  z-index: 9998;
-  width: 52px;
-  height: 52px;
-  border-radius: 50%;
-  background: #1e1e2e;
-  border: 1px solid #3a3a4a;
-  color: #eee;
-  font-size: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
-  transition: transform 0.12s, background 0.12s;
-}
-#sr-launcher-btn:hover {
-  background: #26263a;
-  transform: scale(1.06);
-}
-
 #sr-tools-entry button {
   white-space: nowrap;
 }

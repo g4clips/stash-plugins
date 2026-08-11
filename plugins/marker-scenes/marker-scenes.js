@@ -73,6 +73,10 @@ if (window._markerScenesLoaded) {
           id
           title
           seconds
+          primary_tag {
+            id
+            name
+          }
         }
       }
     }
@@ -123,6 +127,46 @@ if (window._markerScenesLoaded) {
         groups {
           group { id }
           scene_index
+        }
+      }
+    }
+  `;
+
+  const SCENE_DESTROY = `
+    mutation SceneDestroy($id: ID!) {
+      sceneDestroy(input: { id: $id })
+    }
+  `;
+
+  const SCENE_MARKER_DESTROY = `
+    mutation SceneMarkerDestroy($id: ID!) {
+      sceneMarkerDestroy(id: $id)
+    }
+  `;
+
+  const FIND_GROUP_SCENES = `
+    query FindGroupScenes($group_id: ID!) {
+      findScenes(
+        scene_filter: {
+          groups: { value: $group_id, modifier: INCLUDES }
+        }
+        filter: { per_page: -1 }
+      ) {
+        scenes {
+          id
+          title
+          urls
+          files { id }
+          groups {
+            group { id }
+            scene_index
+          }
+          scene_markers {
+            id
+            title
+            seconds
+            primary_tag { id name }
+          }
         }
       }
     }
@@ -710,11 +754,17 @@ if (window._markerScenesLoaded) {
 
     const scenesHtml = _tabState.scenes.length === 0
       ? '<p style="color:#888;margin:0;font-size:13px;">No scenes created yet.</p>'
-      : _tabState.scenes.map(s => `
-          <div style="display:flex;justify-content:space-between;padding:6px 8px;background:#2a2a2a;border-radius:4px;margin-bottom:4px;">
-            <span>Scene ${s.index}</span>
-            <span style="color:#aaa;font-family:monospace;">${formatTime(s.start)} → ${s.end !== null ? formatTime(s.end) : "?"}</span>
-          </div>`).join("");
+      : _tabState.scenes.map(s => {
+          const url = `/scenes/${scene.id}?t=${s.start}`;
+          return `
+            <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:#2a2a2a;border-radius:4px;margin-bottom:4px;">
+              <a href="${url}" data-scene-start="${s.start}" style="color:#6ea8fe;text-decoration:none;font-size:13px;cursor:pointer;" class="ms-scene-link">Scene ${s.index}</a>
+              <div style="display:flex;align-items:center;gap:8px;">
+                <span style="color:#aaa;font-family:monospace;font-size:12px;">${formatTime(s.start)} → ${s.end !== null ? formatTime(s.end) : "?"}</span>
+                <button class="ms-delete-btn btn btn-danger" data-scene-index="${s.index}" style="padding:1px 6px;font-size:11px;line-height:1.4;">🗑</button>
+              </div>
+            </div>`;
+        }).join("");
 
     const errorHtml = _tabState.error
       ? `<div style="background:#3a1a1a;border:1px solid #7a2a2a;border-radius:4px;padding:8px 10px;margin-bottom:12px;font-size:13px;color:#e07a7a;">${_tabState.error}</div>`
@@ -856,22 +906,127 @@ if (window._markerScenesLoaded) {
 
     if (createBtn) createBtn.addEventListener("click", () => handleCreate(false));
     if (lastBtn) lastBtn.addEventListener("click", () => handleCreate(true));
+
+    // Wire scene links — navigate via React Router
+    wrapper.querySelectorAll(".ms-scene-link").forEach(link => {
+      link.addEventListener("click", (e) => {
+        e.preventDefault();
+        const history = getReactHistory();
+        const href = link.getAttribute("href");
+        if (history) history.replace(href);
+        else window.location.replace(href);
+      });
+    });
+
+    // Wire delete buttons
+    wrapper.querySelectorAll(".ms-delete-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const sceneIndex = parseInt(btn.dataset.sceneIndex, 10);
+        btn.disabled = true;
+        btn.textContent = "...";
+        await deleteScene(sceneIndex, scene);
+        rerender();
+      });
+    });
   }
 
   async function initTabState(scene) {
     resetTabState();
+    const group = scene.groups?.[0]?.group;
+
     try {
-      const data = await gql(FIND_TAG_BY_NAME, { name: "zzz-virtual" });
-      const tags = data.findTags?.tags ?? [];
+      // Look up zzz-virtual tag
+      const tagData = await gql(FIND_TAG_BY_NAME, { name: "zzz-virtual" });
+      const tags = tagData.findTags?.tags ?? [];
       if (tags.length === 0) {
         _tabState.error = 'Tag "zzz-virtual" not found. Please create it in Stash first.';
-      } else {
-        _tabState.tagId = tags[0].id;
+        _tabState.initialized = true;
+        return;
       }
+      _tabState.tagId = tags[0].id;
+
+      // Load existing virtual scenes from this group
+      if (group) {
+        const groupData = await gql(FIND_GROUP_SCENES, { group_id: group.id });
+        const allScenes = groupData.findScenes?.scenes ?? [];
+
+        // Filter to virtual scenes (no files, has ?t= URL) sorted by scene_index
+        const virtualScenes = allScenes
+          .filter(s =>
+            s.files.length === 0 &&
+            (s.urls || []).some(u => u.match(/\/scenes\/\d+\?t=\d/))
+          )
+          .sort((a, b) => {
+            const aIdx = a.groups?.[0]?.scene_index ?? 999;
+            const bIdx = b.groups?.[0]?.scene_index ?? 999;
+            return aIdx - bIdx;
+          });
+
+        // Build tabState scenes from existing virtual scenes
+        _tabState.scenes = virtualScenes.map((s, i) => {
+          const url = (s.urls || []).find(u => u.match(/\/scenes\/\d+\?t=\d/));
+          const tMatch = url?.match(/\?t=(\d+)/);
+          const start = tMatch ? parseInt(tMatch[1], 10) : 0;
+          const nextScene = virtualScenes[i + 1];
+          const nextUrl = nextScene
+            ? (nextScene.urls || []).find(u => u.match(/\/scenes\/\d+\?t=\d/))
+            : null;
+          const nextTMatch = nextUrl?.match(/\?t=(\d+)/);
+          const end = nextTMatch ? parseInt(nextTMatch[1], 10) : null;
+
+          return {
+            index: s.groups?.[0]?.scene_index ?? (i + 1),
+            start,
+            end,
+            sceneId: s.id,
+          };
+        });
+      }
+
     } catch (err) {
       _tabState.error = `Failed to load: ${err.message}`;
     } finally {
       _tabState.initialized = true;
+    }
+  }
+
+  async function deleteScene(sceneIndex, scene) {
+    const existing = _tabState.scenes.find(s => s.index === sceneIndex);
+    if (!existing) return;
+
+    try {
+      // Find and delete the marker
+      const markerTitle = `Scene ${sceneIndex}`;
+      const marker = (scene.scene_markers || []).find(m =>
+        m.title === markerTitle &&
+        m.primary_tag?.name === "zzz-virtual"
+      );
+
+      // Re-fetch scene markers if not loaded
+      let markerId = marker?.id;
+      if (!markerId) {
+        const fresh = await gql(FIND_SCENE, { id: scene.id });
+        const freshMarker = (fresh.findScene?.scene_markers || []).find(m =>
+          m.title === markerTitle &&
+          m.primary_tag?.name === "zzz-virtual"
+        );
+        markerId = freshMarker?.id;
+      }
+
+      if (markerId) {
+        await gql(SCENE_MARKER_DESTROY, { id: markerId });
+      }
+
+      // Delete the virtual scene
+      if (existing.sceneId) {
+        await gql(SCENE_DESTROY, { id: existing.sceneId });
+      }
+
+      // Remove from tab state
+      _tabState.scenes = _tabState.scenes.filter(s => s.index !== sceneIndex);
+
+    } catch (err) {
+      _tabState.error = `Failed to delete scene ${sceneIndex}: ${err.message}`;
     }
   }
 

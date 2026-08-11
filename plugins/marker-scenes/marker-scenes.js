@@ -947,40 +947,43 @@ if (window._markerScenesLoaded) {
 
       // Load existing virtual scenes from this group
       if (group) {
-        const groupData = await gql(FIND_GROUP_SCENES, { group_id: group.id });
-        const allScenes = groupData.findScenes?.scenes ?? [];
+        try {
+          const groupData = await gql(FIND_GROUP_SCENES, { group_id: group.id });
+          const allScenes = groupData.findScenes?.scenes ?? [];
 
-        // Filter to virtual scenes (no files, has ?t= URL) sorted by scene_index
-        const virtualScenes = allScenes
-          .filter(s =>
-            s.files.length === 0 &&
-            (s.urls || []).some(u => u.match(/\/scenes\/\d+\?t=\d/))
-          )
-          .sort((a, b) => {
-            const aIdx = a.groups?.[0]?.scene_index ?? 999;
-            const bIdx = b.groups?.[0]?.scene_index ?? 999;
-            return aIdx - bIdx;
+          const virtualScenes = allScenes
+            .filter(s =>
+              s.files.length === 0 &&
+              (s.urls || []).some(u => u.match(/\/scenes\/\d+\?t=\d/))
+            )
+            .sort((a, b) => {
+              const aIdx = a.groups?.[0]?.scene_index ?? 999;
+              const bIdx = b.groups?.[0]?.scene_index ?? 999;
+              return aIdx - bIdx;
+            });
+
+          _tabState.scenes = virtualScenes.map((s, i) => {
+            const url = (s.urls || []).find(u => u.match(/\/scenes\/\d+\?t=\d/));
+            const tMatch = url?.match(/\?t=(\d+)/);
+            const start = tMatch ? parseInt(tMatch[1], 10) : 0;
+            const nextScene = virtualScenes[i + 1];
+            const nextUrl = nextScene
+              ? (nextScene.urls || []).find(u => u.match(/\/scenes\/\d+\?t=\d/))
+              : null;
+            const nextTMatch = nextUrl?.match(/\?t=(\d+)/);
+            const end = nextTMatch ? parseInt(nextTMatch[1], 10) : null;
+
+            return {
+              index: s.groups?.[0]?.scene_index ?? (i + 1),
+              start,
+              end,
+              sceneId: s.id,
+            };
           });
-
-        // Build tabState scenes from existing virtual scenes
-        _tabState.scenes = virtualScenes.map((s, i) => {
-          const url = (s.urls || []).find(u => u.match(/\/scenes\/\d+\?t=\d/));
-          const tMatch = url?.match(/\?t=(\d+)/);
-          const start = tMatch ? parseInt(tMatch[1], 10) : 0;
-          const nextScene = virtualScenes[i + 1];
-          const nextUrl = nextScene
-            ? (nextScene.urls || []).find(u => u.match(/\/scenes\/\d+\?t=\d/))
-            : null;
-          const nextTMatch = nextUrl?.match(/\?t=(\d+)/);
-          const end = nextTMatch ? parseInt(nextTMatch[1], 10) : null;
-
-          return {
-            index: s.groups?.[0]?.scene_index ?? (i + 1),
-            start,
-            end,
-            sceneId: s.id,
-          };
-        });
+        } catch (groupErr) {
+          console.warn(`[marker-scenes] Could not load existing scenes: ${groupErr.message}`);
+          // Non-fatal — tab still works, just starts with empty scenes list
+        }
       }
 
     } catch (err) {

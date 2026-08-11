@@ -1,7 +1,7 @@
 
 name: Marker Scenes
 description: Creates virtual scenes from scene markers, one per marker segment.
-version: 1.0.7
+version: 1.0.8
 url: ""
 
 ui:

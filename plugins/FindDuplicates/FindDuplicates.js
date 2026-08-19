@@ -806,12 +806,15 @@
         `mutation($input: ScenesDestroyInput!) { scenesDestroy(input: $input) }`,
         { input: { ids: [id], delete_file: false } }
       );
-      // Re-fetch to mirror TSX refetchScenes() — picks up any other changes too
       state.selectedScenes.delete(id);
-      state.allScenes = null;
-      state.sceneCache = null;
+      if (state.sceneCache) {
+        state.sceneCache = state.sceneCache.filter(s => s.id !== id);
+        state.allScenes = state.sceneCache;
+      } else if (state.allScenes) {
+        state.allScenes = state.allScenes.filter(s => s.id !== id);
+      }
       state.phashCache = null;
-      loadScenes();
+      recomputeScenes();
     } catch (e) {
       btn.disabled = false;
       btn.textContent = "Delete";
@@ -831,11 +834,16 @@
         `mutation($input: ScenesDestroyInput!) { scenesDestroy(input: $input) }`,
         { input: { ids, delete_file: false } }
       );
+      const deletedIds = new Set([...state.selectedScenes]);
       state.selectedScenes.clear();
-      state.allScenes = null;
-      state.sceneCache = null;
+      if (state.sceneCache) {
+        state.sceneCache = state.sceneCache.filter(s => !deletedIds.has(s.id));
+        state.allScenes = state.sceneCache;
+      } else if (state.allScenes) {
+        state.allScenes = state.allScenes.filter(s => !deletedIds.has(s.id));
+      }
       state.phashCache = null;
-      loadScenes();
+      recomputeScenes();
     } catch (e) {
       if (btn) { btn.disabled = false; }
       refreshBatchButton("scenes");
@@ -1313,10 +1321,14 @@
       closeMergeModal();
       showToast(`Merged. ${deleteIds.length} scene${deleteIds.length === 1 ? "" : "s"} deleted.`);
       deleteIds.forEach(id => state.selectedScenes.delete(id));
-      state.allScenes = null;
-      state.sceneCache = null;
+      if (state.sceneCache) {
+        state.sceneCache = state.sceneCache.filter(s => !deleteIds.includes(s.id));
+        state.allScenes = state.sceneCache;
+      } else if (state.allScenes) {
+        state.allScenes = state.allScenes.filter(s => !deleteIds.includes(s.id));
+      }
       state.phashCache = null;
-      loadScenes();
+      recomputeScenes();
     } catch (e) {
       confirmBtn.disabled = false;
       confirmBtn.textContent = "Confirm Merge";

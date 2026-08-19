@@ -99,7 +99,7 @@
             studio      { id name }
             performers { id name }
             tags        { id name }
-            files       { size created_at width height bit_rate video_codec }
+            files       { path size created_at width height bit_rate video_codec }
             groups      { group { id name front_image_path } scene_index }
             paths       { screenshot }
             created_at
@@ -127,6 +127,17 @@
       }
     `);
     return data.findGroups.groups;
+  }
+
+  async function fetchPhashSceneIds() {
+    const data = await gql(`
+      query {
+        findScenes(scene_filter: { duplicated: { phash_distance: 0 } }, filter: { per_page: -1 }) {
+          scenes { id }
+        }
+      }
+    `);
+    return new Set(data.findScenes.scenes.map(s => s.id));
   }
 
   // ── Duplicate detection ────────────────────────────────────────────────────
@@ -239,11 +250,18 @@
     scenePage: 1,
     groupPage: 1,
     // Matching criteria (AND logic). Defaults mirror the prior hardcoded behaviour.
-    sceneCriteria: { title: true, details: true, performer: true, studio: false },
+    sceneCriteria: { title: true, details: true, performer: true, studio: false, phash: false },
     groupCriteria: { name: true, synopsis: true, punct: false },
     // Ids checked for multi-delete; persists across pages, cleared on recompute/delete.
     selectedScenes: new Set(),
     selectedGroups: new Set(),
+    // In-memory scene cache (toggle in the scenes filter bar). When enabled,
+    // loadScenes() reuses this instead of re-fetching; cleared on delete/merge/refresh.
+    cacheEnabled: true,
+    sceneCache: null,
+    // Cached set of scene ids that have at least one phash duplicate (Stash-side).
+    phashCache: null,
+    phashLoading: false,
   };
 
   // Labels for the filter-bar checkboxes, in display order.
@@ -427,7 +445,7 @@
     const criteria   = tab === "scenes" ? state.sceneCriteria  : state.groupCriteria;
     const defs       = tab === "scenes" ? SCENE_CRITERIA       : GROUP_CRITERIA;
     const selected   = tab === "scenes" ? state.selectedScenes : state.selectedGroups;
-    const onRecompute = tab === "scenes" ? recomputeScenes     : recomputeGroups;
+    const onRecompute = tab === "scenes" ? recomputeScenesTrigger : recomputeGroups;
     const onBatch     = tab === "scenes" ? deleteSelectedScenes : deleteSelectedGroups;
 
     const bar = document.createElement("div");
@@ -452,6 +470,61 @@
       lbl.appendChild(document.createTextNode(" " + def.label));
       bar.appendChild(lbl);
     });
+
+    if (tab === "scenes") {
+      const phashLbl = document.createElement("label");
+      phashLbl.className = "fd-filter-check";
+      const phashCb = document.createElement("input");
+      phashCb.type = "checkbox";
+      phashCb.checked = !!state.sceneCriteria.phash;
+      phashCb.addEventListener("change", () => {
+        state.sceneCriteria.phash = phashCb.checked;
+        onRecompute();
+      });
+      phashLbl.appendChild(phashCb);
+      phashLbl.appendChild(document.createTextNode(" phash (visual similarity)"));
+      bar.appendChild(phashLbl);
+
+      const cacheLbl = document.createElement("label");
+      cacheLbl.className = "fd-filter-check";
+      const cacheCb = document.createElement("input");
+      cacheCb.type = "checkbox";
+      cacheCb.checked = state.cacheEnabled;
+      cacheCb.addEventListener("change", () => {
+        state.cacheEnabled = cacheCb.checked;
+        if (state.cacheEnabled) {
+          if (state.allScenes !== null) state.sceneCache = state.allScenes;
+        } else {
+          state.sceneCache = null;
+          state.phashCache = null;
+        }
+        renderScenes();
+      });
+      cacheLbl.appendChild(cacheCb);
+      cacheLbl.appendChild(document.createTextNode(" Cache results"));
+      bar.appendChild(cacheLbl);
+
+      const cacheStatus = document.createElement("span");
+      cacheStatus.className = "fd-cache-status";
+      if (state.cacheEnabled && state.sceneCache !== null) {
+        cacheStatus.appendChild(document.createTextNode("Cached "));
+        const refreshLink = document.createElement("a");
+        refreshLink.href = "#";
+        refreshLink.className = "fd-link fd-cache-refresh";
+        refreshLink.textContent = "Refresh";
+        refreshLink.addEventListener("click", e => {
+          e.preventDefault();
+          state.sceneCache = null;
+          state.phashCache = null;
+          state.allScenes = null;
+          loadScenes();
+        });
+        cacheStatus.appendChild(refreshLink);
+      } else {
+        cacheStatus.textContent = "Live";
+      }
+      bar.appendChild(cacheStatus);
+    }
 
     if (tab === "groups") {
       const punctLbl = document.createElement("label");
@@ -488,23 +561,59 @@
   // ── Scenes tab ─────────────────────────────────────────────────────────────
 
   async function loadScenes() {
-    if (state.allScenes !== null) { recomputeScenes(); return; }
+    if (state.cacheEnabled && state.sceneCache !== null) {
+      state.allScenes = state.sceneCache;
+      recomputeScenes();
+      return;
+    }
 
     const panel = getPanel("scenes");
     panel.innerHTML = `<div class="fd-status">Loading scenes…</div>`;
 
     try {
       state.allScenes = await fetchAllScenes();
+      if (state.cacheEnabled) state.sceneCache = state.allScenes;
       recomputeScenes();
     } catch (e) {
       panel.innerHTML = `<div class="fd-error">Error loading scenes: ${esc(e.message)}</div>`;
     }
   }
 
-  // Recompute duplicate sets from the already-loaded scenes (no GraphQL fetch).
-  function recomputeScenes() {
+  // Forces a fresh fetch when caching is off; otherwise recomputes in place.
+  function recomputeScenesTrigger() {
+    if (!state.cacheEnabled) {
+      state.allScenes = null;
+      state.sceneCache = null;
+      state.phashCache = null;
+      loadScenes();
+    } else {
+      recomputeScenes();
+    }
+  }
+
+  // Recompute duplicate sets from the already-loaded scenes (no GraphQL fetch,
+  // except for the phash lookup which is fetched once and cached).
+  async function recomputeScenes() {
     if (state.allScenes === null) return;
-    state.sceneDupeSets = computeSceneDuplicates(state.allScenes, state.sceneCriteria);
+    let sets = computeSceneDuplicates(state.allScenes, state.sceneCriteria);
+
+    if (state.sceneCriteria.phash && state.phashCache === null) {
+      state.phashLoading = true;
+      renderScenes();
+      try {
+        state.phashCache = await fetchPhashSceneIds();
+      } catch (e) {
+        state.phashCache = new Set();
+      }
+      state.phashLoading = false;
+    }
+
+    if (state.sceneCriteria.phash) {
+      const ids = state.phashCache || new Set();
+      sets = sets.filter(set => set.filter(s => ids.has(s.id)).length >= 2);
+    }
+
+    state.sceneDupeSets = sets;
     // Drop any selected ids that are no longer part of a duplicate set.
     const valid = collectIds(state.sceneDupeSets);
     state.selectedScenes.forEach(id => { if (!valid.has(id)) state.selectedScenes.delete(id); });
@@ -515,6 +624,17 @@
 
   function renderScenes() {
     const panel    = getPanel("scenes");
+
+    if (state.phashLoading) {
+      panel.innerHTML = "";
+      panel.appendChild(buildFilterBar("scenes"));
+      const loading = document.createElement("div");
+      loading.className = "fd-status";
+      loading.textContent = "Loading phash matches…";
+      panel.appendChild(loading);
+      return;
+    }
+
     const sets     = state.sceneDupeSets || [];
     const total    = sets.length;
     const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -569,6 +689,14 @@
 
       const tbody = document.createElement("tbody");
       pageSets.forEach((set, groupIndex) => {
+        // Union of tag ids present on every scene in this duplicate set — tags
+        // missing that consensus on a given scene are highlighted (fd-tag-missing).
+        const commonTagIds = set.reduce((acc, scene, idx) => {
+          const ids = new Set((scene.tags || []).map(t => t.id));
+          if (idx === 0) return ids;
+          return new Set([...acc].filter(id => ids.has(id)));
+        }, new Set());
+
         set.forEach((scene, i) => {
           // Separator row before each new group (except the very first)
           if (i === 0 && groupIndex !== 0) {
@@ -587,7 +715,11 @@
           const codec   = fmtCodec(file0);
           const size    = fmtSize(file0?.size);
           const added   = fmtDate(file0?.created_at ?? scene.created_at);
-          const tags    = (scene.tags || []).map(t => `<span class="fd-tag">${esc(t.name)}</span>`).join("");
+          const filePath = file0?.path || "";
+          const sceneTags = scene.tags || [];
+          const tags    = sceneTags
+            .map(t => `<span class="${commonTagIds.has(t.id) ? "fd-tag" : "fd-tag-missing"}">${esc(t.name)}</span>`)
+            .join("");
           const perfs   = (scene.performers || []).map(p => esc(p.name)).join(", ");
           const isSel   = state.selectedScenes.has(scene.id);
 
@@ -599,9 +731,11 @@
             <td class="fd-td-details">
               <p><a class="fd-link" href="/scenes/${esc(scene.id)}" target="_blank" rel="noopener">${esc(scene.title || scene.id)}</a></p>
               <p class="fd-meta-desc">${esc(truncate(scene.details))}</p>
+              ${filePath ? `<p class="fd-file-path">${esc(filePath)}</p>` : ""}
             </td>
             ${groupCellHtml(scene)}
             <td class="fd-td-popover">
+              <p class="fd-meta-desc">Tags: ${sceneTags.length}</p>
               ${tags  ? `<div class="fd-card-tags">${tags}</div>` : ""}
               ${perfs ? `<div class="fd-performers-list">${perfs}</div>` : ""}
             </td>
@@ -675,6 +809,8 @@
       // Re-fetch to mirror TSX refetchScenes() — picks up any other changes too
       state.selectedScenes.delete(id);
       state.allScenes = null;
+      state.sceneCache = null;
+      state.phashCache = null;
       loadScenes();
     } catch (e) {
       btn.disabled = false;
@@ -697,6 +833,8 @@
       );
       state.selectedScenes.clear();
       state.allScenes = null;
+      state.sceneCache = null;
+      state.phashCache = null;
       loadScenes();
     } catch (e) {
       if (btn) { btn.disabled = false; }
@@ -1176,6 +1314,8 @@
       showToast(`Merged. ${deleteIds.length} scene${deleteIds.length === 1 ? "" : "s"} deleted.`);
       deleteIds.forEach(id => state.selectedScenes.delete(id));
       state.allScenes = null;
+      state.sceneCache = null;
+      state.phashCache = null;
       loadScenes();
     } catch (e) {
       confirmBtn.disabled = false;

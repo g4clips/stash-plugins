@@ -1058,6 +1058,12 @@ if (window._markerScenesLoaded) {
       return;
     }
 
+    // Only show the tab if the scene belongs to a group
+    if (!scene.groups || scene.groups.length === 0) {
+      console.log(`[${PLUGIN_ID}] Scene has no group — hiding Virtual Scenes tab.`);
+      return;
+    }
+
     await initTabState(scene);
 
     // Wait for React to render the tabs

@@ -1,0 +1,73 @@
+/* FixCover — hardcoded dark-theme tokens.
+   Stash's CSS custom properties don't reliably resolve on plain DOM nodes
+   injected outside the main React tree (per project notes), so this file
+   hardcodes colors rather than referencing var(--bs-*) etc. */
+
+#fc-toast-stack {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 100000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.fc-toast {
+  min-width: 260px;
+  max-width: 420px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  color: #e6e6e6;
+  background: #2b2f38;
+  border: 1px solid #3d434f;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+  pointer-events: auto;
+}
+
+.fc-toast-info {
+  border-left: 4px solid #4a90d9;
+}
+
+.fc-toast-ok {
+  border-left: 4px solid #3fb950;
+}
+
+.fc-toast-err {
+  border-left: 4px solid #e5534b;
+}
+
+.fc-toast-title {
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.fc-toast-body {
+  color: #b8bfc9;
+  white-space: pre-line;
+}
+
+/* Bulk progress toast gets a thin progress bar under the text */
+.fc-toast-progress-track {
+  margin-top: 6px;
+  height: 4px;
+  border-radius: 2px;
+  background: #3d434f;
+  overflow: hidden;
+}
+
+.fc-toast-progress-fill {
+  height: 100%;
+  background: #4a90d9;
+  transition: width 0.15s ease;
+}
+
+/* Menu items we inject reuse Stash's own .dropdown-item class so they
+   inherit the surrounding menu's real styling; this rule is just a safety
+   net in case that class isn't present in some menu variant. */
+.fc-menu-item {
+  cursor: pointer;
+}

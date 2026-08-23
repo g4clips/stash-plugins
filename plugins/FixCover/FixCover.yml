@@ -1,0 +1,11 @@
+name: FixCover
+description: Set a scene's cover to its actual first frame instead of Stash's ~20%-in default
+version: "0.1.0"
+
+interface: raw
+
+ui:
+  javascript:
+    - FixCover.js
+  css:
+    - FixCover.css

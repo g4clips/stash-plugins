@@ -145,7 +145,7 @@ if (window._markerScenesLoaded) {
   `;
 
   const FIND_GROUP_SCENES = `
-    query FindGroupScenes($group_id: ID!) {
+    query FindGroupScenes($group_id: [ID!]!) {
       findScenes(
         scene_filter: {
           groups: { value: $group_id, modifier: INCLUDES }
@@ -948,7 +948,7 @@ if (window._markerScenesLoaded) {
       // Load existing virtual scenes from this group
       if (group) {
         try {
-          const groupData = await gql(FIND_GROUP_SCENES, { group_id: group.id });
+          const groupData = await gql(FIND_GROUP_SCENES, { group_id: [group.id] });
           const allScenes = groupData.findScenes?.scenes ?? [];
 
           const virtualScenes = allScenes

@@ -1084,8 +1084,11 @@
 
     if (!hits.length) {
       const totalHint = searchOutput.totalInStore != null ? ` (${searchOutput.totalInStore} total)` : "";
+      const staleHtml = searchOutput.catalogStale ? `
+        <p class="ss-hint ss-warning">⚠ Showing cached results — the last live catalog refresh for this store failed, so this list may be out of date.</p>` : "";
       getContent().innerHTML = `
-        <p class="ss-hint">No results in ${esc(storeInfo.displayName)}'s store${totalHint} for that search.</p>`;
+        <p class="ss-hint">No results in ${esc(storeInfo.displayName)}'s store${totalHint} for that search.</p>
+        ${staleHtml}`;
       setFooter(`<button id="ss-back1" class="ss-btn ss-btn-secondary">← Back</button>`);
       document.getElementById("ss-back1").onclick = () => renderMatchState(sceneId, current, parsed, match, false, opts);
       return;
@@ -1109,6 +1112,9 @@
     const warningHtml = searchOutput.largeResultWarning ? `
       <p class="ss-hint ss-warning">⚠ ${hits.length} matches — that's a lot for a specific title. The parsed title candidate may be too generic, or worth narrowing manually.</p>` : "";
 
+    const staleHtml = searchOutput.catalogStale ? `
+      <p class="ss-hint ss-warning">⚠ Showing cached results — the last live catalog refresh for this store failed, so this list may be out of date.</p>` : "";
+
     const countLabel = searchOutput.totalInStore != null
       ? `${hits.length} matching clip${hits.length !== 1 ? "s" : ""} out of ${searchOutput.totalInStore}`
       : `${searchOutput.found} result${searchOutput.found !== 1 ? "s" : ""}`;
@@ -1116,6 +1122,7 @@
     getContent().innerHTML = `
       <p class="ss-hint">${countLabel} in ${esc(storeInfo.displayName)}'s store — click to select:</p>
       ${warningHtml}
+      ${staleHtml}
       <div class="ss-results">${cardsHtml}</div>`;
     setFooter(`<button id="ss-back1" class="ss-btn ss-btn-secondary">← Back</button>`);
 

@@ -737,7 +737,61 @@ def iwc_extract(clip_url, proxy_url=""):
 # ═════════════════════════════════════════════════════════════════════════
 
 _NEXT_F_PUSH_RE = re.compile(r'self\.__next_f\.push\(\[1,(".*?")\]\)', re.S)
-_FLIGHT_LABEL_RE = re.compile(r"^([0-9a-zA-Z_]+):")
+_FLIGHT_LABEL_RE = re.compile(r"([0-9a-zA-Z_]+):")
+
+
+def _mv_iter_flight_records(s):
+    """Tokenize one decoded self.__next_f.push() string into its JSON-
+    bearing records. Confirmed live (LatexNChill, lilcanadiangirl): a
+    single push call packs MULTIPLE label:record entries back to back --
+    "I[moduleId,[chunkUrls],export]" module references and
+    "T<hexByteLen>,<text>" length-prefixed text records (video
+    descriptions, which contain raw embedded newlines) both precede the
+    swrFallback JSON record on real store pages. A naive single
+    json.loads() of the whole string -- the previous approach -- fails
+    outright on the leading "I[...]" record and silently drops the
+    entire chunk, swrFallback included, undercounting to zero.
+
+    The T record's length is a BYTE length of the UTF-8 encoding, not a
+    character count (confirmed: using it as a char count landed mid-text
+    on every store checked, because descriptions contain multi-byte
+    characters) -- must re-encode the remainder to know how many
+    characters to actually skip.
+    """
+    decoder = json.JSONDecoder()
+    pos, n = 0, len(s)
+    while pos < n:
+        while pos < n and s[pos] in "\n\r":
+            pos += 1
+        m = _FLIGHT_LABEL_RE.match(s, pos)
+        if not m:
+            break
+        pos = m.end()
+        if pos >= n:
+            break
+        kind = s[pos]
+        if kind == "I":
+            try:
+                value, pos = decoder.raw_decode(s, pos + 1)
+            except ValueError:
+                break
+            yield value
+        elif kind == "T":
+            comma = s.find(",", pos)
+            if comma == -1:
+                break
+            try:
+                length = int(s[pos + 1:comma], 16)
+            except ValueError:
+                break
+            text = s[comma + 1:].encode("utf-8")[:length].decode("utf-8", errors="replace")
+            pos = comma + 1 + len(text)
+        else:
+            try:
+                value, pos = decoder.raw_decode(s, pos)
+            except ValueError:
+                break
+            yield value
 
 
 def _mv_iter_next_f_payloads(page_html):
@@ -746,14 +800,7 @@ def _mv_iter_next_f_payloads(page_html):
             s = json.loads(m.group(1))
         except Exception:
             continue
-        s = s.rstrip("\n")
-        lm = _FLIGHT_LABEL_RE.match(s)
-        if not lm:
-            continue
-        try:
-            yield json.loads(s[lm.end():])
-        except Exception:
-            continue
+        yield from _mv_iter_flight_records(s)
 
 
 def _mv_find_all(obj, key):
@@ -870,10 +917,14 @@ def _mv_crawl_full_catalog(base_store_url, session, first_page_html, max_pages=M
 
 def mv_get_store_clips(profile_id, config, proxy_url="", max_pages=MAX_STORE_PAGES):
     """Cache-aware clip fetch, sliding staleness window. Returns
-    (clips, new_cache_entry_or_None) -- caller persists new_cache_entry via
-    write_config. A confirmed-fresh cache HIT also returns a refreshed
-    entry (cachedAt bumped to now, same clips) so an actively-scraped
-    performer's cache never goes stale purely from elapsed time."""
+    (clips, new_cache_entry_or_None, stale) -- caller persists
+    new_cache_entry via write_config. A confirmed-fresh cache HIT also
+    returns a refreshed entry (cachedAt bumped to now, same clips) so an
+    actively-scraped performer's cache never goes stale purely from
+    elapsed time. `stale=True` means a re-crawl was attempted, came back
+    empty, and the caller is being served the last known-good cached
+    clips instead -- the cache itself is left untouched (new_cache_entry
+    is None) so the next call retries the crawl rather than being stuck."""
     all_cache = config.get("storeCatalogCache") or {}
     cache = all_cache.get(profile_id)
     log(f"manyvids get_store_clips: looking up cache for store {profile_id!r} "
@@ -898,15 +949,20 @@ def mv_get_store_clips(profile_id, config, proxy_url="", max_pages=MAX_STORE_PAG
             log(f"manyvids get_store_clips: DECISION = cache hit, using {len(cache['clips'])} cached clips "
                 f"for store {profile_id}, skipping full crawl -- sliding cachedAt forward to now")
             refreshed_entry = {**cache, "cachedAt": now}
-            return cache["clips"], refreshed_entry
+            return cache["clips"], refreshed_entry, False
         reason = "totals mismatched" if not totals_match else f"cache older than {STORE_CACHE_MAX_AGE_DAYS} days"
         log(f"manyvids get_store_clips: DECISION = cache miss/stale ({reason}) for store {profile_id}, doing full re-crawl")
     else:
         log(f"manyvids get_store_clips: DECISION = no cache entry for store {profile_id}, doing full crawl")
 
     clips = _mv_crawl_full_catalog(base_store_url, session, first_page_html, max_pages)
+    if not clips and cache and cache.get("clips"):
+        log(f"manyvids get_store_clips: crawl returned 0 clips for store {profile_id} but a non-empty "
+            f"cache entry exists ({len(cache['clips'])} clips) -- treating as a crawl failure, keeping "
+            f"the existing cache entry instead of overwriting it with an empty result")
+        return cache["clips"], None, True
     new_entry = {"clips": clips, "mainTotal": main_total, "verticalTotal": vertical_total, "cachedAt": now}
-    return clips, new_entry
+    return clips, new_entry, False
 
 
 def mv_store_url_for(profile_id):
@@ -922,7 +978,7 @@ def mv_search(store_info, title_candidate, config, stash_url, api_key, proxy_url
     unified dispatch in main()) is responsible for persisting the cache
     update, same discipline as ManyVidsStashDB's match_clips_in_store."""
     profile_id = store_info["profileId"]
-    clips, new_cache_entry = mv_get_store_clips(profile_id, config, proxy_url=proxy_url)
+    clips, new_cache_entry, catalog_stale = mv_get_store_clips(profile_id, config, proxy_url=proxy_url)
 
     norm_query = normalize(title_candidate)
     scored = []
@@ -951,6 +1007,7 @@ def mv_search(store_info, title_candidate, config, stash_url, api_key, proxy_url
         "found": len(hits),
         "totalInStore": len(clips),
         "largeResultWarning": len(hits) > LARGE_RESULT_WARNING,
+        "catalogStale": catalog_stale,
         "hits": hits,
     }
     return result, new_cache_entry

@@ -144,6 +144,29 @@ if (window._markerScenesLoaded) {
     }
   `;
 
+  const SCENE_MARKER_UPDATE = `
+    mutation SceneMarkerUpdate($input: SceneMarkerUpdateInput!) {
+      sceneMarkerUpdate(input: $input) {
+        id
+        title
+        seconds
+      }
+    }
+  `;
+
+  const SCENE_UPDATE_TITLE = `
+    mutation SceneUpdate($input: SceneUpdateInput!) {
+      sceneUpdate(input: $input) {
+        id
+        title
+        groups {
+          group { id }
+          scene_index
+        }
+      }
+    }
+  `;
+
   const FIND_GROUP_SCENES = `
     query FindGroupScenes($group_id: [ID!]!) {
       findScenes(
@@ -752,15 +775,25 @@ if (window._markerScenesLoaded) {
       return '<div style="color:#aaa">Loading...</div>';
     }
 
+    // Find which gap the current timestamp falls in
+    let insertAfterIndex = 0;
+    for (const s of _tabState.scenes) {
+      if (currentTime >= s.start) {
+        insertAfterIndex = s.index;
+      }
+    }
+
     const scenesHtml = _tabState.scenes.length === 0
       ? '<p style="color:#888;margin:0;font-size:13px;">No scenes created yet.</p>'
       : _tabState.scenes.map(s => {
           const url = `/scenes/${scene.id}?t=${s.start}`;
+          const isInsertPoint = s.index === insertAfterIndex && insertAfterIndex > 0 && insertAfterIndex < _tabState.scenes[_tabState.scenes.length - 1].index;
           return `
             <div style="display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:#2a2a2a;border-radius:4px;margin-bottom:4px;">
               <a href="${url}" data-scene-start="${s.start}" style="color:#6ea8fe;text-decoration:none;font-size:13px;cursor:pointer;" class="ms-scene-link">Scene ${s.index}</a>
               <div style="display:flex;align-items:center;gap:8px;">
                 <span style="color:#aaa;font-family:monospace;font-size:12px;">${formatTime(s.start)} → ${s.end !== null ? formatTime(s.end) : "?"}</span>
+                ${isInsertPoint ? `<button class="ms-insert-btn btn btn-secondary" data-insert-after="${s.index}" style="padding:1px 6px;font-size:11px;line-height:1.4;" title="Insert scene after Scene ${s.index}">+</button>` : ''}
                 <button class="ms-delete-btn btn btn-danger" data-scene-index="${s.index}" style="padding:1px 6px;font-size:11px;line-height:1.4;">🗑</button>
               </div>
             </div>`;
@@ -928,6 +961,17 @@ if (window._markerScenesLoaded) {
         rerender();
       });
     });
+
+    // Wire insert buttons
+    wrapper.querySelectorAll(".ms-insert-btn").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        const insertAfterIndex = parseInt(btn.dataset.insertAfter, 10);
+        btn.disabled = true;
+        btn.textContent = "...";
+        await insertScene(insertAfterIndex, scene);
+        rerender();
+      });
+    });
   }
 
   async function initTabState(scene) {
@@ -1030,6 +1074,109 @@ if (window._markerScenesLoaded) {
 
     } catch (err) {
       _tabState.error = `Failed to delete scene ${sceneIndex}: ${err.message}`;
+    }
+  }
+
+  async function insertScene(insertAfterIndex, scene) {
+    const timestamp = Math.floor(getCurrentTimestamp());
+    const group = scene.groups?.[0]?.group;
+    const origin = window.location.origin;
+
+    if (!group) { _tabState.error = "Scene has no group."; return; }
+
+    // Find the new scene index — insertAfterIndex + 1
+    const newSceneIndex = insertAfterIndex + 1;
+
+    // Get all scenes that need to be pushed up (index >= newSceneIndex)
+    const scenesToShift = _tabState.scenes
+      .filter(s => s.index >= newSceneIndex)
+      .sort((a, b) => b.index - a.index); // process in reverse to avoid conflicts
+
+    _tabState.busy = true;
+    _tabState.error = null;
+
+    try {
+      // Shift existing scenes up — process in reverse order
+      for (const s of scenesToShift) {
+        const newIndex = s.index + 1;
+        const newTitle = `${group.name} - Scene ${newIndex}`;
+
+        // Update virtual scene title and scene_index
+        await gql(SCENE_UPDATE_TITLE, {
+          input: {
+            id: s.sceneId,
+            title: newTitle,
+            groups: [{ group_id: group.id, scene_index: newIndex }],
+          }
+        });
+
+        // Update marker title
+        const markerTitle = `Scene ${s.index}`;
+        const fresh = await gql(FIND_SCENE, { id: scene.id });
+        const marker = (fresh.findScene?.scene_markers || []).find(m =>
+          m.title === markerTitle &&
+          m.primary_tag?.name === "zzz-virtual"
+        );
+        if (marker) {
+          await gql(SCENE_MARKER_UPDATE, {
+            input: {
+              id: marker.id,
+              title: `Scene ${newIndex}`,
+              seconds: marker.seconds,
+              scene_id: scene.id,
+              primary_tag_id: _tabState.tagId,
+            }
+          });
+        }
+
+        // Update in tabState
+        s.index = newIndex;
+      }
+
+      // Create the new marker at insert timestamp
+      await gql(MARKER_CREATE, {
+        input: {
+          scene_id: scene.id,
+          title: `Scene ${newSceneIndex}`,
+          seconds: timestamp,
+          primary_tag_id: _tabState.tagId,
+        }
+      });
+
+      // Create the new virtual scene
+      const input = {
+        title: `${group.name} - Scene ${newSceneIndex}`,
+        urls: [`${origin}/scenes/${scene.id}?t=${timestamp}`],
+        organized: false,
+        groups: [{ group_id: group.id, scene_index: newSceneIndex }],
+      };
+      if (scene.studio) input.studio_id = scene.studio.id;
+      const result = await gql(SCENE_CREATE, { input });
+
+      // Find the previous scene to get its end time
+      const prevScene = _tabState.scenes.find(s => s.index === insertAfterIndex);
+      const nextScene = _tabState.scenes.find(s => s.index === newSceneIndex);
+
+      // Insert new scene into tabState
+      _tabState.scenes.push({
+        index: newSceneIndex,
+        start: timestamp,
+        end: nextScene ? nextScene.start : null,
+        sceneId: result.sceneCreate.id,
+      });
+
+      // Update previous scene's end time in tabState
+      if (prevScene) {
+        prevScene.end = timestamp;
+      }
+
+      // Re-sort tabState scenes
+      _tabState.scenes.sort((a, b) => a.index - b.index);
+
+    } catch (err) {
+      _tabState.error = `Failed to insert scene: ${err.message}`;
+    } finally {
+      _tabState.busy = false;
     }
   }
 

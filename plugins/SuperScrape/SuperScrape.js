@@ -1235,24 +1235,12 @@
 
     document.getElementById("ss-dupe-keep").onclick = () => goApply(sceneId, current);
 
-    document.getElementById("ss-dupe-delete").onclick = async () => {
-      const btn = document.getElementById("ss-dupe-delete");
-      btn.disabled = true; btn.textContent = "Deleting…";
-      setStatus("Deleting current scene…");
-      try {
-        await gql(`mutation($input: ScenesDestroyInput!) { scenesDestroy(input: $input) }`,
-          { input: { ids: [sceneId], delete_file: false } });
-        setStatus("");
-        renderStepTracker(null);
-        getContent().innerHTML = `<div class="ss-success">✓ Current scene deleted.</div>`;
-        setFooter(`<button id="ss-dupe-close" class="ss-btn ss-btn-primary">Close</button>`);
-        document.getElementById("ss-dupe-close").onclick = closeModal;
-      } catch (e) {
-        btn.disabled = false; btn.textContent = "Delete current scene";
-        setStatus("");
-        setError(e.message);
-      }
-    };
+    document.getElementById("ss-dupe-delete").onclick = () =>
+      renderDeleteConfirm(sceneId, current, renderDupesStep);
+
+    function renderDupesStep() {
+      renderDuplicates(sceneId, current, parsed, match, storeInfo, storeKey, searchOutput, scrapeOutput, contentUrl, scrapedThumbnail, dupes, opts);
+    }
 
     if (richActions) {
       document.querySelectorAll(".ss-dupe-use").forEach(btn => {
@@ -1290,6 +1278,83 @@
         });
       });
     }
+  }
+
+  // ── Duplicate-flow: confirm & delete the CURRENT scene ─────────────────
+  // Mirrors Stash's own DeleteScenesDialog (ui/v2.5/src/components/Scenes/
+  // DeleteScenesDialog.tsx): same two options (delete_file, delete_generated),
+  // same danger-alert-with-path-list pattern shown once delete_file is
+  // checked. Deliberately deviates from Stash's own default on ONE option:
+  // delete_file defaults CHECKED here (Stash defaults it unchecked), because
+  // by the time this screen appears we've already confirmed this scene is a
+  // duplicate of one already in the library -- the whole point of the action
+  // is removing the redundant file, not just the DB record.
+  function renderDeleteConfirm(sceneId, current, onCancel) {
+    const basename = (current.files || [])[0]?.basename || "";
+    const thumb = current.paths?.screenshot;
+
+    function bodyHtml(deleteFile) {
+      return `
+        <div class="ss-dupe-header">Delete this scene?</div>
+        <div class="ss-dupe-card">
+          ${thumbWithHover(thumb, "ss-result-thumb")}
+          <div class="ss-result-info" style="flex:1">
+            <div class="ss-result-title">${esc(current.title || basename || "(no title)")}</div>
+            ${basename ? `<div class="ss-result-sub">${esc(basename)}</div>` : ""}
+          </div>
+        </div>
+        <div class="ss-section-label">
+          <label class="ss-item-label">
+            <input type="checkbox" id="ss-del-file" ${deleteFile ? "checked" : ""} />
+            <span>Delete file from disk</span>
+          </label>
+        </div>
+        <div class="ss-section-label">
+          <label class="ss-item-label">
+            <input type="checkbox" id="ss-del-generated" checked />
+            <span>Delete generated files (previews, sprites, markers)</span>
+          </label>
+        </div>
+        ${deleteFile ? `
+          <div class="ss-dupe-header ss-msg-err">
+            ⚠ This will permanently delete this file from disk:
+            <div class="ss-result-sub">${esc(basename || "(unknown path)")}</div>
+          </div>` : ""}`;
+    }
+
+    function render(deleteFile) {
+      getContent().innerHTML = bodyHtml(deleteFile);
+      setFooter(`
+        <button id="ss-del-cancel" class="ss-btn ss-btn-secondary">Cancel</button>
+        <button id="ss-del-confirm" class="ss-btn ss-btn-danger">Delete</button>`);
+      bindThumbHovers();
+
+      document.getElementById("ss-del-file").onchange = (e) => render(e.target.checked);
+      document.getElementById("ss-del-cancel").onclick = onCancel;
+
+      document.getElementById("ss-del-confirm").onclick = async () => {
+        const deleteFileNow = document.getElementById("ss-del-file").checked;
+        const deleteGenerated = document.getElementById("ss-del-generated").checked;
+        const btn = document.getElementById("ss-del-confirm");
+        btn.disabled = true; btn.textContent = "Deleting…";
+        setStatus(deleteFileNow ? "Deleting current scene and file from disk…" : "Deleting current scene…");
+        try {
+          await gql(`mutation($input: ScenesDestroyInput!) { scenesDestroy(input: $input) }`,
+            { input: { ids: [sceneId], delete_file: deleteFileNow, delete_generated: deleteGenerated } });
+          setStatus("");
+          renderStepTracker(null);
+          getContent().innerHTML = `<div class="ss-success">✓ Current scene${deleteFileNow ? " and file" : ""} deleted${deleteFileNow ? " from disk" : ""}.</div>`;
+          setFooter(`<button id="ss-dupe-close" class="ss-btn ss-btn-primary">Close</button>`);
+          document.getElementById("ss-dupe-close").onclick = closeModal;
+        } catch (e) {
+          btn.disabled = false; btn.textContent = "Delete";
+          setStatus("");
+          setError(e.message);
+        }
+      };
+    }
+
+    render(/* deleteFile default */ true);
   }
 
   // ── Scrape flow: Step 4 — comparison table (unified: used regardless of

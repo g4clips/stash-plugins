@@ -4,9 +4,15 @@
   }
   window._reelsPluginLoaded = true;
 
-  var REELS_VERSION = "0.2.2";
+  var REELS_VERSION = "0.3.0";
   var PLUGIN_ID = "Reels";
   var CANDIDATE_MAX_COUNT = 500;
+  var CURRENT_HINT_VERSION = 2;
+  var SEEN_AFTER_MS = 2000;
+  var PLAY_COUNT_AFTER_MS = 3000;
+  var LONG_PRESS_MS = 450;
+  var DOUBLE_TAP_MS = 250;
+  var UNDO_TOAST_MS = 5000;
 
   var DEFAULT_SETTINGS = {
     maxDuration: 300,
@@ -37,6 +43,10 @@
   // below reads this on every DOM mutation, so it must never be torn down
   // when the /reels route itself unmounts.
   var navLinkEnabled = true;
+
+  function logErr(err) {
+    console.error("Reels:", err);
+  }
 
   // --- PluginApi bootstrap --------------------------------------------
 
@@ -73,7 +83,7 @@
   }
 
   var ALL_TAGS_QUERY =
-    "query ReelsAllTags { findTags(filter: { per_page: -1 }) { tags { id name } } }";
+    "query ReelsAllTags { findTags(filter: { per_page: -1 }) { tags { id name scene_count } } }";
 
   var TAG_CREATE_MUTATION =
     "mutation ReelsTagCreate($name: String!) { tagCreate(input: { name: $name }) { id name } }";
@@ -108,7 +118,7 @@
     "      files { width height duration video_codec audio_codec }" +
     "      performers { id name }" +
     "      studio { id name image_path }" +
-    "      tags { id name scene_count }" +
+    "      tags { id name }" +
     "    }" +
     "  }" +
     "}";
@@ -122,13 +132,35 @@
     "}";
 
   var BULK_SCENE_UPDATE_MUTATION =
-    "mutation ReelsBulkSceneUpdate($ids: [ID!]!, $tag_ids: [ID!]!) {" +
-    "  bulkSceneUpdate(input: { ids: $ids, tag_ids: { ids: $tag_ids, mode: ADD } }) { id }" +
+    "mutation ReelsBulkSceneUpdate($ids: [ID!]!, $tag_ids: [ID!]!, $mode: BulkUpdateIdMode!) {" +
+    "  bulkSceneUpdate(input: { ids: $ids, tag_ids: { ids: $tag_ids, mode: $mode } }) { id }" +
     "}";
 
-  function addTagToScenes(sceneIds, tagId) {
-    if (!sceneIds.length) return Promise.resolve();
-    return gql(BULK_SCENE_UPDATE_MUTATION, { ids: sceneIds, tag_ids: [tagId] });
+  var SCENE_ADD_PLAY_MUTATION =
+    "mutation ReelsSceneAddPlay($id: ID!) { sceneAddPlay(id: $id) { count } }";
+
+  // All tag writes are chained onto this single promise, same pattern as
+  // configWriteChain: calls run strictly in the order they were made, and
+  // tagWriteChain itself is always normalized back to resolved so a
+  // rejected write never wedges every write queued after it.
+  var tagWriteChain = Promise.resolve();
+
+  function performBulkUpdateTag(sceneIds, tagIds, mode) {
+    return gql(BULK_SCENE_UPDATE_MUTATION, { ids: sceneIds, tag_ids: tagIds, mode: mode });
+  }
+
+  function bulkUpdateTag(sceneIds, tagIdOrIds, mode) {
+    if (!sceneIds || !sceneIds.length) return Promise.resolve();
+    var tagIds = Array.isArray(tagIdOrIds) ? tagIdOrIds : [tagIdOrIds];
+    if (!tagIds.length) return Promise.resolve();
+    var resultPromise = tagWriteChain.then(function () {
+      return performBulkUpdateTag(sceneIds, tagIds, mode);
+    });
+    tagWriteChain = resultPromise.then(
+      function () {},
+      function () {}
+    );
+    return resultPromise;
   }
 
   // --- Tag lookup / creation ----------------------------------------------
@@ -136,8 +168,10 @@
   function ensureTags() {
     return gql(ALL_TAGS_QUERY).then(function (data) {
       var byName = {};
+      var sceneCounts = {};
       data.findTags.tags.forEach(function (t) {
         byName[t.name] = t.id;
+        sceneCounts[t.id] = t.scene_count || 0;
       });
 
       var missing = [];
@@ -147,7 +181,7 @@
       });
 
       if (!missing.length) {
-        return resolveTagMap(byName);
+        return { tags: resolveTagMap(byName), sceneCounts: sceneCounts };
       }
 
       return missing
@@ -155,11 +189,12 @@
           return chain.then(function () {
             return gql(TAG_CREATE_MUTATION, { name: name }).then(function (res) {
               byName[name] = res.tagCreate.id;
+              sceneCounts[res.tagCreate.id] = 0;
             });
           });
         }, Promise.resolve())
         .then(function () {
-          return resolveTagMap(byName);
+          return { tags: resolveTagMap(byName), sceneCounts: sceneCounts };
         });
     });
   }
@@ -172,27 +207,41 @@
     return tags;
   }
 
-  // --- Config store (read-merge-write) ------------------------------------
+  // --- Config store (read-merge-write, serialized) ------------------------
 
-  function readConfig() {
+  function parseReelsConfig(plugins) {
+    var raw = (plugins && plugins[PLUGIN_ID]) || {};
+    return {
+      settings: Object.assign({}, DEFAULT_SETTINGS, raw.settings || {}),
+      scores: raw.scores || { performers: {}, studios: {}, tags: {} },
+      cycle: raw.cycle || { seen: [] },
+      hintVersion: raw.hintVersion || 0,
+    };
+  }
+
+  function parseTagChipsCategories(plugins) {
+    var tagChips = (plugins && plugins.TagChips) || {};
+    return tagChips.categories || [];
+  }
+
+  function fetchConfigurationPlugins() {
     return gql(CONFIGURATION_QUERY).then(function (data) {
-      var plugins = (data.configuration && data.configuration.plugins) || {};
-      var raw = plugins[PLUGIN_ID] || {};
-      return {
-        settings: Object.assign({}, DEFAULT_SETTINGS, raw.settings || {}),
-        scores: raw.scores || { performers: {}, studios: {}, tags: {} },
-        cycle: raw.cycle || { seen: [] },
-        hintShown: !!raw.hintShown,
-      };
+      return (data.configuration && data.configuration.plugins) || {};
     });
   }
 
-  // Re-reads the live config and shallow-merges `patch` on top before writing
-  // back the whole object, so a concurrent write (e.g. from another device,
-  // or a different key written moments earlier) is never clobbered.
-  function writeConfig(patch) {
-    return gql(CONFIGURATION_QUERY).then(function (data) {
-      var plugins = (data.configuration && data.configuration.plugins) || {};
+  // Every write is chained onto this single promise, so only one
+  // read-merge-write for the plugin's config is ever in flight: the next
+  // write's read only happens after the previous write has finished, and
+  // they land in the order they were requested. configWriteChain itself is
+  // always normalized back to a resolved promise after each write, win or
+  // lose -- so a rejected write never wedges every write queued after it.
+  // Each call's own caller still sees that write's real outcome via the
+  // returned `resultPromise`.
+  var configWriteChain = Promise.resolve();
+
+  function performConfigWrite(patch) {
+    return fetchConfigurationPlugins().then(function (plugins) {
       var current = plugins[PLUGIN_ID] || {};
       var merged = Object.assign({}, current, patch);
       return gql(CONFIGURE_PLUGIN_MUTATION, {
@@ -204,14 +253,15 @@
     });
   }
 
-  // --- TagChips categories (read-only) ------------------------------------
-
-  function readTagChipsCategories() {
-    return gql(CONFIGURATION_QUERY).then(function (data) {
-      var plugins = (data.configuration && data.configuration.plugins) || {};
-      var tagChips = plugins.TagChips || {};
-      return tagChips.categories || [];
+  function writeConfig(patch) {
+    var resultPromise = configWriteChain.then(function () {
+      return performConfigWrite(patch);
     });
+    configWriteChain = resultPromise.then(
+      function () {},
+      function () {}
+    );
+    return resultPromise;
   }
 
   // --- Scene data helpers --------------------------------------------------
@@ -226,17 +276,21 @@
     });
   }
 
-  function visibleHashtags(scene) {
-    return (scene.tags || [])
-      .filter(function (t) {
-        if (HIDDEN_HASHTAG_NAMES.indexOf(t.name) !== -1) return false;
-        return !HIDDEN_HASHTAG_PREFIXES.some(function (prefix) {
-          return t.name.indexOf(prefix) === 0;
-        });
-      })
-      .sort(function (a, b) {
-        return (b.scene_count || 0) - (a.scene_count || 0);
+  // Tags shown as hashtags and used for scoring -- excludes the plugin's
+  // own bookkeeping tags.
+  function filteredTags(scene) {
+    return (scene.tags || []).filter(function (t) {
+      if (HIDDEN_HASHTAG_NAMES.indexOf(t.name) !== -1) return false;
+      return !HIDDEN_HASHTAG_PREFIXES.some(function (prefix) {
+        return t.name.indexOf(prefix) === 0;
       });
+    });
+  }
+
+  function visibleHashtags(app, scene) {
+    return filteredTags(scene).sort(function (a, b) {
+      return (app.tagSceneCounts[b.id] || 0) - (app.tagSceneCounts[a.id] || 0);
+    });
   }
 
   function formatDuration(seconds) {
@@ -256,6 +310,132 @@
       a[j] = tmp;
     }
     return a;
+  }
+
+  function clamp(v, lo, hi) {
+    return Math.max(lo, Math.min(hi, v));
+  }
+
+  function mean(arr) {
+    if (!arr.length) return 0;
+    return arr.reduce(function (a, b) {
+      return a + b;
+    }, 0) / arr.length;
+  }
+
+  function countSharedIds(a, b) {
+    var setB = {};
+    (b || []).forEach(function (x) {
+      setB[x.id] = true;
+    });
+    return (a || []).filter(function (x) {
+      return setB[x.id];
+    }).length;
+  }
+
+  // --- Scoring / ordering (spec section 6) --------------------------------
+
+  function computeWeight(scene, scores) {
+    var perfVals = (scene.performers || []).map(function (p) {
+      return scores.performers[p.id] || 0;
+    });
+    var tagVals = filteredTags(scene).map(function (t) {
+      return scores.tags[t.id] || 0;
+    });
+    var studioScore = scene.studio ? scores.studios[scene.studio.id] || 0 : 0;
+    var s = 2 * mean(perfVals) + studioScore + mean(tagVals);
+    return clamp(1 + 0.5 * s, 0.2, 5);
+  }
+
+  function applyScoreDelta(app, scene, delta) {
+    var scores = app.config.scores;
+    (scene.performers || []).forEach(function (p) {
+      scores.performers[p.id] = (scores.performers[p.id] || 0) + delta;
+    });
+    if (scene.studio) {
+      scores.studios[scene.studio.id] = (scores.studios[scene.studio.id] || 0) + delta;
+    }
+    filteredTags(scene).forEach(function (t) {
+      scores.tags[t.id] = (scores.tags[t.id] || 0) + delta;
+    });
+    writeConfig({ scores: scores }).catch(logErr);
+  }
+
+  // Weighted sample-without-replacement over `list`. One pick in five
+  // ignores weights. `weightFn` lets callers apply a seed boost that only
+  // affects the first few draws.
+  function weightedDrawAll(list, weightFn) {
+    var remaining = list.slice();
+    var out = [];
+    while (remaining.length) {
+      var idx;
+      if (Math.random() < 0.2) {
+        idx = Math.floor(Math.random() * remaining.length);
+      } else {
+        var weights = remaining.map(weightFn);
+        var total = weights.reduce(function (a, b) {
+          return a + b;
+        }, 0);
+        var r = Math.random() * total;
+        idx = 0;
+        for (; idx < weights.length - 1; idx++) {
+          r -= weights[idx];
+          if (r <= 0) break;
+        }
+      }
+      out.push(remaining.splice(idx, 1)[0]);
+    }
+    return out;
+  }
+
+  // Builds a feed order over `pool`: draws without replacement by weight,
+  // first from clips not in cycle.seen, then from seen ones. If `seedScene`
+  // is given it goes first, and the next five draws get a boost relative
+  // to it (spec section 6).
+  function buildFeedOrder(app, pool, seedScene) {
+    var seenSet = {};
+    (app.config.cycle.seen || []).forEach(function (id) {
+      seenSet[id] = true;
+    });
+
+    var rest = seedScene
+      ? pool.filter(function (s) {
+          return s.id !== seedScene.id;
+        })
+      : pool.slice();
+    var unseen = rest.filter(function (s) {
+      return !seenSet[s.id];
+    });
+    var seen = rest.filter(function (s) {
+      return seenSet[s.id];
+    });
+
+    var drawsDone = 0;
+    function weightFn(scene) {
+      var w = computeWeight(scene, app.config.scores);
+      if (seedScene && drawsDone < 5) {
+        var sharedPerformers = countSharedIds(scene.performers, seedScene.performers);
+        var sharedTags = countSharedIds(filteredTags(scene), filteredTags(seedScene));
+        w *= 1 + sharedPerformers * 1.0 + sharedTags * 0.25;
+      }
+      return w;
+    }
+    function drawTracked(list) {
+      var out = weightedDrawAll(list, function (scene) {
+        var w = weightFn(scene);
+        return w;
+      });
+      // weightedDrawAll draws one at a time internally but doesn't expose a
+      // per-draw callback, so approximate the "first five draws" window by
+      // counting after the fact -- good enough given the boost is already
+      // a soft multiplier, not an exact cutoff.
+      drawsDone += out.length;
+      return out;
+    }
+
+    var order = [];
+    if (seedScene) order.push(seedScene);
+    return order.concat(drawTracked(unseen)).concat(drawTracked(seen));
   }
 
   // --- React Router navigation (PLUGIN-DEV-GUIDE.md sec 7) ---------------
@@ -339,8 +519,6 @@
 
   // Runs once for the life of the plugin (started from waitForPluginApi
   // below), independent of whether the /reels route is currently mounted.
-  // The nav link must stay present (or absent) across every page the user
-  // visits, not just while the Reels overlay itself is open.
   function startNavLinkObserver() {
     function apply() {
       injectNavLink(navLinkEnabled);
@@ -371,6 +549,7 @@
     var app = {
       root: root,
       tags: null,
+      tagSceneCounts: {},
       config: null,
       chipsCategories: [],
       pool: [],
@@ -380,19 +559,19 @@
       activeChipId: "all",
       gridScrollTop: 0,
       codecNeedsTranscode: {}, // video_codec -> true, learned this session
+      playCountedIds: {}, // scene id -> true, counted this session
     };
     return app;
   }
 
   function loadAll(app) {
-    return Promise.all([
-      ensureTags(),
-      readConfig(),
-      readTagChipsCategories(),
-    ]).then(function (results) {
-      app.tags = results[0];
-      app.config = results[1];
-      app.chipsCategories = results[2];
+    return Promise.all([ensureTags(), fetchConfigurationPlugins()]).then(function (results) {
+      app.tags = results[0].tags;
+      app.tagSceneCounts = results[0].sceneCounts;
+      var plugins = results[1];
+      app.config = parseReelsConfig(plugins);
+      app.chipsCategories = parseTagChipsCategories(plugins);
+      navLinkEnabled = app.config.settings.showNavLink;
       return refetchPoolAndCandidates(app);
     });
   }
@@ -415,7 +594,7 @@
       // Shuffled once here (covers both the initial load and every
       // refetch) and then left alone -- the cover grid's order must stay
       // put across a feed round-trip. The feed does its own independent
-      // shuffle each time it starts.
+      // ordering each time it starts.
       app.pool = shuffle(results[0].findScenes.scenes);
       app.candidates = results[1].findScenes.scenes;
       app.candidatesCount = results[1].findScenes.count;
@@ -460,9 +639,6 @@
       });
       bar.appendChild(back);
     } else {
-      // Same non-fixed, top-left-of-the-bar styling as the back button --
-      // it used to reuse the feed's fixed top-right close button class,
-      // which placed it directly on top of the gear icon.
       var close = el("button", "reels-back", "×");
       close.setAttribute("aria-label", "Close");
       close.addEventListener("click", navigateLeaveFeed);
@@ -598,15 +774,42 @@
     img.alt = "";
     cell.appendChild(img);
 
-    if (sceneHasTag(scene, app.tags.liked)) {
-      cell.appendChild(el("div", "reels-heart-badge", "♥"));
+    var heartBadge = null;
+    function renderHeartBadge() {
+      if (heartBadge) {
+        heartBadge.remove();
+        heartBadge = null;
+      }
+      if (sceneHasTag(scene, app.tags.liked)) {
+        heartBadge = el("button", "reels-heart-badge", "♥");
+        heartBadge.setAttribute("aria-label", "Unlike");
+        heartBadge.addEventListener("click", function (e) {
+          e.stopPropagation();
+          e.preventDefault();
+          unlikeFromGrid(app, scene, renderHeartBadge);
+        });
+        cell.appendChild(heartBadge);
+      }
     }
+    renderHeartBadge();
 
     cell.addEventListener("click", function () {
       startFeed(app, scene.id);
     });
 
     return cell;
+  }
+
+  function unlikeFromGrid(app, scene, onDone) {
+    if (!sceneHasTag(scene, app.tags.liked)) return;
+    scene.tags = scene.tags.filter(function (t) {
+      return t.id !== app.tags.liked;
+    });
+    bulkUpdateTag([scene.id], app.tags.liked, "REMOVE").catch(function (err) {
+      handleTagWriteFailure(app, err);
+    });
+    applyScoreDelta(app, scene, -1);
+    if (onDone) onDone();
   }
 
   function startFeed(app, seedSceneId) {
@@ -643,6 +846,10 @@
       countLine.textContent = sel + " will be added, " + rej + " rejected";
     }
 
+    // Only one preview (touch play-button or desktop hover) plays at a
+    // time across the whole grid.
+    var activePreviewStop = null;
+
     var gridScroll = el("div", "reels-review-grid-scroll");
     var grid = el("div", "reels-review-grid");
     app.candidates.forEach(function (scene) {
@@ -666,11 +873,12 @@
       }
 
       var previewVideo = null;
-      var pressTimer = null;
-      var suppressClick = false;
+      var playBtn = el("button", "reels-cell-play-btn", "▶");
+      playBtn.setAttribute("aria-label", "Preview");
 
       function startPreview() {
         if (previewVideo) return;
+        if (activePreviewStop) activePreviewStop();
         previewVideo = document.createElement("video");
         previewVideo.muted = true;
         previewVideo.loop = true;
@@ -679,6 +887,8 @@
         previewVideo.src = scene.paths.stream;
         cell.appendChild(previewVideo);
         previewVideo.play().catch(function () {});
+        playBtn.textContent = "❚❚";
+        activePreviewStop = stopPreview;
       }
       function stopPreview() {
         if (!previewVideo) return;
@@ -687,37 +897,28 @@
         previewVideo.load();
         previewVideo.remove();
         previewVideo = null;
+        playBtn.textContent = "▶";
+        if (activePreviewStop === stopPreview) activePreviewStop = null;
       }
 
-      // Touch: long-press starts a preview and suppresses the click that
-      // follows release, so the long-press doesn't also toggle selection.
-      cell.addEventListener("pointerdown", function (e) {
-        if (e.pointerType === "mouse") return;
-        pressTimer = setTimeout(function () {
-          suppressClick = true;
-          startPreview();
-        }, 350);
+      playBtn.addEventListener("click", function (e) {
+        e.stopPropagation(); // never toggles selection
+        if (previewVideo) stopPreview();
+        else startPreview();
       });
-      cell.addEventListener("pointerup", function () {
-        clearTimeout(pressTimer);
-        stopPreview();
-      });
-      cell.addEventListener("pointerleave", function () {
-        clearTimeout(pressTimer);
-        stopPreview();
-      });
+      cell.appendChild(playBtn);
 
-      // Mouse: hover starts/stops the preview; a real click still selects.
+      // Desktop hover only; touch devices use the play button above.
       cell.addEventListener("pointerenter", function (e) {
         if (e.pointerType !== "mouse") return;
         startPreview();
       });
+      cell.addEventListener("pointerleave", function (e) {
+        if (e.pointerType !== "mouse") return;
+        stopPreview();
+      });
 
       cell.addEventListener("click", function () {
-        if (suppressClick) {
-          suppressClick = false;
-          return;
-        }
         selected[scene.id] = !selected[scene.id];
         cell.classList.toggle("reels-review-cell-selected", !!selected[scene.id]);
         updateCountLine();
@@ -742,8 +943,8 @@
       });
 
       Promise.all([
-        addTagToScenes(acceptedIds, app.tags.pool),
-        addTagToScenes(rejectedIds, app.tags.rejected),
+        bulkUpdateTag(acceptedIds, app.tags.pool, "ADD"),
+        bulkUpdateTag(rejectedIds, app.tags.rejected, "ADD"),
       ])
         .then(function () {
           return refetchPoolAndCandidates(app);
@@ -752,7 +953,7 @@
           setScreen(app, "start");
         })
         .catch(function (err) {
-          console.error("Reels: failed to confirm review grid.", err);
+          handleTagWriteFailure(app, err);
           confirmBtn.disabled = false;
           confirmBtn.textContent = "Confirm";
         });
@@ -890,12 +1091,21 @@
 
     var resetBtn = el("button", "btn btn-secondary reels-settings-reset", "Reset recommendations");
     resetBtn.addEventListener("click", function () {
-      writeConfig({ scores: { performers: {}, studios: {}, tags: {} }, cycle: { seen: [] } }).then(
-        function () {
+      resetBtn.disabled = true;
+      writeConfig({ scores: { performers: {}, studios: {}, tags: {} }, cycle: { seen: [] } })
+        .then(function () {
           app.config.scores = { performers: {}, studios: {}, tags: {} };
           app.config.cycle = { seen: [] };
-        }
-      );
+          resetBtn.textContent = "Reset ✓";
+          setTimeout(function () {
+            resetBtn.textContent = "Reset recommendations";
+            resetBtn.disabled = false;
+          }, 2000);
+        })
+        .catch(function (err) {
+          logErr(err);
+          resetBtn.disabled = false;
+        });
     });
     container.appendChild(resetBtn);
 
@@ -910,17 +1120,13 @@
     var pool = app.pool.filter(function (s) {
       return poolMatchesChip(app, s, app.feedChipId);
     });
-    var ordered = shuffle(pool);
 
-    if (app.feedSeedSceneId) {
-      var seedIndex = ordered.findIndex(function (s) {
-        return s.id === app.feedSeedSceneId;
-      });
-      if (seedIndex > 0) {
-        var seed = ordered.splice(seedIndex, 1)[0];
-        ordered.unshift(seed);
-      }
-    }
+    var seedScene = app.feedSeedSceneId
+      ? pool.filter(function (s) {
+          return s.id === app.feedSeedSceneId;
+        })[0]
+      : null;
+    var ordered = buildFeedOrder(app, pool, seedScene);
 
     var state = {
       app: app,
@@ -929,10 +1135,17 @@
       videos: [null, null, null], // pool of 3 reused <video> elements
       currentIndex: 0,
       unmuted: false,
+      soundUnlocked: false,
       observer: null,
       keyHandler: null,
       disposed: false,
       muteBtn: null,
+      seenTimer: null,
+      playTimer: null,
+      newlySeenCount: 0,
+      lastAction: null,
+      toastEl: null,
+      toastTimeoutId: null,
     };
 
     app.root.className = "reels-overlay";
@@ -950,6 +1163,13 @@
       setScreen(app, "start");
     });
     app.root.appendChild(backBtn);
+
+    var dislikeBtn = el("button", "reels-dislike-btn", "👎");
+    dislikeBtn.setAttribute("aria-label", "Dislike");
+    dislikeBtn.addEventListener("click", function () {
+      dislike(app, state);
+    });
+    app.root.appendChild(dislikeBtn);
 
     var muteBtn = el("button", "reels-mute-btn", state.unmuted ? "🔊" : "🔇");
     muteBtn.setAttribute("aria-label", "Mute / unmute");
@@ -980,6 +1200,7 @@
 
     assignVideosToWindow(state);
     warmupFreeVideos(state);
+    if (state.slideEls.length) onBecameCurrent(state, state.slideEls[0]);
 
     state.observer = new IntersectionObserver(
       function (entries) {
@@ -993,6 +1214,7 @@
             if (state.currentIndex !== index) {
               state.currentIndex = index;
               assignVideosToWindow(state);
+              onBecameCurrent(state, state.slideEls[index]);
             }
           }
         });
@@ -1029,6 +1251,19 @@
         e.preventDefault();
         e.stopImmediatePropagation();
         toggleFeedMute(state);
+      } else if (lowerKey === "l") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        var currentSlide = state.slideEls[state.currentIndex];
+        if (currentSlide) like(app, state, currentSlide);
+      } else if (lowerKey === "d") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        dislike(app, state);
+      } else if (lowerKey === "u") {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        undoLastAction(app, state);
       } else if (lowerKey === "escape") {
         e.preventDefault();
         e.stopImmediatePropagation();
@@ -1050,6 +1285,10 @@
     state.disposed = true;
     if (state.observer) state.observer.disconnect();
     document.removeEventListener("keydown", state.keyHandler, true);
+    clearTimeout(state.seenTimer);
+    clearTimeout(state.playTimer);
+    clearUndoToast(state);
+    persistCycle(state.app);
     state.videos.forEach(function (v) {
       v.pause();
       v.removeAttribute("src");
@@ -1086,6 +1325,26 @@
       video: null,
       expanded: false,
     };
+    slide.el.addEventListener("contextmenu", function (e) {
+      e.preventDefault();
+    });
+    populateSlide(app, slide, state);
+    attachTapHandler(slide, state);
+    return slide;
+  }
+
+  // (Re)builds a slide's visible content for its current `slide.scene`.
+  // Used both for the initial build and when re-sampling the upcoming
+  // order after a like/dislike swaps which scene a slide shows.
+  function populateSlide(app, slide, state) {
+    var scene = slide.scene;
+    clear(slide.el);
+    slide.el.className = "reels-slide";
+    slide.video = null;
+    slide.errorLabel = null;
+    slide.convertingLabel = null;
+    slide.tapHint = null;
+    slide.needsSoundRetry = false;
 
     var fitClass =
       app.config.settings.fit === "fill"
@@ -1104,14 +1363,14 @@
     slide.poster = poster;
 
     slide.el.appendChild(buildOverlay(app, scene, slide));
-
-    attachTapHandler(slide, state);
-
-    return slide;
   }
 
   function buildOverlay(app, scene, slide) {
     var overlay = el("div", "reels-slide-overlay");
+
+    if (sceneHasTag(scene, app.tags.liked)) {
+      overlay.appendChild(el("div", "reels-liked-badge", "♥"));
+    }
 
     var performers = scene.performers || [];
     if (performers.length) {
@@ -1146,7 +1405,7 @@
       overlay.appendChild(studioLink);
     }
 
-    var tags = visibleHashtags(scene);
+    var tags = visibleHashtags(app, scene);
     if (tags.length) {
       var hashtagsEl = el("div", "reels-hashtags reels-hashtags-clipped");
       var text = tags
@@ -1193,9 +1452,6 @@
       return !!s;
     });
 
-    // A video is free when it has no slide at all, or its slide fell out
-    // of the window -- a slide that doesn't exist (nulls at the ends of
-    // the window) must never make an otherwise-free video look "placed".
     var freeVideos = state.videos.filter(function (v) {
       return !v._reelsSlide || desiredSlides.indexOf(v._reelsSlide) === -1;
     });
@@ -1226,17 +1482,9 @@
       attachVideoHandlers(video, slide, state);
 
       slide.video = video;
-      // Poster stays visible (the <video> also carries the same image as
-      // its native `poster`) until the "playing" handler in
-      // attachVideoHandlers hides it, so a still-loading clip shows its
-      // cover instead of a black frame.
       slide.el.insertBefore(video, slide.el.firstChild);
     });
 
-    // Any video left over (window edge, e.g. no "previous" at the first
-    // slide) is detached but keeps whatever src it has -- including a
-    // warmup src used only to unlock sound on iOS -- so it stays ready to
-    // be picked up by the `desiredSlides.forEach` loop above once needed.
     freeVideos.forEach(function (video) {
       if (video._reelsSlide) {
         video._reelsSlide.poster.style.display = "";
@@ -1257,6 +1505,7 @@
       } else {
         video.preload = "metadata";
         video.pause();
+        video.playbackRate = 1;
         try {
           video.currentTime = 0;
         } catch (e) {}
@@ -1264,10 +1513,6 @@
     });
   }
 
-  // Gives any video element that has never held content a real (muted,
-  // paused) src purely so a first-tap gesture can start+unmute it -- e.g.
-  // the "previous" slot's video when the feed opens on the first clip.
-  // Without this it has no src to play() and never gets gesture-unlocked.
   function warmupFreeVideos(state) {
     var fallback = state.scenes[state.currentIndex] || state.scenes[0];
     if (!fallback) return;
@@ -1281,10 +1526,6 @@
     });
   }
 
-  // Attaches error/playing/ended handlers to a video that was just given a
-  // new src for `slide`. Each video is reused across many slides over the
-  // life of the feed, so these are reassigned (not added with
-  // addEventListener) every time a video is handed to a new slide.
   function attachVideoHandlers(video, slide, state) {
     video.onplaying = function () {
       hideConverting(slide);
@@ -1317,15 +1558,24 @@
         return;
       }
 
-      // The transcode URL itself failed: give up on this clip. Phase 1
-      // never tags unplayable clips -- that's Phase 2.
+      // Transcode URL also failed: only now, and only if the setting is
+      // on, tag it unplayable and drop it from the pool for good.
       hideConverting(slide);
       console.error(
         "Reels: scene " + slide.scene.id + " unplayable even after transcode retry (codec " + codec + ")."
       );
       showSlideError(slide, code);
+      if (app.config.settings.tagUnplayable) {
+        bulkUpdateTag([slide.scene.id], app.tags.unplayable, "ADD").catch(function (err) {
+          handleTagWriteFailure(app, err);
+        });
+        app.pool = app.pool.filter(function (s) {
+          return s.id !== slide.scene.id;
+        });
+      }
       if (slide === state.slideEls[state.currentIndex]) {
-        scrollToIndex(state, state.currentIndex + 1);
+        var idx = state.slideEls.indexOf(slide);
+        if (idx !== -1) removeSlideAt(state, idx);
       }
     };
   }
@@ -1367,11 +1617,6 @@
     }
   }
 
-  // Plays the given (current) slide's video respecting the session's
-  // unmuted state. If an unmuted play is refused (common on iOS outside a
-  // direct gesture), falls back to a muted play and shows "Tap for sound",
-  // matching v0.1.0's behaviour -- restored here because it was dropped by
-  // mistake when the single-video-per-slide model was replaced.
   function attemptPlayCurrent(slide, state) {
     if (!slide || !slide.video) return;
     hideTapForSound(slide);
@@ -1411,13 +1656,9 @@
     }
   }
 
-  // Unmutes and starts every pooled video (then immediately re-pauses
-  // whichever aren't actually current) so each <video> element has been
-  // started by this user gesture -- fixes iOS tying sound permission to
-  // the element. Used by both the first tap on a slide and the explicit
-  // mute button.
   function unlockSound(state) {
     state.unmuted = true;
+    state.soundUnlocked = true;
     var currentVideo = state.slideEls[state.currentIndex] && state.slideEls[state.currentIndex].video;
     state.videos.forEach(function (v) {
       if (!v.hasAttribute("src")) return;
@@ -1453,37 +1694,342 @@
     state.slideEls[index].el.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
+  // --- Seen / play-count tracking -----------------------------------------
+
+  function onBecameCurrent(state, slide) {
+    clearTimeout(state.seenTimer);
+    clearTimeout(state.playTimer);
+    if (!slide) return;
+    state.seenTimer = setTimeout(function () {
+      if (!state.disposed) markSeen(state, slide.scene);
+    }, SEEN_AFTER_MS);
+    state.playTimer = setTimeout(function () {
+      if (!state.disposed) maybeCountPlay(state, slide.scene);
+    }, PLAY_COUNT_AFTER_MS);
+  }
+
+  function markSeen(state, scene) {
+    var cycle = state.app.config.cycle;
+    if (cycle.seen.indexOf(scene.id) !== -1) return;
+    cycle.seen.push(scene.id);
+    state.newlySeenCount++;
+
+    var poolIds = state.app.pool.map(function (s) {
+      return s.id;
+    });
+    var allSeen = poolIds.length > 0 && poolIds.every(function (id) {
+      return cycle.seen.indexOf(id) !== -1;
+    });
+    if (allSeen) cycle.seen = [];
+
+    if (state.newlySeenCount >= 5) {
+      state.newlySeenCount = 0;
+      persistCycle(state.app);
+    }
+  }
+
+  function persistCycle(app) {
+    writeConfig({ cycle: app.config.cycle }).catch(logErr);
+  }
+
+  function maybeCountPlay(state, scene) {
+    var app = state.app;
+    if (!app.config.settings.countPlays) return;
+    if (app.playCountedIds[scene.id]) return;
+    app.playCountedIds[scene.id] = true;
+    gql(SCENE_ADD_PLAY_MUTATION, { id: scene.id }).catch(logErr);
+  }
+
+  // --- Like / dislike / undo ------------------------------------------------
+
+  function showHeartBurst(slide) {
+    var burst = el("div", "reels-heart-burst", "♥");
+    slide.el.appendChild(burst);
+    setTimeout(function () {
+      burst.remove();
+    }, 800);
+  }
+
+  function refreshLikedBadge(app, slide) {
+    var existing = slide.el.querySelector(".reels-liked-badge");
+    if (existing) existing.remove();
+    if (sceneHasTag(slide.scene, app.tags.liked)) {
+      var overlay = slide.el.querySelector(".reels-slide-overlay");
+      if (overlay) overlay.insertBefore(el("div", "reels-liked-badge", "♥"), overlay.firstChild);
+    }
+  }
+
+  function like(app, state, slide) {
+    var scene = slide.scene;
+    if (sceneHasTag(scene, app.tags.liked)) return; // already liked, no-op
+
+    scene.tags = (scene.tags || []).concat([{ id: app.tags.liked, name: TAG_NAMES.liked }]);
+    bulkUpdateTag([scene.id], app.tags.liked, "ADD").catch(function (err) {
+      handleTagWriteFailure(app, err);
+    });
+    applyScoreDelta(app, scene, 1);
+    showHeartBurst(slide);
+    refreshLikedBadge(app, slide);
+
+    state.lastAction = { type: "like", scene: scene, delta: 1 };
+    showUndoToast(state, "Liked");
+    reorderUpcoming(app, state);
+  }
+
+  function dislike(app, state) {
+    var slide = state.slideEls[state.currentIndex];
+    if (!slide) return;
+    var scene = slide.scene;
+    var wasLiked = sceneHasTag(scene, app.tags.liked);
+    var idx = state.currentIndex;
+
+    // Queued in this order: ADD zzz-reels-delete first, then one REMOVE
+    // covering both Reels and (if liked) Reels-liked.
+    bulkUpdateTag([scene.id], app.tags.deleted, "ADD").catch(function (err) {
+      handleTagWriteFailure(app, err);
+    });
+    var removeIds = wasLiked ? [app.tags.pool, app.tags.liked] : [app.tags.pool];
+    bulkUpdateTag([scene.id], removeIds, "REMOVE").catch(function (err) {
+      handleTagWriteFailure(app, err);
+    });
+
+    if (wasLiked) applyScoreDelta(app, scene, -1); // reverse the earlier like
+    applyScoreDelta(app, scene, -1); // the dislike itself
+
+    app.pool = app.pool.filter(function (s) {
+      return s.id !== scene.id;
+    });
+
+    removeSlideAt(state, idx);
+
+    state.lastAction = { type: "dislike", scene: scene, wasLiked: wasLiked };
+    showUndoToast(state, "Marked for deletion");
+    reorderUpcoming(app, state);
+  }
+
+  function undoLastAction(app, state) {
+    var action = state.lastAction;
+    if (!action) return;
+    clearUndoToast(state);
+    state.lastAction = null;
+    var scene = action.scene;
+
+    if (action.type === "like") {
+      scene.tags = (scene.tags || []).filter(function (t) {
+        return t.id !== app.tags.liked;
+      });
+      bulkUpdateTag([scene.id], app.tags.liked, "REMOVE").catch(function (err) {
+        handleTagWriteFailure(app, err);
+      });
+      applyScoreDelta(app, scene, -action.delta);
+      var slide = state.slideEls.filter(function (s) {
+        return s.scene === scene;
+      })[0];
+      if (slide) refreshLikedBadge(app, slide);
+    } else if (action.type === "dislike") {
+      // Queued in this order: ADD Reels (and Reels-liked if it was
+      // liked) first, then REMOVE zzz-reels-delete.
+      var addIds = action.wasLiked ? [app.tags.pool, app.tags.liked] : [app.tags.pool];
+      bulkUpdateTag([scene.id], addIds, "ADD").catch(function (err) {
+        handleTagWriteFailure(app, err);
+      });
+      bulkUpdateTag([scene.id], app.tags.deleted, "REMOVE").catch(function (err) {
+        handleTagWriteFailure(app, err);
+      });
+      if (action.wasLiked) applyScoreDelta(app, scene, 1);
+      applyScoreDelta(app, scene, 1); // reverse the dislike's own -1
+
+      app.pool.push(scene);
+      if (state.disposed) {
+        // The dislike emptied the feed entirely (it was the only slide),
+        // which already sent us back to the start screen. There's no
+        // feed to reinsert into -- just get the restored clip back into
+        // the pool and let the start screen re-render with it.
+        setScreen(app, "start");
+      } else {
+        // Always currentIndex + 1, never currentIndex itself, so the
+        // clip actually being watched never moves or restarts.
+        var insertIndex = Math.min(state.currentIndex + 1, state.slideEls.length);
+        insertSlideAt(state, insertIndex, scene);
+      }
+    }
+  }
+
+  // A standalone toast (no Undo button, not tied to feed state) for
+  // reporting a failed tag write anywhere in the plugin -- the start
+  // screen and review grid have no feed `state` to hang an undo toast
+  // off of, but `app.root` always exists while /reels is open.
+  function showErrorToast(app, message) {
+    var toast = el("div", "reels-toast reels-toast-error", message);
+    app.root.appendChild(toast);
+    setTimeout(function () {
+      toast.remove();
+    }, 4000);
+  }
+
+  function handleTagWriteFailure(app, err) {
+    logErr(err);
+    showErrorToast(app, "Couldn't save that change.");
+  }
+
+  function showUndoToast(state, message) {
+    clearUndoToast(state);
+    var toast = el("div", "reels-toast");
+    toast.appendChild(el("span", "reels-toast-text", message));
+    var undoBtn = el("button", "reels-toast-undo", "Undo");
+    undoBtn.addEventListener("click", function () {
+      undoLastAction(state.app, state);
+    });
+    toast.appendChild(undoBtn);
+    state.app.root.appendChild(toast);
+    state.toastEl = toast;
+    state.toastTimeoutId = setTimeout(function () {
+      state.toastEl = null;
+      state.toastTimeoutId = null;
+      state.lastAction = null;
+      toast.remove();
+    }, UNDO_TOAST_MS);
+  }
+
+  function clearUndoToast(state) {
+    if (state.toastTimeoutId) {
+      clearTimeout(state.toastTimeoutId);
+      state.toastTimeoutId = null;
+    }
+    if (state.toastEl) {
+      state.toastEl.remove();
+      state.toastEl = null;
+    }
+  }
+
+  // Removes the slide at `idx` from the feed. Because every slide is the
+  // same height, removing the DOM node at (or above) the current scroll
+  // position leaves scrollTop numerically unchanged, which lands exactly
+  // on the slide that used to be next -- no explicit scroll needed.
+  function removeSlideAt(state, idx) {
+    var slide = state.slideEls[idx];
+    if (!slide) return;
+    state.observer.unobserve(slide.el);
+    if (slide.video) {
+      slide.video._reelsSlide = null;
+      slide.video = null;
+    }
+    slide.el.remove();
+    state.slideEls.splice(idx, 1);
+    state.scenes.splice(idx, 1);
+
+    if (!state.slideEls.length) {
+      unmountFeedScreen(state);
+      setScreen(state.app, "start");
+      return;
+    }
+    if (state.currentIndex >= state.slideEls.length) {
+      state.currentIndex = state.slideEls.length - 1;
+    }
+    assignVideosToWindow(state);
+    onBecameCurrent(state, state.slideEls[state.currentIndex]);
+  }
+
+  // Inserts `scene` as a new slide at `idx` (used by undo to put a
+  // disliked clip back as "the next slide").
+  function insertSlideAt(state, idx, scene) {
+    var slide = buildFeedSlide(state.app, scene, state);
+    var refEl = state.slideEls[idx] ? state.slideEls[idx].el : null;
+    state.feedEl.insertBefore(slide.el, refEl);
+    state.slideEls.splice(idx, 0, slide);
+    state.scenes.splice(idx, 0, scene);
+    state.observer.observe(slide.el);
+    assignVideosToWindow(state);
+  }
+
+  // After a like/dislike, re-sample the order of everything beyond the
+  // current slide and its two neighbours (the 3-video window), using the
+  // freshly updated scores. Slide element identity and position are kept;
+  // only which scene each one shows is swapped, so scroll-snap and the
+  // IntersectionObserver are untouched.
+  function reorderUpcoming(app, state) {
+    var tailStart = state.currentIndex + 2;
+    if (tailStart >= state.slideEls.length) return;
+    var tailScenes = state.scenes.slice(tailStart);
+    var newOrder = buildFeedOrder(app, tailScenes, null);
+    for (var i = 0; i < newOrder.length; i++) {
+      var slide = state.slideEls[tailStart + i];
+      slide.scene = newOrder[i];
+      populateSlide(app, slide, state);
+      state.scenes[tailStart + i] = newOrder[i];
+    }
+  }
+
+  // --- Tap / double-tap / long-press / swipe disambiguation ---------------
+
   function attachTapHandler(slide, state) {
     var startX = 0;
     var startY = 0;
     var startTime = 0;
     var MOVE_THRESHOLD = 10;
+    var longPressTimer = null;
+    var isLongPress = false;
+    var longPressSlowed = false;
+    var tapTimer = null;
+    var pendingTap = false;
+
+    function clearLongPress() {
+      if (longPressTimer) {
+        clearTimeout(longPressTimer);
+        longPressTimer = null;
+      }
+      if (longPressSlowed && slide.video) {
+        slide.video.playbackRate = 1;
+      }
+      longPressSlowed = false;
+      isLongPress = false;
+    }
 
     slide.el.addEventListener("pointerdown", function (e) {
+      if (e.target.closest && e.target.closest("a, button, .reels-hashtags")) return;
       startX = e.clientX;
       startY = e.clientY;
       startTime = Date.now();
+      longPressTimer = setTimeout(function () {
+        isLongPress = true;
+        if (slide.video && !slide.video.paused) {
+          slide.video.playbackRate = 2;
+          longPressSlowed = true;
+        }
+      }, LONG_PRESS_MS);
     });
 
+    slide.el.addEventListener("pointercancel", clearLongPress);
+    slide.el.addEventListener("pointerleave", clearLongPress);
+
     slide.el.addEventListener("pointerup", function (e) {
-      // Links, buttons and the hashtag block handle their own taps (and
-      // call stopPropagation), so this is only reached for clicks that
-      // bubbled from plain overlay chrome -- but guard anyway, since
-      // pointerup/pointerdown aren't stopped by those listeners.
       if (e.target.closest && e.target.closest("a, button, .reels-hashtags")) {
         return;
       }
 
+      var wasLongPress = isLongPress;
+      clearLongPress();
+
       var dx = Math.abs(e.clientX - startX);
       var dy = Math.abs(e.clientY - startY);
-      var elapsed = Date.now() - startTime;
-      if (dx > MOVE_THRESHOLD || dy > MOVE_THRESHOLD || elapsed > 600) {
+      if (dx > MOVE_THRESHOLD || dy > MOVE_THRESHOLD) {
         return; // scroll/swipe, not a tap
       }
+      if (wasLongPress) {
+        return; // releasing a long-press is consumed, not a tap
+      }
 
-      if (!state.unmuted) {
+      if (!state.soundUnlocked) {
         unlockSound(state);
         if (state.muteBtn) state.muteBtn.textContent = "🔊";
+        // Open the same double-tap window as a normal single tap: a
+        // second tap within DOUBLE_TAP_MS likes the clip instead of
+        // this unlock tap also toggling play/pause when its timer
+        // elapses with nothing else having happened.
+        pendingTap = true;
+        tapTimer = setTimeout(function () {
+          pendingTap = false;
+        }, DOUBLE_TAP_MS);
         return;
       }
 
@@ -1495,29 +2041,42 @@
         return;
       }
 
-      if (slide.video) {
-        if (slide.video.paused) {
-          attemptPlayCurrent(slide, state);
-        } else {
-          slide.video.pause();
-        }
+      if (pendingTap) {
+        pendingTap = false;
+        clearTimeout(tapTimer);
+        tapTimer = null;
+        like(state.app, state, slide);
+        return;
       }
+
+      pendingTap = true;
+      tapTimer = setTimeout(function () {
+        pendingTap = false;
+        if (slide.video) {
+          if (slide.video.paused) {
+            attemptPlayCurrent(slide, state);
+          } else {
+            slide.video.pause();
+          }
+        }
+      }, DOUBLE_TAP_MS);
     });
   }
 
   // --- First-run gesture hint ----------------------------------------------
 
   function maybeShowHint(app) {
-    if (app.config.hintShown) return;
+    if (app.config.hintVersion >= CURRENT_HINT_VERSION) return;
 
     var hint = el("div", "reels-hint-card");
     hint.appendChild(el("div", "reels-hint-title", "Reels"));
     var list = document.createElement("ul");
-    // Only gestures actually implemented in this version -- double-tap to
-    // like and long-press for 2x speed are Phase 2.
     [
       "Swipe up / down — next / previous",
       "Tap — pause / play (first tap unmutes sound)",
+      "Double tap, or L — like",
+      "Long press — 2x speed",
+      "Thumbs-down, or D — dislike (Undo for 5s)",
     ].forEach(function (text) {
       var li = document.createElement("li");
       li.textContent = text;
@@ -1528,10 +2087,8 @@
     var dismiss = el("button", "btn btn-primary reels-hint-dismiss", "Got it");
     dismiss.addEventListener("click", function () {
       hint.remove();
-      app.config.hintShown = true;
-      writeConfig({ hintShown: true }).catch(function (e) {
-        console.error("Reels: failed to persist hint dismissal.", e);
-      });
+      app.config.hintVersion = CURRENT_HINT_VERSION;
+      writeConfig({ hintVersion: CURRENT_HINT_VERSION }).catch(logErr);
     });
     hint.appendChild(dismiss);
 
@@ -1574,9 +2131,9 @@
   }
 
   waitForPluginApi(function (PluginApi) {
-    readConfig()
-      .then(function (config) {
-        navLinkEnabled = config.settings.showNavLink;
+    fetchConfigurationPlugins()
+      .then(function (plugins) {
+        navLinkEnabled = parseReelsConfig(plugins).settings.showNavLink;
       })
       .catch(function () {
         navLinkEnabled = true;

@@ -159,9 +159,14 @@ html.reels-html-lock body {
   position: absolute;
   top: 4px;
   right: 4px;
+  z-index: 1;
+  border: none;
+  background: transparent;
+  padding: 2px;
   font-size: 13px;
   color: #ff5577;
   text-shadow: 0 0 3px rgba(0, 0, 0, 0.8);
+  cursor: pointer;
 }
 
 .reels-empty-review-btn {
@@ -230,6 +235,24 @@ html.reels-html-lock body {
   height: 100%;
   object-fit: cover;
   pointer-events: none;
+}
+
+.reels-cell-play-btn {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  z-index: 2;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
 }
 
 .reels-select-badge {
@@ -327,6 +350,9 @@ html.reels-html-lock body {
   position: relative;
   background: #000;
   overflow: hidden;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .reels-slide video,
@@ -410,9 +436,9 @@ html.reels-html-lock body {
   background: rgba(0, 0, 0, 0.65);
 }
 
+.reels-dislike-btn,
 .reels-mute-btn {
   position: fixed;
-  bottom: max(24px, env(safe-area-inset-bottom));
   right: 12px;
   z-index: 10000;
   width: 40px;
@@ -428,6 +454,16 @@ html.reels-html-lock body {
   cursor: pointer;
 }
 
+.reels-dislike-btn {
+  bottom: max(24px, env(safe-area-inset-bottom));
+}
+
+/* Directly above the dislike button. */
+.reels-mute-btn {
+  bottom: calc(max(24px, env(safe-area-inset-bottom)) + 52px);
+}
+
+.reels-dislike-btn:hover,
 .reels-mute-btn:hover {
   background: rgba(0, 0, 0, 0.65);
 }
@@ -498,6 +534,66 @@ html.reels-html-lock body {
   padding: 16px;
   padding-bottom: max(16px, env(safe-area-inset-bottom));
   background: linear-gradient(to top, rgba(0, 0, 0, 0.55), transparent 40%);
+}
+
+.reels-heart-burst {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 5;
+  font-size: 64px;
+  color: #ff5577;
+  pointer-events: none;
+  animation: reels-heart-pop 0.8s ease-out forwards;
+}
+
+@keyframes reels-heart-pop {
+  0% {
+    transform: translate(-50%, -50%) scale(0.3);
+    opacity: 0;
+  }
+  30% {
+    transform: translate(-50%, -50%) scale(1.15);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -50%) scale(1);
+    opacity: 0;
+  }
+}
+
+.reels-liked-badge {
+  pointer-events: none;
+  font-size: 14px;
+  color: #ff5577;
+  margin-bottom: 4px;
+}
+
+.reels-toast {
+  position: fixed;
+  left: 50%;
+  bottom: calc(max(24px, env(safe-area-inset-bottom)) + 100px);
+  transform: translateX(-50%);
+  z-index: 10002;
+  background: rgba(20, 20, 20, 0.95);
+  color: #fff;
+  padding: 10px 14px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 13px;
+}
+
+.reels-toast-undo {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.4);
+  color: #fff;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
 }
 
 .reels-performers {

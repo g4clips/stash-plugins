@@ -4,7 +4,7 @@
   }
   window._reelsPluginLoaded = true;
 
-  var REELS_VERSION = "0.2.1";
+  var REELS_VERSION = "0.2.2";
   var PLUGIN_ID = "Reels";
   var CANDIDATE_MAX_COUNT = 500;
 
@@ -412,7 +412,11 @@
         orientation: { value: orientationValues },
       }),
     ]).then(function (results) {
-      app.pool = results[0].findScenes.scenes;
+      // Shuffled once here (covers both the initial load and every
+      // refetch) and then left alone -- the cover grid's order must stay
+      // put across a feed round-trip. The feed does its own independent
+      // shuffle each time it starts.
+      app.pool = shuffle(results[0].findScenes.scenes);
       app.candidates = results[1].findScenes.scenes;
       app.candidatesCount = results[1].findScenes.count;
     });
@@ -556,10 +560,12 @@
     });
     container.appendChild(shuffleBtn);
 
-    var grid = el("div", "reels-cover-grid");
-    grid.addEventListener("scroll", function () {
-      app.gridScrollTop = grid.scrollTop;
+    var gridScroll = el("div", "reels-cover-grid-scroll");
+    gridScroll.addEventListener("scroll", function () {
+      app.gridScrollTop = gridScroll.scrollTop;
     });
+
+    var grid = el("div", "reels-cover-grid");
 
     var filtered = app.pool.filter(function (s) {
       return poolMatchesChip(app, s, app.activeChipId);
@@ -568,10 +574,11 @@
     filtered.forEach(function (scene) {
       grid.appendChild(buildCoverCell(app, scene));
     });
-    container.appendChild(grid);
+    gridScroll.appendChild(grid);
+    container.appendChild(gridScroll);
 
     setTimeout(function () {
-      grid.scrollTop = app.gridScrollTop;
+      gridScroll.scrollTop = app.gridScrollTop;
     }, 0);
 
     return container;
@@ -579,9 +586,14 @@
 
   function buildCoverCell(app, scene) {
     var cell = el("div", "reels-cover-cell");
+    cell.addEventListener("contextmenu", function (e) {
+      e.preventDefault();
+    });
+
     var img = document.createElement("img");
     img.loading = "lazy";
     img.decoding = "async";
+    img.draggable = false;
     img.src = scene.paths.screenshot || "";
     img.alt = "";
     cell.appendChild(img);
@@ -631,14 +643,22 @@
       countLine.textContent = sel + " will be added, " + rej + " rejected";
     }
 
+    var gridScroll = el("div", "reels-review-grid-scroll");
     var grid = el("div", "reels-review-grid");
     app.candidates.forEach(function (scene) {
       var cell = el("div", "reels-review-cell reels-review-cell-selected");
+      cell.addEventListener("contextmenu", function (e) {
+        e.preventDefault();
+      });
+
       var img = document.createElement("img");
       img.loading = "lazy";
       img.decoding = "async";
+      img.draggable = false;
       img.src = scene.paths.screenshot || "";
       cell.appendChild(img);
+
+      cell.appendChild(el("div", "reels-select-badge", "✓"));
 
       var file = sceneFile(scene);
       if (file && file.duration) {
@@ -705,7 +725,8 @@
 
       grid.appendChild(cell);
     });
-    container.appendChild(grid);
+    gridScroll.appendChild(grid);
+    container.appendChild(gridScroll);
     updateCountLine();
 
     var confirmBtn = el("button", "btn btn-primary reels-confirm-btn", "Confirm");

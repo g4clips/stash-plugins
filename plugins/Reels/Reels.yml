@@ -1,0 +1,10 @@
+name: Reels
+description: Instagram-Reels-style vertical swipe feed of short portrait scenes.
+version: "0.1.0"
+url: ""
+
+ui:
+  javascript:
+    - Reels.js
+  css:
+    - Reels.css

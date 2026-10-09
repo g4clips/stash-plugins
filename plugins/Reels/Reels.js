@@ -4,7 +4,7 @@
   }
   window._reelsPluginLoaded = true;
 
-  var REELS_VERSION = "0.3.0";
+  var REELS_VERSION = "0.3.1";
   var PLUGIN_ID = "Reels";
   var CANDIDATE_MAX_COUNT = 500;
   var CURRENT_HINT_VERSION = 2;
@@ -19,6 +19,7 @@
     orientation: "portrait", // "portrait" | "portrait_square"
     endOfClip: "loop", // "loop" | "advance"
     fit: "contain", // "contain" | "fill" | "crop"
+    landscapeClips: "blur", // "blur" | "crop" | "hide"
     countPlays: false,
     tagUnplayable: true,
     showNavLink: true,
@@ -276,6 +277,11 @@
     });
   }
 
+  function isLandscape(scene) {
+    var f = sceneFile(scene);
+    return !!(f && f.width && f.height && f.width > f.height);
+  }
+
   // Tags shown as hashtags and used for scoring -- excludes the plugin's
   // own bookkeeping tags.
   function filteredTags(scene) {
@@ -481,6 +487,19 @@
     navigateTo("/");
   }
 
+  // Performer/studio links inside a feed slide navigate away from /reels
+  // entirely. Drop the #feed hash we pushed when the feed opened (plain
+  // replaceState -- no new entry) before navigating, so one back press
+  // from the destination page lands on plain /reels and a second leaves,
+  // instead of landing back inside the feed's own history entry.
+  function leaveFeedForLink(state, path) {
+    if (state && state.historyEntryOpen) {
+      state.historyEntryOpen = false;
+      history.replaceState(null, "", location.pathname + location.search);
+    }
+    navigateTo(path);
+  }
+
   // --- Navbar link injection -----------------------------------------------
 
   function injectNavLink(show) {
@@ -558,6 +577,8 @@
       screen: "loading",
       activeChipId: "all",
       gridScrollTop: 0,
+      unmuted: false,
+      soundUnlocked: false,
       codecNeedsTranscode: {}, // video_codec -> true, learned this session
       playCountedIds: {}, // scene id -> true, counted this session
     };
@@ -746,6 +767,11 @@
     var filtered = app.pool.filter(function (s) {
       return poolMatchesChip(app, s, app.activeChipId);
     });
+    if (app.config.settings.landscapeClips === "hide") {
+      filtered = filtered.filter(function (s) {
+        return !isLandscape(s);
+      });
+    }
 
     filtered.forEach(function (scene) {
       grid.appendChild(buildCoverCell(app, scene));
@@ -786,7 +812,7 @@
         heartBadge.addEventListener("click", function (e) {
           e.stopPropagation();
           e.preventDefault();
-          unlikeFromGrid(app, scene, renderHeartBadge);
+          unlikeFromGrid(app, scene);
         });
         cell.appendChild(heartBadge);
       }
@@ -800,7 +826,7 @@
     return cell;
   }
 
-  function unlikeFromGrid(app, scene, onDone) {
+  function unlikeFromGrid(app, scene) {
     if (!sceneHasTag(scene, app.tags.liked)) return;
     scene.tags = scene.tags.filter(function (t) {
       return t.id !== app.tags.liked;
@@ -809,13 +835,16 @@
       handleTagWriteFailure(app, err);
     });
     applyScoreDelta(app, scene, -1);
-    if (onDone) onDone();
+    render(app);
   }
 
   function startFeed(app, seedSceneId) {
     app.feedSeedSceneId = seedSceneId;
     app.feedChipId = app.activeChipId;
     setScreen(app, "feed");
+    if (app.unmuted && app._feedState) {
+      unlockSound(app._feedState);
+    }
   }
 
   // =========================================================================
@@ -1032,7 +1061,7 @@
     );
 
     selectRow(
-      "Fit",
+      "Fit (portrait clips)",
       [
         { value: "contain", label: "Contain" },
         { value: "fill", label: "Fill" },
@@ -1041,6 +1070,19 @@
       pending.fit,
       function (v) {
         pending.fit = v;
+      }
+    );
+
+    selectRow(
+      "Landscape clips",
+      [
+        { value: "blur", label: "Blur backdrop" },
+        { value: "crop", label: "Crop" },
+        { value: "hide", label: "Hide" },
+      ],
+      pending.landscapeClips || "blur",
+      function (v) {
+        pending.landscapeClips = v;
       }
     );
 
@@ -1120,6 +1162,11 @@
     var pool = app.pool.filter(function (s) {
       return poolMatchesChip(app, s, app.feedChipId);
     });
+    if (app.config.settings.landscapeClips === "hide") {
+      pool = pool.filter(function (s) {
+        return !isLandscape(s);
+      });
+    }
 
     var seedScene = app.feedSeedSceneId
       ? pool.filter(function (s) {
@@ -1134,22 +1181,42 @@
       slideEls: [],
       videos: [null, null, null], // pool of 3 reused <video> elements
       currentIndex: 0,
-      unmuted: false,
-      soundUnlocked: false,
+      unmuted: !!app.unmuted,
+      soundUnlocked: !!app.soundUnlocked,
       observer: null,
       keyHandler: null,
+      popstateHandler: null,
+      historyEntryOpen: false,
+      progressRafId: null,
+      progressDragging: false,
       disposed: false,
       muteBtn: null,
       seenTimer: null,
       playTimer: null,
       newlySeenCount: 0,
       lastAction: null,
+      pendingToastMessage: null,
       toastEl: null,
       toastTimeoutId: null,
     };
 
     app.root.className = "reels-overlay";
     document.documentElement.classList.add("reels-html-lock");
+
+    state.historyEntryOpen = true;
+    history.pushState({ reelsFeed: true }, "", location.pathname + location.search + "#feed");
+    state.popstateHandler = function () {
+      if (state.disposed) return;
+      state.historyEntryOpen = false;
+      unmountFeedScreen(state);
+      setScreen(app, "start");
+      if (state.pendingToastMessage) {
+        var pendingMessage = state.pendingToastMessage;
+        state.pendingToastMessage = null;
+        showUndoToast(state, pendingMessage);
+      }
+    };
+    window.addEventListener("popstate", state.popstateHandler);
 
     if (app.config.settings.showDebugInfo) {
       var versionBadge = el("div", "reels-feed-version", "Reels v" + REELS_VERSION);
@@ -1159,8 +1226,7 @@
     var backBtn = el("button", "reels-feed-back", "←");
     backBtn.setAttribute("aria-label", "Back");
     backBtn.addEventListener("click", function () {
-      unmountFeedScreen(state);
-      setScreen(app, "start");
+      closeFeed(app, state);
     });
     app.root.appendChild(backBtn);
 
@@ -1267,15 +1333,31 @@
       } else if (lowerKey === "escape") {
         e.preventDefault();
         e.stopImmediatePropagation();
-        unmountFeedScreen(state);
-        setScreen(app, "start");
+        closeFeed(app, state);
       }
     };
     document.addEventListener("keydown", state.keyHandler, true);
 
     maybeShowHint(app);
 
+    startProgressLoop(state);
+
     app._feedState = state;
+  }
+
+  // Pops the history entry pushed when the feed opened (which drives the
+  // actual close via the popstate handler above) so the back arrow/Esc and
+  // a real browser back press go through the exact same close path and
+  // never leave a stray entry behind.
+  function closeFeed(app, state) {
+    if (state.disposed) return;
+    if (state.historyEntryOpen) {
+      state.historyEntryOpen = false;
+      history.back();
+    } else {
+      unmountFeedScreen(state);
+      setScreen(app, "start");
+    }
   }
 
   // Leaving the feed for the start/review/settings screens -- the overlay
@@ -1285,6 +1367,8 @@
     state.disposed = true;
     if (state.observer) state.observer.disconnect();
     document.removeEventListener("keydown", state.keyHandler, true);
+    if (state.popstateHandler) window.removeEventListener("popstate", state.popstateHandler);
+    stopProgressLoop(state);
     clearTimeout(state.seenTimer);
     clearTimeout(state.playTimer);
     clearUndoToast(state);
@@ -1324,6 +1408,7 @@
       el: el("div", "reels-slide"),
       video: null,
       expanded: false,
+      dirty: false,
     };
     slide.el.addEventListener("contextmenu", function (e) {
       e.preventDefault();
@@ -1345,14 +1430,31 @@
     slide.convertingLabel = null;
     slide.tapHint = null;
     slide.needsSoundRetry = false;
+    slide.progressFill = null;
 
-    var fitClass =
-      app.config.settings.fit === "fill"
-        ? "reels-fit-fill"
-        : app.config.settings.fit === "crop"
-        ? "reels-fit-crop"
-        : "reels-fit-contain";
+    var landscape = isLandscape(scene);
+    var fitClass;
+    if (landscape && app.config.settings.landscapeClips === "crop") {
+      fitClass = "reels-fit-crop";
+    } else if (landscape) {
+      // "blur" (default): always contain, with a blurred backdrop below.
+      fitClass = "reels-fit-contain";
+    } else {
+      fitClass =
+        app.config.settings.fit === "fill"
+          ? "reels-fit-fill"
+          : app.config.settings.fit === "crop"
+          ? "reels-fit-crop"
+          : "reels-fit-contain";
+    }
     slide.el.classList.add(fitClass);
+
+    if (landscape && app.config.settings.landscapeClips === "blur") {
+      slide.el.classList.add("reels-landscape-blur");
+      var bg = el("div", "reels-landscape-bg");
+      bg.style.backgroundImage = "url('" + (scene.paths.screenshot || "") + "')";
+      slide.el.appendChild(bg);
+    }
 
     var poster = document.createElement("img");
     poster.className = "reels-poster";
@@ -1362,14 +1464,15 @@
     slide.el.appendChild(poster);
     slide.poster = poster;
 
-    slide.el.appendChild(buildOverlay(app, scene, slide));
+    slide.el.appendChild(buildOverlay(app, scene, slide, state));
+    slide.el.appendChild(buildProgressBar(slide, state));
   }
 
-  function buildOverlay(app, scene, slide) {
+  function buildOverlay(app, scene, slide, state) {
     var overlay = el("div", "reels-slide-overlay");
 
     if (sceneHasTag(scene, app.tags.liked)) {
-      overlay.appendChild(el("div", "reels-liked-badge", "♥"));
+      overlay.appendChild(buildLikedBadge(app, state, slide));
     }
 
     var performers = scene.performers || [];
@@ -1383,7 +1486,7 @@
         a.addEventListener("click", function (e) {
           e.stopPropagation();
           e.preventDefault();
-          navigateTo("/performers/" + p.id);
+          leaveFeedForLink(state, "/performers/" + p.id);
         });
         perfRow.appendChild(a);
       });
@@ -1397,7 +1500,7 @@
       studioLink.addEventListener("click", function (e) {
         e.stopPropagation();
         e.preventDefault();
-        navigateTo("/studios/" + scene.studio.id);
+        leaveFeedForLink(state, "/studios/" + scene.studio.id);
       });
       var studioImg = document.createElement("img");
       studioImg.src = scene.studio.image_path;
@@ -1443,6 +1546,7 @@
   // video whose slide has left the window is freed and moved to whichever
   // new slide just entered it.
   function assignVideosToWindow(state) {
+    populateDirtySlidesNear(state);
     var app = state.app;
     var desiredSlides = [
       state.slideEls[state.currentIndex - 1],
@@ -1617,6 +1721,118 @@
     }
   }
 
+  function buildLikedBadge(app, state, slide) {
+    var badge = el("button", "reels-liked-badge", "♥");
+    badge.setAttribute("aria-label", "Unlike");
+    badge.addEventListener("click", function (e) {
+      e.stopPropagation();
+      e.preventDefault();
+      unlikeFromFeed(app, state, slide);
+    });
+    return badge;
+  }
+
+  // The scene file's own duration (from the pool query) as a fallback for
+  // when video.duration isn't finite yet -- notably on transcode streams,
+  // which also can't be seeked at all.
+  function progressDuration(slide) {
+    var video = slide.video;
+    if (video && isFinite(video.duration) && video.duration > 0) return video.duration;
+    var file = sceneFile(slide.scene);
+    return file && file.duration ? file.duration : 0;
+  }
+
+  // Thin seek bar along the bottom edge of the slide. The fill itself is
+  // only ever written by startProgressLoop's single rAF loop (for whichever
+  // slide is current); this builder only wires up the drag-to-seek hit
+  // area, which doubles its 3px track to a ~24px touch target.
+  function buildProgressBar(slide, state) {
+    var hit = el("div", "reels-progress-hit");
+    var track = el("div", "reels-progress-track");
+    var fill = el("div", "reels-progress-fill");
+    track.appendChild(fill);
+    hit.appendChild(track);
+    slide.progressFill = fill;
+
+    var dragging = false;
+
+    function seekFromClientX(clientX) {
+      var video = slide.video;
+      if (!video) return;
+      var duration = progressDuration(slide);
+      if (!duration) return;
+      var rect = hit.getBoundingClientRect();
+      var ratio = clamp((clientX - rect.left) / rect.width, 0, 1);
+      video.currentTime = ratio * duration;
+      fill.style.width = ratio * 100 + "%";
+    }
+
+    hit.addEventListener("pointerdown", function (e) {
+      e.stopPropagation();
+      // Transcode streams can't be seeked -- leave the fill alone (the rAF
+      // loop keeps updating it) and don't start a drag at all.
+      if (slide.video && slide.video._reelsOnTranscode) return;
+      dragging = true;
+      state.progressDragging = true;
+      try {
+        hit.setPointerCapture(e.pointerId);
+      } catch (err) {}
+      seekFromClientX(e.clientX);
+    });
+    hit.addEventListener("pointermove", function (e) {
+      if (!dragging) return;
+      seekFromClientX(e.clientX);
+      e.stopPropagation();
+    });
+    function endDrag(e) {
+      if (!dragging) return;
+      dragging = false;
+      state.progressDragging = false;
+      e.stopPropagation();
+    }
+    hit.addEventListener("pointerup", endDrag);
+    hit.addEventListener("pointercancel", endDrag);
+
+    return hit;
+  }
+
+  function startProgressLoop(state) {
+    function tick() {
+      var slide = state.slideEls[state.currentIndex];
+      if (slide && slide.video && slide.progressFill && !state.progressDragging) {
+        var duration = progressDuration(slide);
+        if (duration) {
+          var ratio = clamp(slide.video.currentTime / duration, 0, 1);
+          slide.progressFill.style.width = ratio * 100 + "%";
+        }
+      }
+      state.progressRafId = requestAnimationFrame(tick);
+    }
+    state.progressRafId = requestAnimationFrame(tick);
+  }
+
+  function stopProgressLoop(state) {
+    if (state.progressRafId) {
+      cancelAnimationFrame(state.progressRafId);
+      state.progressRafId = null;
+    }
+  }
+
+  // Populates any slide marked dirty by reorderUpcoming once it comes
+  // within currentIndex +/- 3, instead of rebuilding the whole re-sampled
+  // tail (up to ~175 slides) in one go.
+  function populateDirtySlidesNear(state) {
+    var lo = Math.max(0, state.currentIndex - 3);
+    var hi = Math.min(state.slideEls.length - 1, state.currentIndex + 3);
+    for (var i = lo; i <= hi; i++) {
+      var slide = state.slideEls[i];
+      if (slide && slide.dirty) {
+        populateSlide(state.app, slide, state);
+        slide.dirty = false;
+      }
+    }
+  }
+
   function attemptPlayCurrent(slide, state) {
     if (!slide || !slide.video) return;
     hideTapForSound(slide);
@@ -1659,6 +1875,8 @@
   function unlockSound(state) {
     state.unmuted = true;
     state.soundUnlocked = true;
+    state.app.unmuted = true;
+    state.app.soundUnlocked = true;
     var currentVideo = state.slideEls[state.currentIndex] && state.slideEls[state.currentIndex].video;
     state.videos.forEach(function (v) {
       if (!v.hasAttribute("src")) return;
@@ -1680,6 +1898,7 @@
       unlockSound(state);
     } else {
       state.unmuted = false;
+      state.app.unmuted = false;
       state.videos.forEach(function (v) {
         v.muted = true;
       });
@@ -1750,12 +1969,12 @@
     }, 800);
   }
 
-  function refreshLikedBadge(app, slide) {
+  function refreshLikedBadge(app, state, slide) {
     var existing = slide.el.querySelector(".reels-liked-badge");
     if (existing) existing.remove();
     if (sceneHasTag(slide.scene, app.tags.liked)) {
       var overlay = slide.el.querySelector(".reels-slide-overlay");
-      if (overlay) overlay.insertBefore(el("div", "reels-liked-badge", "♥"), overlay.firstChild);
+      if (overlay) overlay.insertBefore(buildLikedBadge(app, state, slide), overlay.firstChild);
     }
   }
 
@@ -1769,11 +1988,31 @@
     });
     applyScoreDelta(app, scene, 1);
     showHeartBurst(slide);
-    refreshLikedBadge(app, slide);
+    refreshLikedBadge(app, state, slide);
 
     state.lastAction = { type: "like", scene: scene, delta: 1 };
     showUndoToast(state, "Liked");
-    reorderUpcoming(app, state);
+    deferReorderUpcoming(app, state);
+  }
+
+  // Unliking the small heart badge inside the feed itself -- same undo
+  // toast/undo path as a like, just the reverse tag write and score delta.
+  function unlikeFromFeed(app, state, slide) {
+    var scene = slide.scene;
+    if (!sceneHasTag(scene, app.tags.liked)) return;
+
+    scene.tags = scene.tags.filter(function (t) {
+      return t.id !== app.tags.liked;
+    });
+    bulkUpdateTag([scene.id], app.tags.liked, "REMOVE").catch(function (err) {
+      handleTagWriteFailure(app, err);
+    });
+    applyScoreDelta(app, scene, -1);
+    refreshLikedBadge(app, state, slide);
+
+    state.lastAction = { type: "unlike", scene: scene, delta: -1 };
+    showUndoToast(state, "Unliked");
+    deferReorderUpcoming(app, state);
   }
 
   function dislike(app, state) {
@@ -1800,11 +2039,16 @@
       return s.id !== scene.id;
     });
 
-    removeSlideAt(state, idx);
+    // removeSlideAt shows the undo toast itself once it knows whether the
+    // feed stayed open or had to close (closing is async -- see closeFeed
+    // -- so a toast appended here could get wiped by the start screen's
+    // render before the close actually happens).
+    removeSlideAt(state, idx, {
+      message: "Marked for deletion",
+      action: { type: "dislike", scene: scene, wasLiked: wasLiked },
+    });
 
-    state.lastAction = { type: "dislike", scene: scene, wasLiked: wasLiked };
-    showUndoToast(state, "Marked for deletion");
-    reorderUpcoming(app, state);
+    deferReorderUpcoming(app, state);
   }
 
   function undoLastAction(app, state) {
@@ -1825,7 +2069,17 @@
       var slide = state.slideEls.filter(function (s) {
         return s.scene === scene;
       })[0];
-      if (slide) refreshLikedBadge(app, slide);
+      if (slide) refreshLikedBadge(app, state, slide);
+    } else if (action.type === "unlike") {
+      scene.tags = (scene.tags || []).concat([{ id: app.tags.liked, name: TAG_NAMES.liked }]);
+      bulkUpdateTag([scene.id], app.tags.liked, "ADD").catch(function (err) {
+        handleTagWriteFailure(app, err);
+      });
+      applyScoreDelta(app, scene, -action.delta); // delta is -1, so this adds the 1 back
+      var unlikedSlide = state.slideEls.filter(function (s) {
+        return s.scene === scene;
+      })[0];
+      if (unlikedSlide) refreshLikedBadge(app, state, unlikedSlide);
     } else if (action.type === "dislike") {
       // Queued in this order: ADD Reels (and Reels-liked if it was
       // liked) first, then REMOVE zzz-reels-delete.
@@ -1883,12 +2137,20 @@
     toast.appendChild(undoBtn);
     state.app.root.appendChild(toast);
     state.toastEl = toast;
-    state.toastTimeoutId = setTimeout(function () {
-      state.toastEl = null;
-      state.toastTimeoutId = null;
-      state.lastAction = null;
-      toast.remove();
-    }, UNDO_TOAST_MS);
+    // Two rAFs guarantee a frame has actually painted (the first fires
+    // before paint, the second after) before the 5s countdown starts --
+    // otherwise the toast could visually have had far less than 5s.
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        if (state.toastEl !== toast) return;
+        state.toastTimeoutId = setTimeout(function () {
+          state.toastEl = null;
+          state.toastTimeoutId = null;
+          state.lastAction = null;
+          toast.remove();
+        }, UNDO_TOAST_MS);
+      });
+    });
   }
 
   function clearUndoToast(state) {
@@ -1906,7 +2168,7 @@
   // same height, removing the DOM node at (or above) the current scroll
   // position leaves scrollTop numerically unchanged, which lands exactly
   // on the slide that used to be next -- no explicit scroll needed.
-  function removeSlideAt(state, idx) {
+  function removeSlideAt(state, idx, pendingToast) {
     var slide = state.slideEls[idx];
     if (!slide) return;
     state.observer.unobserve(slide.el);
@@ -1919,8 +2181,11 @@
     state.scenes.splice(idx, 1);
 
     if (!state.slideEls.length) {
-      unmountFeedScreen(state);
-      setScreen(state.app, "start");
+      if (pendingToast) {
+        state.lastAction = pendingToast.action;
+        state.pendingToastMessage = pendingToast.message;
+      }
+      closeFeed(state.app, state);
       return;
     }
     if (state.currentIndex >= state.slideEls.length) {
@@ -1928,6 +2193,10 @@
     }
     assignVideosToWindow(state);
     onBecameCurrent(state, state.slideEls[state.currentIndex]);
+    if (pendingToast) {
+      state.lastAction = pendingToast.action;
+      showUndoToast(state, pendingToast.message);
+    }
   }
 
   // Inserts `scene` as a new slide at `idx` (used by undo to put a
@@ -1954,10 +2223,23 @@
     var newOrder = buildFeedOrder(app, tailScenes, null);
     for (var i = 0; i < newOrder.length; i++) {
       var slide = state.slideEls[tailStart + i];
+      var changed = !slide.scene || slide.scene.id !== newOrder[i].id;
       slide.scene = newOrder[i];
-      populateSlide(app, slide, state);
+      if (changed) slide.dirty = true;
       state.scenes[tailStart + i] = newOrder[i];
     }
+    populateDirtySlidesNear(state);
+  }
+
+  // like()/dislike() want their visual feedback (heart burst, badge, toast)
+  // to paint before the up-to-~175-slide re-sample runs, not after -- rAF
+  // then a 0ms timeout lands this just after the next paint.
+  function deferReorderUpcoming(app, state) {
+    requestAnimationFrame(function () {
+      setTimeout(function () {
+        if (!state.disposed) reorderUpcoming(app, state);
+      }, 0);
+    });
   }
 
   // --- Tap / double-tap / long-press / swipe disambiguation ---------------
@@ -1986,7 +2268,7 @@
     }
 
     slide.el.addEventListener("pointerdown", function (e) {
-      if (e.target.closest && e.target.closest("a, button, .reels-hashtags")) return;
+      if (e.target.closest && e.target.closest("a, button, .reels-hashtags, .reels-progress-hit")) return;
       startX = e.clientX;
       startY = e.clientY;
       startTime = Date.now();
@@ -2003,7 +2285,7 @@
     slide.el.addEventListener("pointerleave", clearLongPress);
 
     slide.el.addEventListener("pointerup", function (e) {
-      if (e.target.closest && e.target.closest("a, button, .reels-hashtags")) {
+      if (e.target.closest && e.target.closest("a, button, .reels-hashtags, .reels-progress-hit")) {
         return;
       }
 

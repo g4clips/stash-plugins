@@ -1,6 +1,6 @@
 name: Reels
 description: Instagram-Reels-style vertical swipe feed of short portrait scenes.
-version: "0.3.0"
+version: "0.3.1"
 url: ""
 
 ui:

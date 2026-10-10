@@ -4,7 +4,7 @@
   }
   window._reelsPluginLoaded = true;
 
-  var REELS_VERSION = "0.3.2";
+  var REELS_VERSION = "0.3.3";
   var PLUGIN_ID = "Reels";
   var CANDIDATE_MAX_COUNT = 500;
   var CURRENT_HINT_VERSION = 2;
@@ -121,6 +121,18 @@
     "      studio { id name image_path }" +
     "      tags { id name }" +
     "    }" +
+    "  }" +
+    "}";
+
+  var SCENE_REFRESH_QUERY =
+    "query ReelsSceneRefresh($id: ID!) {" +
+    "  findScene(id: $id) {" +
+    "    id title" +
+    "    paths { screenshot stream }" +
+    "    files { width height duration video_codec audio_codec }" +
+    "    performers { id name }" +
+    "    studio { id name image_path }" +
+    "    tags { id name }" +
     "  }" +
     "}";
 
@@ -679,6 +691,11 @@
   // =========================================================================
   // Application shell: owns the current screen and shared data.
   // =========================================================================
+
+  // The Reels app (config, pool, live feed, the three <video> elements)
+  // outlives the /reels route: ReelsPage suspends it on unmount and
+  // reattaches it on the next mount. A full page reload starts fresh.
+  var persistedApp = null;
 
   function createApp(root) {
     var app = {
@@ -1431,6 +1448,27 @@
     });
     container.appendChild(dislikeBtn);
 
+    var openLink = el("a", "reels-open-btn", "↗");
+    openLink.setAttribute("aria-label", "Open in Stash");
+    openLink.setAttribute("title", "Open in Stash");
+    openLink.href = "/scenes";
+    openLink.addEventListener("pointerdown", function () {
+      updateOpenLink(state);
+    });
+    openLink.addEventListener("focus", function () {
+      updateOpenLink(state);
+    });
+    openLink.addEventListener("click", function (e) {
+      if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return; // new tab/window: browser handles it
+      e.preventDefault();
+      updateOpenLink(state);
+      var slide = state.slideEls[state.currentIndex];
+      if (!slide) return;
+      leaveFeedForLink(state, openLink.getAttribute("href"));
+    });
+    container.appendChild(openLink);
+    state.openLink = openLink;
+
     var muteBtn = el("button", "reels-mute-btn", state.unmuted ? "🔊" : "🔇");
     muteBtn.setAttribute("aria-label", "Mute / unmute");
     muteBtn.addEventListener("click", function () {
@@ -1600,9 +1638,79 @@
     attemptPlayCurrent(currentSlide, state);
   }
 
-  // Full teardown: only when the /reels route itself unmounts, or when a
-  // chip change / Shuffle / review confirm / settings save invalidates the
-  // feed and the next startFeed() needs to build a fresh one.
+  // Re-reads the clip the feed resumed on, so edits made in Stash (tags,
+  // performers, studio) show in the overlay. A clip that no longer belongs in
+  // the pool is dropped and the feed moves on to the next one.
+  function refreshResumedScene(app, state) {
+    var slide = state.slideEls[state.currentIndex];
+    if (!slide) return;
+    var sceneId = slide.scene.id;
+    gql(SCENE_REFRESH_QUERY, { id: sceneId })
+      .then(function (data) {
+        if (state.disposed || state.hidden) return;
+        var fresh = data.findScene;
+        var idx = -1;
+        for (var i = 0; i < state.scenes.length; i++) {
+          if (state.scenes[i].id === sceneId) {
+            idx = i;
+            break;
+          }
+        }
+        if (idx === -1 || idx < state.currentIndex) return;
+
+        var inPool =
+          fresh &&
+          sceneHasTag(fresh, app.tags.pool) &&
+          !sceneHasTag(fresh, app.tags.deleted) &&
+          !sceneHasTag(fresh, app.tags.unplayable);
+
+        if (!inPool) {
+          app.pool = app.pool.filter(function (s) {
+            return s.id !== sceneId;
+          });
+          removeSlideAt(state, idx, null);
+          return;
+        }
+
+        app.pool = app.pool.map(function (s) {
+          return s.id === sceneId ? fresh : s;
+        });
+        state.scenes[idx] = fresh;
+        state.slideEls[idx].scene = fresh;
+        populateSlide(app, state.slideEls[idx], state);
+        updateOpenLink(state);
+      })
+      .catch(logErr);
+  }
+
+  // Called when the /reels route unmounts: the app, its feed and its three
+  // <video> elements stay alive (module scope) but go quiet.
+  function suspendApp(app) {
+    if (app._feedState && !app._feedState.disposed) hideFeedScreen(app._feedState);
+    app.videos.forEach(function (v) {
+      v.pause();
+    });
+  }
+
+  // Called when /reels mounts again with a persisted app.
+  function resumeApp(app) {
+    render(app);
+    var state = app._feedState;
+    if (app.screen === "feed" && state && !state.disposed) refreshResumedScene(app, state);
+
+    // Background refresh of the pool and candidates (the pool is reshuffled
+    // once, as always). Only the start screen is redrawn; a live feed is
+    // left alone and the new pool is used at its next rebuild.
+    refetchPoolAndCandidates(app)
+      .then(function () {
+        if (app.screen === "start" && app.root.isConnected) render(app);
+      })
+      .catch(logErr);
+  }
+
+  // Full teardown: only when a chip change / Shuffle / review confirm /
+  // settings save invalidates the feed and the next startFeed() needs to
+  // build a fresh one.
   function unmountFeedScreen(state) {
     state.disposed = true;
     state.hidden = true;
@@ -2241,7 +2349,18 @@
 
   // --- Seen / play-count tracking -----------------------------------------
 
+  // Stash's scene page reads ?t=SECONDS as the initial playback position.
+  function updateOpenLink(state) {
+    var slide = state.slideEls[state.currentIndex];
+    if (!slide || !state.openLink) return;
+    var href = "/scenes/" + slide.scene.id;
+    var t = slide.video && slide.video.currentTime ? Math.floor(slide.video.currentTime) : 0;
+    if (t > 0) href += "?t=" + t;
+    state.openLink.setAttribute("href", href);
+  }
+
   function onBecameCurrent(state, slide) {
+    updateOpenLink(state);
     clearTimeout(state.seenTimer);
     clearTimeout(state.playTimer);
     if (!slide) return;
@@ -2716,25 +2835,37 @@
     var containerRef = React.useRef(null);
 
     React.useEffect(function () {
-      var app = createApp(containerRef.current);
+      var root = containerRef.current;
+      var app = persistedApp;
+      var fresh = !app;
+      if (fresh) {
+        app = persistedApp = createApp(root);
+      } else {
+        app.root = root;
+      }
 
-      containerRef.current.className = "reels-overlay";
+      root.className = "reels-overlay";
       document.documentElement.classList.add("reels-html-lock");
-      clear(containerRef.current);
-      containerRef.current.appendChild(el("div", "reels-loading", "Loading…"));
 
-      loadAll(app)
-        .then(function () {
-          setScreen(app, "start");
-        })
-        .catch(function (err) {
-          console.error("Reels: failed to load.", err);
-          clear(containerRef.current);
-          containerRef.current.appendChild(el("div", "reels-loading", "Failed to load Reels. See console."));
-        });
+      if (fresh) {
+        clear(root);
+        root.appendChild(el("div", "reels-loading", "Loading…"));
+        loadAll(app)
+          .then(function () {
+            setScreen(app, "start");
+          })
+          .catch(function (err) {
+            console.error("Reels: failed to load.", err);
+            persistedApp = null;
+            clear(app.root);
+            app.root.appendChild(el("div", "reels-loading", "Failed to load Reels. See console."));
+          });
+      } else {
+        resumeApp(app);
+      }
 
       return function () {
-        if (app._feedState) unmountFeedScreen(app._feedState);
+        suspendApp(app);
         document.documentElement.classList.remove("reels-html-lock");
       };
     }, []);

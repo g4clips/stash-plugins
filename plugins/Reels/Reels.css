@@ -458,7 +458,8 @@ html.reels-html-lock body {
 }
 
 .reels-dislike-btn,
-.reels-mute-btn {
+.reels-mute-btn,
+.reels-open-btn {
   position: fixed;
   right: 12px;
   z-index: 10000;
@@ -484,8 +485,15 @@ html.reels-html-lock body {
   bottom: calc(max(24px, env(safe-area-inset-bottom)) + 52px);
 }
 
+/* Directly above the mute button. */
+.reels-open-btn {
+  bottom: calc(max(24px, env(safe-area-inset-bottom)) + 104px);
+  text-decoration: none;
+}
+
 .reels-dislike-btn:hover,
-.reels-mute-btn:hover {
+.reels-mute-btn:hover,
+.reels-open-btn:hover {
   background: rgba(0, 0, 0, 0.65);
 }
 

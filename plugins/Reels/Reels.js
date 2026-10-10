@@ -4,7 +4,7 @@
   }
   window._reelsPluginLoaded = true;
 
-  var REELS_VERSION = "0.3.1";
+  var REELS_VERSION = "0.3.2";
   var PLUGIN_ID = "Reels";
   var CANDIDATE_MAX_COUNT = 500;
   var CURRENT_HINT_VERSION = 2;
@@ -398,7 +398,7 @@
   // first from clips not in cycle.seen, then from seen ones. If `seedScene`
   // is given it goes first, and the next five draws get a boost relative
   // to it (spec section 6).
-  function buildFeedOrder(app, pool, seedScene) {
+  function buildFeedOrder(app, pool, seedScene, boostOnly) {
     var seenSet = {};
     (app.config.cycle.seen || []).forEach(function (id) {
       seenSet[id] = true;
@@ -440,8 +440,112 @@
     }
 
     var order = [];
-    if (seedScene) order.push(seedScene);
+    if (seedScene && !boostOnly) order.push(seedScene);
     return order.concat(drawTracked(unseen)).concat(drawTracked(seen));
+  }
+
+  // Weight-sampling the full pool is O(n^2) (buildFeedOrder re-weighs every
+  // remaining scene on every draw) -- fine for a few hundred clips, too
+  // slow to do synchronously at ~2,300. estimateBuildFeedOrderMs times a
+  // small sample and scales it up by the algorithm's O(n^2) shape instead
+  // of running (and discarding) the full computation just to measure it.
+  var FEED_ORDER_BUDGET_MS = 50;
+  var FEED_ORDER_SAMPLE_SIZE = 50;
+
+  function estimateBuildFeedOrderMs(app, pool) {
+    var n = pool.length;
+    if (n <= FEED_ORDER_SAMPLE_SIZE) return 0;
+    var sample = pool.slice(0, FEED_ORDER_SAMPLE_SIZE);
+    var t0 = performance.now();
+    buildFeedOrder(app, sample, null, true);
+    var sampleMs = performance.now() - t0;
+    var scale = (n / FEED_ORDER_SAMPLE_SIZE) * (n / FEED_ORDER_SAMPLE_SIZE);
+    return sampleMs * scale;
+  }
+
+  // Only the first FAST_SAMPLE_WINDOW positions (plus the seed) are weight-
+  // sampled up front; the rest is plain-shuffled and gets weight-sampled in
+  // FAST_SAMPLE_WINDOW-sized batches as the viewer approaches it (see
+  // topUpFastOrder). Keeps the initial feed build under budget regardless
+  // of pool size.
+  var FAST_SAMPLE_WINDOW = 50;
+
+  function buildFeedOrderFast(app, pool, seedScene) {
+    var rest = seedScene
+      ? pool.filter(function (s) {
+          return s.id !== seedScene.id;
+        })
+      : pool.slice();
+    var seenSet = {};
+    (app.config.cycle.seen || []).forEach(function (id) {
+      seenSet[id] = true;
+    });
+    // Keep the cycle rule in the shuffled tail too: unseen clips (shuffled)
+    // all come before seen clips (shuffled).
+    var shuffled = shuffle(
+      rest.filter(function (s) {
+        return !seenSet[s.id];
+      })
+    ).concat(
+      shuffle(
+        rest.filter(function (s) {
+          return seenSet[s.id];
+        })
+      )
+    );
+    var headPool = shuffled.slice(0, FAST_SAMPLE_WINDOW);
+    var tailPool = shuffled.slice(FAST_SAMPLE_WINDOW);
+    var head = buildFeedOrder(app, headPool, seedScene);
+    return head.concat(tailPool);
+  }
+
+  // Called from assignVideosToWindow on every index change. Once the
+  // viewer gets within 10 slides of the still-shuffled (not yet weight-
+  // sampled) tail, weight-samples the next FAST_SAMPLE_WINDOW scenes in
+  // place, same as reorderUpcoming does after a like/dislike. Each batch is
+  // contiguous, so buildFeedOrder's unseen-then-seen split keeps the tail's
+  // two groups in order.
+  function topUpFastOrder(state) {
+    if (!state.fastOrderBoundary) return;
+    if (state.fastOrderBoundary >= state.scenes.length) return;
+    if (state.currentIndex + 10 < state.fastOrderBoundary) return;
+
+    var app = state.app;
+    var nextEnd = Math.min(state.fastOrderBoundary + FAST_SAMPLE_WINDOW, state.scenes.length);
+    var chunkScenes = state.scenes.slice(state.fastOrderBoundary, nextEnd);
+    var resampled = buildFeedOrder(app, chunkScenes, null, true);
+    for (var i = 0; i < resampled.length; i++) {
+      var idx = state.fastOrderBoundary + i;
+      var slide = state.slideEls[idx];
+      if (!slide) break;
+      var changed = !slide.scene || slide.scene.id !== resampled[i].id;
+      slide.scene = resampled[i];
+      if (changed) slide.dirty = true;
+      state.scenes[idx] = resampled[i];
+    }
+    state.fastOrderBoundary = nextEnd;
+    populateDirtySlidesNear(state);
+  }
+
+  // Builds the feed order for a fresh mount, choosing the cheap sampling
+  // path when the full weighted draw would blow the frame budget. Returns
+  // { order, fastOrderBoundary } -- fastOrderBoundary is null when the
+  // whole order was weight-sampled up front.
+  function buildInitialFeedOrder(app, pool, seedScene) {
+    var estMs = estimateBuildFeedOrderMs(app, pool);
+    if (estMs > FEED_ORDER_BUDGET_MS) {
+      console.log(
+        "Reels: buildFeedOrder estimated " + estMs.toFixed(1) + "ms for " + pool.length +
+          " clips -- using fast sampling path."
+      );
+      var order = buildFeedOrderFast(app, pool, seedScene);
+      var boundary = Math.min(FAST_SAMPLE_WINDOW + (seedScene ? 1 : 0), order.length);
+      return { order: order, fastOrderBoundary: boundary };
+    }
+    var t0 = performance.now();
+    var fullOrder = buildFeedOrder(app, pool, seedScene);
+    console.log("Reels: buildFeedOrder took " + (performance.now() - t0).toFixed(1) + "ms for " + pool.length + " clips.");
+    return { order: fullOrder, fastOrderBoundary: null };
   }
 
   // --- React Router navigation (PLUGIN-DEV-GUIDE.md sec 7) ---------------
@@ -560,6 +664,18 @@
     while (node.firstChild) node.removeChild(node.firstChild);
   }
 
+  // Routes every mute-state change on a pool <video> through one place so
+  // it can be logged (debug diagnosis for the Android/Edge silent-clip
+  // reports) without littering every call site with console calls.
+  function setVideoMuted(video, muted, scene, reason) {
+    if (video.muted === muted) return;
+    video.muted = muted;
+    console.log(
+      "Reels: muted -> " + muted + " (scene " + (scene ? scene.id : "?") + ", element " +
+        (video._reelsLetter || "?") + ", " + reason + ")"
+    );
+  }
+
   // =========================================================================
   // Application shell: owns the current screen and shared data.
   // =========================================================================
@@ -581,8 +697,27 @@
       soundUnlocked: false,
       codecNeedsTranscode: {}, // video_codec -> true, learned this session
       playCountedIds: {}, // scene id -> true, counted this session
+      videos: ["A", "B", "C"].map(function (letter) {
+        var v = document.createElement("video");
+        v.playsInline = true;
+        v.muted = true;
+        v.preload = "metadata";
+        v._reelsLetter = letter;
+        return v;
+      }),
+      _feedState: null,
     };
     return app;
+  }
+
+  // Changing the chip, pressing Shuffle, confirming the review grid, or
+  // saving settings all invalidate whatever feed is currently built so the
+  // next startFeed() call rebuilds from scratch instead of resuming.
+  function invalidateFeedState(app) {
+    if (app._feedState) {
+      unmountFeedScreen(app._feedState);
+      app._feedState = null;
+    }
   }
 
   function loadAll(app) {
@@ -645,7 +780,11 @@
     } else if (app.screen === "feed") {
       // Feed takes over the whole root; it manages its own top bar.
       clear(app.root);
-      mountFeedScreen(app);
+      if (app._feedState && !app._feedState.disposed) {
+        showFeedScreenExisting(app, app._feedState);
+      } else {
+        mountFeedScreen(app);
+      }
     }
   }
 
@@ -753,7 +892,7 @@
 
     var shuffleBtn = el("button", "reels-shuffle-btn", "Shuffle");
     shuffleBtn.addEventListener("click", function () {
-      startFeed(app, null);
+      startFeed(app, null, true);
     });
     container.appendChild(shuffleBtn);
 
@@ -838,13 +977,56 @@
     render(app);
   }
 
-  function startFeed(app, seedSceneId) {
-    app.feedSeedSceneId = seedSceneId;
+  function startFeed(app, seedSceneId, forceRebuild) {
+    var existing = app._feedState;
+    var sameChip = existing && !existing.disposed && existing.chipId === app.activeChipId;
+    var seedInFeed =
+      !seedSceneId ||
+      (sameChip &&
+        existing.scenes.some(function (s) {
+          return s.id === seedSceneId;
+        }));
+
+    // A cover that isn't in the live feed rebuilds directly, without
+    // showing the old feed first, so only one #feed history entry is pushed.
+    if (forceRebuild || !sameChip || !seedInFeed) {
+      invalidateFeedState(app);
+      app.feedSeedSceneId = seedSceneId;
+      app.feedChipId = app.activeChipId;
+      setScreen(app, "feed");
+      if (app.unmuted && app._feedState) {
+        unlockSound(app._feedState);
+      }
+      return;
+    }
+
+    // Same chip, feed already built: resume it in place instead of
+    // rebuilding -- render() detects the live state and just redisplays it.
     app.feedChipId = app.activeChipId;
     setScreen(app, "feed");
-    if (app.unmuted && app._feedState) {
-      unlockSound(app._feedState);
+    if (seedSceneId) jumpToSceneInFeed(app, existing, seedSceneId);
+    if (app.unmuted) unlockSound(existing);
+  }
+
+  // Tapping a cover while a feed for the same chip is already live: jump
+  // to that clip in place (no rebuild) and re-sort what comes after it
+  // with the seed boost, same deferred path like/dislike use.
+  function jumpToSceneInFeed(app, state, seedSceneId) {
+    var idx = -1;
+    for (var i = 0; i < state.scenes.length; i++) {
+      if (state.scenes[i].id === seedSceneId) {
+        idx = i;
+        break;
+      }
     }
+    if (idx === -1) return; // startFeed checked membership before showing the feed
+
+    var seedScene = state.scenes[idx];
+    state.currentIndex = idx;
+    state.slideEls[idx].el.scrollIntoView({ behavior: "auto", block: "start" });
+    assignVideosToWindow(state);
+    onBecameCurrent(state, state.slideEls[idx]);
+    deferReorderUpcoming(app, state, seedScene);
   }
 
   // =========================================================================
@@ -979,6 +1161,7 @@
           return refetchPoolAndCandidates(app);
         })
         .then(function () {
+          invalidateFeedState(app);
           setScreen(app, "start");
         })
         .catch(function (err) {
@@ -1121,6 +1304,7 @@
           return refetchPoolAndCandidates(app);
         })
         .then(function () {
+          invalidateFeedState(app);
           setScreen(app, "start");
         })
         .catch(function (err) {
@@ -1173,13 +1357,15 @@
           return s.id === app.feedSeedSceneId;
         })[0]
       : null;
-    var ordered = buildFeedOrder(app, pool, seedScene);
+    var built = buildInitialFeedOrder(app, pool, seedScene);
 
     var state = {
       app: app,
-      scenes: ordered,
+      chipId: app.feedChipId,
+      scenes: built.order,
+      fastOrderBoundary: built.fastOrderBoundary,
       slideEls: [],
-      videos: [null, null, null], // pool of 3 reused <video> elements
+      videos: app.videos, // 3 reused <video> elements, created once per app mount
       currentIndex: 0,
       unmuted: !!app.unmuted,
       soundUnlocked: !!app.soundUnlocked,
@@ -1190,9 +1376,11 @@
       progressRafId: null,
       progressDragging: false,
       disposed: false,
+      hidden: false,
       muteBtn: null,
       seenTimer: null,
       playTimer: null,
+      debugTimer: null,
       newlySeenCount: 0,
       lastAction: null,
       pendingToastMessage: null,
@@ -1203,12 +1391,10 @@
     app.root.className = "reels-overlay";
     document.documentElement.classList.add("reels-html-lock");
 
-    state.historyEntryOpen = true;
-    history.pushState({ reelsFeed: true }, "", location.pathname + location.search + "#feed");
+    enterFeedHistory(state);
     state.popstateHandler = function () {
-      if (state.disposed) return;
-      state.historyEntryOpen = false;
-      unmountFeedScreen(state);
+      if (state.disposed || state.hidden) return;
+      hideFeedScreen(state);
       setScreen(app, "start");
       if (state.pendingToastMessage) {
         var pendingMessage = state.pendingToastMessage;
@@ -1218,9 +1404,17 @@
     };
     window.addEventListener("popstate", state.popstateHandler);
 
+    // Everything the feed screen puts on screen lives inside one container
+    // so the whole subtree (DOM nodes, playing <video> elements, listeners)
+    // can be detached and reattached as a unit when the user leaves/returns
+    // to /reels without destroying the feed -- see hideFeedScreen /
+    // showFeedScreenExisting.
+    var container = el("div", "reels-feed-container");
+    state.containerEl = container;
+
     if (app.config.settings.showDebugInfo) {
       var versionBadge = el("div", "reels-feed-version", "Reels v" + REELS_VERSION);
-      app.root.appendChild(versionBadge);
+      container.appendChild(versionBadge);
     }
 
     var backBtn = el("button", "reels-feed-back", "←");
@@ -1228,35 +1422,33 @@
     backBtn.addEventListener("click", function () {
       closeFeed(app, state);
     });
-    app.root.appendChild(backBtn);
+    container.appendChild(backBtn);
 
     var dislikeBtn = el("button", "reels-dislike-btn", "👎");
     dislikeBtn.setAttribute("aria-label", "Dislike");
     dislikeBtn.addEventListener("click", function () {
       dislike(app, state);
     });
-    app.root.appendChild(dislikeBtn);
+    container.appendChild(dislikeBtn);
 
     var muteBtn = el("button", "reels-mute-btn", state.unmuted ? "🔊" : "🔇");
     muteBtn.setAttribute("aria-label", "Mute / unmute");
     muteBtn.addEventListener("click", function () {
       toggleFeedMute(state);
     });
-    app.root.appendChild(muteBtn);
+    container.appendChild(muteBtn);
     state.muteBtn = muteBtn;
 
     var feed = el("div", "reels-feed");
-    app.root.appendChild(feed);
+    container.appendChild(feed);
     state.feedEl = feed;
 
-    for (var i = 0; i < 3; i++) {
-      var v = document.createElement("video");
-      v.playsInline = true;
-      v.muted = true;
+    app.root.appendChild(container);
+
+    state.videos.forEach(function (v) {
       v.loop = app.config.settings.endOfClip === "loop";
       v.preload = "metadata";
-      state.videos[i] = v;
-    }
+    });
 
     state.scenes.forEach(function (scene) {
       var slide = buildFeedSlide(app, scene, state);
@@ -1292,6 +1484,7 @@
     });
 
     state.keyHandler = function (e) {
+      if (state.hidden) return; // feed is live but not the visible screen
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       var key = e.key;
       var lowerKey = typeof key === "string" ? key.toLowerCase() : key;
@@ -1341,8 +1534,18 @@
     maybeShowHint(app);
 
     startProgressLoop(state);
+    startDebugTimer(state);
 
     app._feedState = state;
+  }
+
+  // Pushes the #feed history entry -- called both when the feed is first
+  // built and every time an already-live feed is redisplayed (resume, or
+  // jumping to a cover), so the back arrow / Esc / a real browser back
+  // press always has exactly one entry to pop.
+  function enterFeedHistory(state) {
+    state.historyEntryOpen = true;
+    history.pushState({ reelsFeed: true }, "", location.pathname + location.search + "#feed");
   }
 
   // Pops the history entry pushed when the feed opened (which drives the
@@ -1355,29 +1558,119 @@
       state.historyEntryOpen = false;
       history.back();
     } else {
-      unmountFeedScreen(state);
+      hideFeedScreen(state);
       setScreen(app, "start");
     }
   }
 
-  // Leaving the feed for the start/review/settings screens -- the overlay
-  // (and its html scroll lock) stays up the whole time the user is on
-  // /reels; only the route unmounting entirely should drop the lock.
-  function unmountFeedScreen(state) {
-    state.disposed = true;
-    if (state.observer) state.observer.disconnect();
-    document.removeEventListener("keydown", state.keyHandler, true);
-    if (state.popstateHandler) window.removeEventListener("popstate", state.popstateHandler);
+  // Leaving the feed for the start/review/settings screens while staying
+  // on /reels: pause playback and stop the feed's timers/loops, but keep
+  // every slide, scene order and the pool <video> elements exactly as they
+  // are so re-entering (same chip) resumes instantly instead of rebuilding.
+  function hideFeedScreen(state) {
+    if (state.hidden) return;
+    state.hidden = true;
+    state.historyEntryOpen = false;
+    state.videos.forEach(function (v) {
+      v.pause();
+    });
     stopProgressLoop(state);
+    stopDebugTimer(state);
     clearTimeout(state.seenTimer);
     clearTimeout(state.playTimer);
     clearUndoToast(state);
     persistCycle(state.app);
+  }
+
+  // Counterpart to hideFeedScreen, called from render() when the feed
+  // screen is requested and a live (not disposed) state already exists for
+  // the current chip -- reattaches the whole feed subtree as-is and
+  // resumes where the user left off.
+  function showFeedScreenExisting(app, state) {
+    state.hidden = false;
+    app.root.appendChild(state.containerEl);
+    // Reattaching resets the feed's scrollTop to 0; restore it before
+    // anything (the IntersectionObserver included) reads the position.
+    state.feedEl.scrollTop = state.currentIndex * state.feedEl.clientHeight;
+    enterFeedHistory(state);
+    startProgressLoop(state);
+    startDebugTimer(state);
+    var currentSlide = state.slideEls[state.currentIndex];
+    onBecameCurrent(state, currentSlide);
+    attemptPlayCurrent(currentSlide, state);
+  }
+
+  // Full teardown: only when the /reels route itself unmounts, or when a
+  // chip change / Shuffle / review confirm / settings save invalidates the
+  // feed and the next startFeed() needs to build a fresh one.
+  function unmountFeedScreen(state) {
+    state.disposed = true;
+    state.hidden = true;
+    if (state.observer) state.observer.disconnect();
+    document.removeEventListener("keydown", state.keyHandler, true);
+    if (state.popstateHandler) window.removeEventListener("popstate", state.popstateHandler);
+    stopProgressLoop(state);
+    stopDebugTimer(state);
+    clearTimeout(state.seenTimer);
+    clearTimeout(state.playTimer);
+    clearUndoToast(state);
+    persistCycle(state.app);
+    if (state.containerEl && state.containerEl.parentNode) {
+      state.containerEl.parentNode.removeChild(state.containerEl);
+    }
     state.videos.forEach(function (v) {
+      v._reelsSlide = null;
       v.pause();
       v.removeAttribute("src");
       v.load();
     });
+  }
+
+  // --- Debug info live refresh (sound diagnosis) --------------------------
+
+  function startDebugTimer(state) {
+    if (!state.app.config.settings.showDebugInfo) return;
+    stopDebugTimer(state);
+    state.debugTimer = setInterval(function () {
+      updateDebugLabel(state);
+    }, 500);
+  }
+
+  function stopDebugTimer(state) {
+    if (state.debugTimer) {
+      clearInterval(state.debugTimer);
+      state.debugTimer = null;
+    }
+  }
+
+  function audioIndicator(video) {
+    if (typeof video.webkitAudioDecodedByteCount === "number") {
+      return "decodedBytes:" + video.webkitAudioDecodedByteCount;
+    }
+    if (video.audioTracks) {
+      return "audioTracks:" + video.audioTracks.length;
+    }
+    return "?";
+  }
+
+  function updateDebugLabel(state) {
+    var slide = state.slideEls[state.currentIndex];
+    if (!slide || !slide.el) return;
+    var label = slide.el.querySelector(".reels-debug-label");
+    if (!label) return;
+    var video = slide.video;
+    var baseText = label.dataset.baseText || label.textContent;
+    if (!video) {
+      label.textContent = baseText;
+      return;
+    }
+    label.textContent =
+      baseText +
+      " | " + (video._reelsLetter || "?") +
+      " muted:" + video.muted +
+      " vol:" + video.volume +
+      " paused:" + video.paused +
+      " audio:" + audioIndicator(video);
   }
 
   function currentCodecKey(scene) {
@@ -1402,27 +1695,43 @@
     return scene.paths.stream;
   }
 
+  // Builds only the empty shell: a snap-target div the IntersectionObserver
+  // can watch. Its visible content (poster, overlay, progress bar) is
+  // filled in lazily by populateSlide, via populateDirtySlidesNear, once
+  // the slide comes within currentIndex +/- 3 -- building full content for
+  // all ~2,300 slides up front is what made the feed slow to open.
   function buildFeedSlide(app, scene, state) {
     var slide = {
       scene: scene,
       el: el("div", "reels-slide"),
       video: null,
       expanded: false,
-      dirty: false,
+      dirty: true,
     };
     slide.el.addEventListener("contextmenu", function (e) {
       e.preventDefault();
     });
-    populateSlide(app, slide, state);
     attachTapHandler(slide, state);
     return slide;
   }
 
   // (Re)builds a slide's visible content for its current `slide.scene`.
-  // Used both for the initial build and when re-sampling the upcoming
-  // order after a like/dislike swaps which scene a slide shows.
+  // Used for the initial lazy build, when re-sampling the upcoming order
+  // after a like/dislike, and when topping up the fast-sampled tail.
+  //
+  // A slide can still be holding one of the 3 pool <video> elements when
+  // this runs (e.g. a neighbour slide marked dirty by reorderUpcoming
+  // while it's within the currentIndex +/- 1 video window). clear() would
+  // otherwise rip that <video> out of the DOM without clearing its
+  // `_reelsSlide` back-reference, permanently stranding it: the pool drops
+  // to 2 working videos and whichever slide owned it goes silently blank.
+  // Detach it first and reattach it once the rest of the slide is rebuilt.
   function populateSlide(app, slide, state) {
     var scene = slide.scene;
+    var attachedVideo = slide.video;
+    if (attachedVideo && attachedVideo.parentNode === slide.el) {
+      slide.el.removeChild(attachedVideo);
+    }
     clear(slide.el);
     slide.el.className = "reels-slide";
     slide.video = null;
@@ -1466,6 +1775,12 @@
 
     slide.el.appendChild(buildOverlay(app, scene, slide, state));
     slide.el.appendChild(buildProgressBar(slide, state));
+
+    if (attachedVideo) {
+      slide.el.insertBefore(attachedVideo, slide.el.firstChild);
+      slide.video = attachedVideo;
+      poster.style.display = "none";
+    }
   }
 
   function buildOverlay(app, scene, slide, state) {
@@ -1527,13 +1842,11 @@
 
     if (app.config.settings.showDebugInfo) {
       var file = sceneFile(scene);
-      overlay.appendChild(
-        el(
-          "div",
-          "reels-debug-label",
-          "id:" + scene.id + " " + (file ? file.video_codec || "?" : "?") + " " + (file ? file.width + "x" + file.height : "?x?")
-        )
-      );
+      var baseText =
+        "id:" + scene.id + " " + (file ? file.video_codec || "?" : "?") + " " + (file ? file.width + "x" + file.height : "?x?");
+      var debugLabel = el("div", "reels-debug-label", baseText);
+      debugLabel.dataset.baseText = baseText;
+      overlay.appendChild(debugLabel);
     }
 
     return overlay;
@@ -1547,6 +1860,7 @@
   // new slide just entered it.
   function assignVideosToWindow(state) {
     populateDirtySlidesNear(state);
+    topUpFastOrder(state);
     var app = state.app;
     var desiredSlides = [
       state.slideEls[state.currentIndex - 1],
@@ -1581,7 +1895,7 @@
       video.poster = slide.scene.paths.screenshot || "";
       video._reelsSlide = slide;
       video._reelsOnTranscode = !!app.codecNeedsTranscode[codec];
-      video.muted = !state.unmuted;
+      setVideoMuted(video, !state.unmuted, slide.scene, "assign");
       video.loop = app.config.settings.endOfClip === "loop";
       attachVideoHandlers(video, slide, state);
 
@@ -1836,7 +2150,8 @@
   function attemptPlayCurrent(slide, state) {
     if (!slide || !slide.video) return;
     hideTapForSound(slide);
-    slide.video.muted = !state.unmuted;
+    var letter = slide.video._reelsLetter || "?";
+    setVideoMuted(slide.video, !state.unmuted, slide.scene, "attemptPlay");
     var playPromise = slide.video.play();
     if (playPromise && typeof playPromise.catch === "function") {
       playPromise.catch(function (err) {
@@ -1846,17 +2161,23 @@
           err.name === "NotAllowedError" &&
           slide === state.slideEls[state.currentIndex]
         ) {
-          console.warn("Reels: unmuted play rejected, falling back to muted.", err);
-          slide.video.muted = true;
+          console.warn(
+            "Reels: unmuted play rejected (scene " + slide.scene.id + ", element " + letter + "), falling back to muted.",
+            err
+          );
+          setVideoMuted(slide.video, true, slide.scene, "fallback-after-rejected-unmuted-play");
           var retry = slide.video.play();
           if (retry && typeof retry.catch === "function") {
             retry.catch(function (err2) {
-              console.warn("Reels: fallback muted play also rejected.", err2);
+              console.warn(
+                "Reels: fallback muted play also rejected (scene " + slide.scene.id + ", element " + letter + ").",
+                err2
+              );
             });
           }
           showTapForSound(slide);
         } else {
-          console.warn("Reels: play rejected.", err);
+          console.warn("Reels: play rejected (scene " + slide.scene.id + ", element " + letter + ").", err);
         }
       });
     }
@@ -1880,9 +2201,14 @@
     var currentVideo = state.slideEls[state.currentIndex] && state.slideEls[state.currentIndex].video;
     state.videos.forEach(function (v) {
       if (!v.hasAttribute("src")) return;
-      v.muted = false;
+      var scene = v._reelsSlide ? v._reelsSlide.scene : null;
+      setVideoMuted(v, false, scene, "unlock");
       var p = v.play();
-      if (p && typeof p.catch === "function") p.catch(function () {});
+      if (p && typeof p.catch === "function") {
+        p.catch(function (err) {
+          console.warn("Reels: unlock play rejected (scene " + (scene ? scene.id : "?") + ", element " + (v._reelsLetter || "?") + ").", err);
+        });
+      }
     });
     state.videos.forEach(function (v) {
       if (v === currentVideo) return;
@@ -1900,7 +2226,7 @@
       state.unmuted = false;
       state.app.unmuted = false;
       state.videos.forEach(function (v) {
-        v.muted = true;
+        setVideoMuted(v, true, v._reelsSlide ? v._reelsSlide.scene : null, "toggle-mute-on");
       });
     }
     if (state.muteBtn) {
@@ -2216,11 +2542,11 @@
   // freshly updated scores. Slide element identity and position are kept;
   // only which scene each one shows is swapped, so scroll-snap and the
   // IntersectionObserver are untouched.
-  function reorderUpcoming(app, state) {
+  function reorderUpcoming(app, state, seedScene) {
     var tailStart = state.currentIndex + 2;
     if (tailStart >= state.slideEls.length) return;
     var tailScenes = state.scenes.slice(tailStart);
-    var newOrder = buildFeedOrder(app, tailScenes, null);
+    var newOrder = buildFeedOrder(app, tailScenes, seedScene || null, true);
     for (var i = 0; i < newOrder.length; i++) {
       var slide = state.slideEls[tailStart + i];
       var changed = !slide.scene || slide.scene.id !== newOrder[i].id;
@@ -2234,10 +2560,10 @@
   // like()/dislike() want their visual feedback (heart burst, badge, toast)
   // to paint before the up-to-~175-slide re-sample runs, not after -- rAF
   // then a 0ms timeout lands this just after the next paint.
-  function deferReorderUpcoming(app, state) {
+  function deferReorderUpcoming(app, state, seedScene) {
     requestAnimationFrame(function () {
       setTimeout(function () {
-        if (!state.disposed) reorderUpcoming(app, state);
+        if (!state.disposed) reorderUpcoming(app, state, seedScene);
       }, 0);
     });
   }
@@ -2317,9 +2643,13 @@
 
       if (slide.needsSoundRetry) {
         hideTapForSound(slide);
-        slide.video.muted = false;
+        setVideoMuted(slide.video, false, slide.scene, "tap-retry");
         var p = slide.video.play();
-        if (p && typeof p.catch === "function") p.catch(function () {});
+        if (p && typeof p.catch === "function") {
+          p.catch(function (err) {
+            console.warn("Reels: tap-retry play rejected (scene " + slide.scene.id + ", element " + (slide.video._reelsLetter || "?") + ").", err);
+          });
+        }
         return;
       }
 

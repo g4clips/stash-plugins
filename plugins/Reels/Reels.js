@@ -4,7 +4,7 @@
   }
   window._reelsPluginLoaded = true;
 
-  var REELS_VERSION = "0.4.0";
+  var REELS_VERSION = "0.4.1";
   var PLUGIN_ID = "Reels";
   var CANDIDATE_MAX_COUNT = 500;
   var CURRENT_HINT_VERSION = 2;
@@ -719,16 +719,12 @@
     navigateTo("/");
   }
 
-  // Performer/studio links inside a feed slide navigate away from /reels
-  // entirely. Drop the #feed hash we pushed when the feed opened (plain
-  // replaceState -- no new entry) before navigating, so one back press
-  // from the destination page lands on plain /reels and a second leaves,
-  // instead of landing back inside the feed's own history entry.
+  // Performer/studio/Open-in-Stash links inside a feed slide navigate away
+  // from /reels. The /reels#feed entry is kept, so history is
+  // /reels, /reels#feed, <destination> and one back press returns to the
+  // feed (see resumeApp).
   function leaveFeedForLink(state, path) {
-    if (state && state.historyEntryOpen) {
-      state.historyEntryOpen = false;
-      history.replaceState(null, "", location.pathname + location.search);
-    }
+    if (state) state.historyEntryOpen = false;
     navigateTo(path);
   }
 
@@ -1755,6 +1751,8 @@
   // press always has exactly one entry to pop.
   function enterFeedHistory(state) {
     state.historyEntryOpen = true;
+    // Already on the feed entry (returned to it via back): never stack a second one.
+    if (location.hash === "#feed") return;
     history.pushState({ reelsFeed: true }, "", location.pathname + location.search + "#feed");
   }
 
@@ -1877,8 +1875,21 @@
 
   // Called when /reels mounts again with a persisted app.
   function resumeApp(app) {
-    var live = app._feedState && !app._feedState.disposed;
-    console.log("Reels: app resumed (screen " + app.screen + ", live feed " + !!live + ")");
+    var live = !!(app._feedState && !app._feedState.disposed);
+    var atFeedHash = location.hash === "#feed";
+    console.log("Reels: app resumed (screen " + app.screen + ", live feed " + live + ", #feed " + atFeedHash + ")");
+    if (atFeedHash && !live) {
+      // Stale #feed entry (no feed to show): normalise the URL, show the start screen.
+      history.replaceState(history.state, "", location.pathname + location.search);
+      atFeedHash = false;
+    }
+    if (atFeedHash) {
+      // Returned to the feed's own history entry (render re-uses it, no new push).
+      app.screen = "feed";
+    } else if (app.screen === "feed") {
+      // Plain /reels: start screen; the hidden feed stays alive for a cover tap.
+      app.screen = "start";
+    }
     render(app);
     var state = app._feedState;
     if (app.screen === "feed" && state && !state.disposed) refreshResumedScene(app, state);
@@ -3133,6 +3144,10 @@
       document.documentElement.classList.add("reels-html-lock");
 
       if (fresh) {
+        if (location.hash === "#feed") {
+          // Full page load on a #feed entry: there is no feed to show.
+          history.replaceState(history.state, "", location.pathname + location.search);
+        }
         clear(root);
         root.appendChild(el("div", "reels-loading", "Loading…"));
         loadAll(app)

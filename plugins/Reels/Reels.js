@@ -4,7 +4,7 @@
   }
   window._reelsPluginLoaded = true;
 
-  var REELS_VERSION = "0.3.3";
+  var REELS_VERSION = "0.4.0";
   var PLUGIN_ID = "Reels";
   var CANDIDATE_MAX_COUNT = 500;
   var CURRENT_HINT_VERSION = 2;
@@ -13,6 +13,7 @@
   var LONG_PRESS_MS = 450;
   var DOUBLE_TAP_MS = 250;
   var UNDO_TOAST_MS = 5000;
+  var MIN_ITEM_MS = 3000; // shortest time a GIF / video image stays up in Auto-advance
 
   var DEFAULT_SETTINGS = {
     maxDuration: 300,
@@ -24,6 +25,8 @@
     tagUnplayable: true,
     showNavLink: true,
     showDebugInfo: false,
+    imagesInFeed: "include", // "include" | "exclude" | "gifs"
+    imageDisplaySeconds: 30, // stills only, Auto-advance only
   };
 
   var TAG_NAMES = {
@@ -136,6 +139,32 @@
     "  }" +
     "}";
 
+  var IMAGE_FIELDS =
+    "id title" +
+    " paths { image thumbnail preview }" +
+    " visual_files { __typename" +
+    "   ... on ImageFile { width height format }" +
+    "   ... on VideoFile { width height format duration } }" +
+    " performers { id name }" +
+    " studio { id name image_path }" +
+    " tags { id name }";
+
+  var IMAGE_POOL_QUERY =
+    "query ReelsImagePool($reels: [ID!], $exclude: [ID!]) {" +
+    "  findImages(" +
+    "    filter: { per_page: -1 }" +
+    "    image_filter: {" +
+    "      tags: { value: $reels, modifier: INCLUDES_ALL, excludes: $exclude }" +
+    "    }" +
+    "  ) {" +
+    "    count" +
+    "    images { " + IMAGE_FIELDS + " }" +
+    "  }" +
+    "}";
+
+  var IMAGE_REFRESH_QUERY =
+    "query ReelsImageRefresh($id: ID!) { findImage(id: $id) { " + IMAGE_FIELDS + " } }";
+
   var CONFIGURATION_QUERY =
     "query ReelsConfiguration { configuration { plugins } }";
 
@@ -149,6 +178,11 @@
     "  bulkSceneUpdate(input: { ids: $ids, tag_ids: { ids: $tag_ids, mode: $mode } }) { id }" +
     "}";
 
+  var BULK_IMAGE_UPDATE_MUTATION =
+    "mutation ReelsBulkImageUpdate($ids: [ID!]!, $tag_ids: [ID!]!, $mode: BulkUpdateIdMode!) {" +
+    "  bulkImageUpdate(input: { ids: $ids, tag_ids: { ids: $tag_ids, mode: $mode } }) { id }" +
+    "}";
+
   var SCENE_ADD_PLAY_MUTATION =
     "mutation ReelsSceneAddPlay($id: ID!) { sceneAddPlay(id: $id) { count } }";
 
@@ -158,16 +192,18 @@
   // rejected write never wedges every write queued after it.
   var tagWriteChain = Promise.resolve();
 
-  function performBulkUpdateTag(sceneIds, tagIds, mode) {
-    return gql(BULK_SCENE_UPDATE_MUTATION, { ids: sceneIds, tag_ids: tagIds, mode: mode });
+  function performBulkUpdateTag(ids, tagIds, mode, kind) {
+    var mutation = kind === "image" ? BULK_IMAGE_UPDATE_MUTATION : BULK_SCENE_UPDATE_MUTATION;
+    return gql(mutation, { ids: ids, tag_ids: tagIds, mode: mode });
   }
 
-  function bulkUpdateTag(sceneIds, tagIdOrIds, mode) {
+  // `kind` is "scene" (default) or "image"; both go through the same queue.
+  function bulkUpdateTag(sceneIds, tagIdOrIds, mode, kind) {
     if (!sceneIds || !sceneIds.length) return Promise.resolve();
     var tagIds = Array.isArray(tagIdOrIds) ? tagIdOrIds : [tagIdOrIds];
     if (!tagIds.length) return Promise.resolve();
     var resultPromise = tagWriteChain.then(function () {
-      return performBulkUpdateTag(sceneIds, tagIds, mode);
+      return performBulkUpdateTag(sceneIds, tagIds, mode, kind || "scene");
     });
     tagWriteChain = resultPromise.then(
       function () {},
@@ -227,8 +263,20 @@
     return {
       settings: Object.assign({}, DEFAULT_SETTINGS, raw.settings || {}),
       scores: raw.scores || { performers: {}, studios: {}, tags: {} },
-      cycle: raw.cycle || { seen: [] },
+      cycle: normalizeCycle(raw.cycle),
       hintVersion: raw.hintVersion || 0,
+    };
+  }
+
+  // cycle.seen used to hold bare scene ids; entries are now item keys
+  // ("scene:<id>" / "image:<id>"). A bare id is read as a scene.
+  function normalizeCycle(rawCycle) {
+    var seen = (rawCycle && rawCycle.seen) || [];
+    return {
+      seen: seen.map(function (k) {
+        k = String(k);
+        return k.indexOf(":") === -1 ? "scene:" + k : k;
+      }),
     };
   }
 
@@ -278,6 +326,71 @@
   }
 
   // --- Scene data helpers --------------------------------------------------
+
+  function normalizeScene(scene) {
+    scene.kind = "scene";
+    scene.key = "scene:" + scene.id;
+    return scene;
+  }
+
+  // Turns a Stash image into the same shape the scene code already reads
+  // (files[0] for dimensions/duration, paths.screenshot for the cover), plus
+  // kind/key/itemType. GIFs are stored as image clips, so "gif" is detected
+  // on either file branch.
+  function normalizeImage(img) {
+    var vf = (img.visual_files || [])[0] || null;
+    var format = vf && vf.format ? String(vf.format).toLowerCase() : "";
+    var itemType = format === "gif" ? "gif" : vf && vf.__typename === "VideoFile" ? "video" : "still";
+    var paths = img.paths || {};
+    return {
+      id: img.id,
+      title: img.title,
+      kind: "image",
+      key: "image:" + img.id,
+      itemType: itemType,
+      files: vf ? [{ width: vf.width, height: vf.height, duration: vf.duration || 0, format: format }] : [],
+      paths: {
+        screenshot: paths.thumbnail || paths.image || "",
+        thumbnail: paths.thumbnail || "",
+        image: paths.image || "",
+        preview: paths.preview || "",
+        stream: itemType === "video" ? paths.image || "" : undefined,
+      },
+      performers: img.performers || [],
+      studio: img.studio || null,
+      tags: img.tags || [],
+    };
+  }
+
+  // Only scenes and "video" images get a pooled <video>; stills and GIFs are
+  // plain <img> elements.
+  function needsVideo(item) {
+    return item.kind === "scene" || item.itemType === "video";
+  }
+
+  function imageAllowed(app, item) {
+    if (item.kind !== "image") return true;
+    var mode = app.config.settings.imagesInFeed;
+    if (mode === "exclude") return false;
+    if (mode === "gifs") return item.itemType === "gif";
+    return true;
+  }
+
+  function videoMutedFor(state, item) {
+    return !state.unmuted || item.kind === "image";
+  }
+
+  // How long a still / GIF stays up in Auto-advance mode.
+  function imageAdvanceMs(app, item) {
+    if (item.itemType === "still") {
+      return Math.max(1, Number(app.config.settings.imageDisplaySeconds) || DEFAULT_SETTINGS.imageDisplaySeconds) * 1000;
+    }
+    var f = sceneFile(item);
+    var dur = f && f.duration ? f.duration * 1000 : 0;
+    if (!dur) return MIN_ITEM_MS;
+    if (dur < MIN_ITEM_MS) return Math.ceil(MIN_ITEM_MS / dur) * dur;
+    return dur;
+  }
 
   function sceneFile(scene) {
     return scene.files && scene.files[0] ? scene.files[0] : null;
@@ -412,20 +525,20 @@
   // to it (spec section 6).
   function buildFeedOrder(app, pool, seedScene, boostOnly) {
     var seenSet = {};
-    (app.config.cycle.seen || []).forEach(function (id) {
-      seenSet[id] = true;
+    (app.config.cycle.seen || []).forEach(function (key) {
+      seenSet[key] = true;
     });
 
     var rest = seedScene
       ? pool.filter(function (s) {
-          return s.id !== seedScene.id;
+          return s.key !== seedScene.key;
         })
       : pool.slice();
     var unseen = rest.filter(function (s) {
-      return !seenSet[s.id];
+      return !seenSet[s.key];
     });
     var seen = rest.filter(function (s) {
-      return seenSet[s.id];
+      return seenSet[s.key];
     });
 
     var drawsDone = 0;
@@ -485,23 +598,23 @@
   function buildFeedOrderFast(app, pool, seedScene) {
     var rest = seedScene
       ? pool.filter(function (s) {
-          return s.id !== seedScene.id;
+          return s.key !== seedScene.key;
         })
       : pool.slice();
     var seenSet = {};
-    (app.config.cycle.seen || []).forEach(function (id) {
-      seenSet[id] = true;
+    (app.config.cycle.seen || []).forEach(function (key) {
+      seenSet[key] = true;
     });
     // Keep the cycle rule in the shuffled tail too: unseen clips (shuffled)
     // all come before seen clips (shuffled).
     var shuffled = shuffle(
       rest.filter(function (s) {
-        return !seenSet[s.id];
+        return !seenSet[s.key];
       })
     ).concat(
       shuffle(
         rest.filter(function (s) {
-          return seenSet[s.id];
+          return seenSet[s.key];
         })
       )
     );
@@ -530,7 +643,8 @@
       var idx = state.fastOrderBoundary + i;
       var slide = state.slideEls[idx];
       if (!slide) break;
-      var changed = !slide.scene || slide.scene.id !== resampled[i].id;
+      var changed = !slide.scene || slide.scene.key !== resampled[i].key;
+      if (changed) releaseSlideVideo(slide);
       slide.scene = resampled[i];
       if (changed) slide.dirty = true;
       state.scenes[idx] = resampled[i];
@@ -593,8 +707,10 @@
   function navigateTo(path) {
     var history = getReactHistory();
     if (history) {
+      console.log("Reels: navigate via router -> " + path);
       history.push(path);
     } else {
+      console.log("Reels: navigate via FULL PAGE LOAD (router history not found) -> " + path);
       window.location.href = path;
     }
   }
@@ -683,7 +799,7 @@
     if (video.muted === muted) return;
     video.muted = muted;
     console.log(
-      "Reels: muted -> " + muted + " (scene " + (scene ? scene.id : "?") + ", element " +
+      "Reels: muted -> " + muted + " (" + (scene ? scene.key : "?") + ", element " +
         (video._reelsLetter || "?") + ", " + reason + ")"
     );
   }
@@ -724,6 +840,7 @@
       }),
       _feedState: null,
     };
+    console.log("Reels: app created");
     return app;
   }
 
@@ -732,6 +849,7 @@
   // next startFeed() call rebuilds from scratch instead of resuming.
   function invalidateFeedState(app) {
     if (app._feedState) {
+      console.log("Reels: feed discarded");
       unmountFeedScreen(app._feedState);
       app._feedState = null;
     }
@@ -755,6 +873,12 @@
     var orientationValues =
       app.config.settings.orientation === "portrait_square" ? ["PORTRAIT", "SQUARE"] : ["PORTRAIT"];
 
+    // A failing image query must not take the clip pool down with it.
+    var imagePoolPromise = gql(IMAGE_POOL_QUERY, { reels: [app.tags.pool], exclude: poolExcludeIds }).catch(function (err) {
+      logErr(err);
+      return { findImages: { images: [] } };
+    });
+
     return Promise.all([
       gql(POOL_QUERY, { reels: [app.tags.pool], exclude: poolExcludeIds }),
       gql(CANDIDATES_QUERY, {
@@ -763,12 +887,15 @@
         exclude: candidateExcludeIds,
         orientation: { value: orientationValues },
       }),
+      imagePoolPromise,
     ]).then(function (results) {
       // Shuffled once here (covers both the initial load and every
       // refetch) and then left alone -- the cover grid's order must stay
       // put across a feed round-trip. The feed does its own independent
       // ordering each time it starts.
-      app.pool = shuffle(results[0].findScenes.scenes);
+      app.pool = shuffle(
+        results[0].findScenes.scenes.map(normalizeScene).concat(results[2].findImages.images.map(normalizeImage))
+      );
       app.candidates = results[1].findScenes.scenes;
       app.candidatesCount = results[1].findScenes.count;
     });
@@ -841,7 +968,9 @@
   // =========================================================================
 
   function poolMatchesChip(app, scene, chipId) {
+    if (!imageAllowed(app, scene)) return false;
     if (chipId === "all") return true;
+    if (chipId === "images") return scene.kind === "image";
     if (chipId === "liked") return sceneHasTag(scene, app.tags.liked);
     var category = app.chipsCategories.filter(function (c) {
       return c.id === chipId;
@@ -882,7 +1011,11 @@
     }
 
     var chipsRow = el("div", "reels-chips-row");
-    var chips = [{ id: "all", label: "All" }, { id: "liked", label: "Liked" }].concat(
+    var chips = [
+      { id: "all", label: "All" },
+      { id: "liked", label: "Liked" },
+      { id: "images", label: "Images" },
+    ].concat(
       app.chipsCategories.map(function (c) {
         return { id: c.id, label: c.label };
       })
@@ -956,6 +1089,10 @@
     img.alt = "";
     cell.appendChild(img);
 
+    if (scene.kind === "image") {
+      cell.appendChild(el("div", "reels-kind-badge", scene.itemType === "gif" ? "GIF" : "IMG"));
+    }
+
     var heartBadge = null;
     function renderHeartBadge() {
       if (heartBadge) {
@@ -976,7 +1113,7 @@
     renderHeartBadge();
 
     cell.addEventListener("click", function () {
-      startFeed(app, scene.id);
+      startFeed(app, scene.key);
     });
 
     return cell;
@@ -987,28 +1124,35 @@
     scene.tags = scene.tags.filter(function (t) {
       return t.id !== app.tags.liked;
     });
-    bulkUpdateTag([scene.id], app.tags.liked, "REMOVE").catch(function (err) {
+    bulkUpdateTag([scene.id], app.tags.liked, "REMOVE", scene.kind).catch(function (err) {
       handleTagWriteFailure(app, err);
     });
     applyScoreDelta(app, scene, -1);
     render(app);
   }
 
-  function startFeed(app, seedSceneId, forceRebuild) {
+  function startFeed(app, seedKey, forceRebuild) {
     var existing = app._feedState;
     var sameChip = existing && !existing.disposed && existing.chipId === app.activeChipId;
     var seedInFeed =
-      !seedSceneId ||
+      !seedKey ||
       (sameChip &&
         existing.scenes.some(function (s) {
-          return s.id === seedSceneId;
+          return s.key === seedKey;
         }));
 
     // A cover that isn't in the live feed rebuilds directly, without
     // showing the old feed first, so only one #feed history entry is pushed.
     if (forceRebuild || !sameChip || !seedInFeed) {
+      app.feedReason = forceRebuild
+        ? "forced rebuild"
+        : !existing || existing.disposed
+          ? "no live feed"
+          : !sameChip
+            ? "chip changed"
+            : "cover not in live feed";
       invalidateFeedState(app);
-      app.feedSeedSceneId = seedSceneId;
+      app.feedSeedKey = seedKey;
       app.feedChipId = app.activeChipId;
       setScreen(app, "feed");
       if (app.unmuted && app._feedState) {
@@ -1020,18 +1164,19 @@
     // Same chip, feed already built: resume it in place instead of
     // rebuilding -- render() detects the live state and just redisplays it.
     app.feedChipId = app.activeChipId;
+    console.log("Reels: feed resumed in place (startFeed)");
     setScreen(app, "feed");
-    if (seedSceneId) jumpToSceneInFeed(app, existing, seedSceneId);
+    if (seedKey) jumpToSceneInFeed(app, existing, seedKey);
     if (app.unmuted) unlockSound(existing);
   }
 
   // Tapping a cover while a feed for the same chip is already live: jump
   // to that clip in place (no rebuild) and re-sort what comes after it
   // with the seed boost, same deferred path like/dislike use.
-  function jumpToSceneInFeed(app, state, seedSceneId) {
+  function jumpToSceneInFeed(app, state, seedKey) {
     var idx = -1;
     for (var i = 0; i < state.scenes.length; i++) {
-      if (state.scenes[i].id === seedSceneId) {
+      if (state.scenes[i].key === seedKey) {
         idx = i;
         break;
       }
@@ -1260,6 +1405,15 @@
       }
     );
 
+    var displayInput = document.createElement("input");
+    displayInput.type = "number";
+    displayInput.value = pending.imageDisplaySeconds;
+    displayInput.min = "1";
+    displayInput.addEventListener("input", function () {
+      pending.imageDisplaySeconds = parseInt(displayInput.value, 10) || DEFAULT_SETTINGS.imageDisplaySeconds;
+    });
+    row("Image display time (seconds)", displayInput);
+
     selectRow(
       "Fit (portrait clips)",
       [
@@ -1283,6 +1437,19 @@
       pending.landscapeClips || "blur",
       function (v) {
         pending.landscapeClips = v;
+      }
+    );
+
+    selectRow(
+      "Images in feed",
+      [
+        { value: "include", label: "Include" },
+        { value: "exclude", label: "Exclude" },
+        { value: "gifs", label: "GIFs only" },
+      ],
+      pending.imagesInFeed || "include",
+      function (v) {
+        pending.imagesInFeed = v;
       }
     );
 
@@ -1369,12 +1536,14 @@
       });
     }
 
-    var seedScene = app.feedSeedSceneId
+    var seedScene = app.feedSeedKey
       ? pool.filter(function (s) {
-          return s.id === app.feedSeedSceneId;
+          return s.key === app.feedSeedKey;
         })[0]
       : null;
     var built = buildInitialFeedOrder(app, pool, seedScene);
+    console.log("Reels: feed built (" + (app.feedReason || "unspecified") + ")");
+    app.feedReason = null;
 
     var state = {
       app: app,
@@ -1397,6 +1566,9 @@
       muteBtn: null,
       seenTimer: null,
       playTimer: null,
+      advanceTimer: null,
+      currentSince: 0,
+      userPausedKey: null,
       debugTimer: null,
       newlySeenCount: 0,
       lastAction: null,
@@ -1616,6 +1788,7 @@
     stopDebugTimer(state);
     clearTimeout(state.seenTimer);
     clearTimeout(state.playTimer);
+    clearTimeout(state.advanceTimer);
     clearUndoToast(state);
     persistCycle(state.app);
   }
@@ -1625,6 +1798,7 @@
   // the current chip -- reattaches the whole feed subtree as-is and
   // resumes where the user left off.
   function showFeedScreenExisting(app, state) {
+    console.log("Reels: feed shown (existing, index " + state.currentIndex + ")");
     state.hidden = false;
     app.root.appendChild(state.containerEl);
     // Reattaching resets the feed's scrollTop to 0; restore it before
@@ -1644,14 +1818,22 @@
   function refreshResumedScene(app, state) {
     var slide = state.slideEls[state.currentIndex];
     if (!slide) return;
-    var sceneId = slide.scene.id;
-    gql(SCENE_REFRESH_QUERY, { id: sceneId })
-      .then(function (data) {
+    var item = slide.scene;
+    var key = item.key;
+    var request =
+      item.kind === "image"
+        ? gql(IMAGE_REFRESH_QUERY, { id: item.id }).then(function (data) {
+            return data.findImage ? normalizeImage(data.findImage) : null;
+          })
+        : gql(SCENE_REFRESH_QUERY, { id: item.id }).then(function (data) {
+            return data.findScene ? normalizeScene(data.findScene) : null;
+          });
+    request
+      .then(function (fresh) {
         if (state.disposed || state.hidden) return;
-        var fresh = data.findScene;
         var idx = -1;
         for (var i = 0; i < state.scenes.length; i++) {
-          if (state.scenes[i].id === sceneId) {
+          if (state.scenes[i].key === key) {
             idx = i;
             break;
           }
@@ -1666,18 +1848,19 @@
 
         if (!inPool) {
           app.pool = app.pool.filter(function (s) {
-            return s.id !== sceneId;
+            return s.key !== key;
           });
           removeSlideAt(state, idx, null);
           return;
         }
 
         app.pool = app.pool.map(function (s) {
-          return s.id === sceneId ? fresh : s;
+          return s.key === key ? fresh : s;
         });
         state.scenes[idx] = fresh;
         state.slideEls[idx].scene = fresh;
         populateSlide(app, state.slideEls[idx], state);
+        updateImageWindow(state);
         updateOpenLink(state);
       })
       .catch(logErr);
@@ -1694,6 +1877,8 @@
 
   // Called when /reels mounts again with a persisted app.
   function resumeApp(app) {
+    var live = app._feedState && !app._feedState.disposed;
+    console.log("Reels: app resumed (screen " + app.screen + ", live feed " + !!live + ")");
     render(app);
     var state = app._feedState;
     if (app.screen === "feed" && state && !state.disposed) refreshResumedScene(app, state);
@@ -1721,6 +1906,7 @@
     stopDebugTimer(state);
     clearTimeout(state.seenTimer);
     clearTimeout(state.playTimer);
+    clearTimeout(state.advanceTimer);
     clearUndoToast(state);
     persistCycle(state.app);
     if (state.containerEl && state.containerEl.parentNode) {
@@ -1848,6 +2034,7 @@
     slide.tapHint = null;
     slide.needsSoundRetry = false;
     slide.progressFill = null;
+    slide.imgFull = false;
 
     var landscape = isLandscape(scene);
     var fitClass;
@@ -1882,7 +2069,8 @@
     slide.poster = poster;
 
     slide.el.appendChild(buildOverlay(app, scene, slide, state));
-    slide.el.appendChild(buildProgressBar(slide, state));
+    // Stills and GIFs have no seekable timeline, so no progress bar.
+    if (needsVideo(scene)) slide.el.appendChild(buildProgressBar(slide, state));
 
     if (attachedVideo) {
       slide.el.insertBefore(attachedVideo, slide.el.firstChild);
@@ -1950,8 +2138,15 @@
 
     if (app.config.settings.showDebugInfo) {
       var file = sceneFile(scene);
-      var baseText =
-        "id:" + scene.id + " " + (file ? file.video_codec || "?" : "?") + " " + (file ? file.width + "x" + file.height : "?x?");
+      var baseText;
+      if (scene.kind === "image") {
+        baseText =
+          scene.key + " " + scene.itemType + " " + (file && file.format ? file.format : "?") + " " +
+          (file ? file.width + "x" + file.height : "?x?");
+      } else {
+        baseText =
+          "id:" + scene.id + " " + (file ? file.video_codec || "?" : "?") + " " + (file ? file.width + "x" + file.height : "?x?");
+      }
       var debugLabel = el("div", "reels-debug-label", baseText);
       debugLabel.dataset.baseText = baseText;
       overlay.appendChild(debugLabel);
@@ -1970,12 +2165,13 @@
     populateDirtySlidesNear(state);
     topUpFastOrder(state);
     var app = state.app;
-    var desiredSlides = [
-      state.slideEls[state.currentIndex - 1],
-      state.slideEls[state.currentIndex],
-      state.slideEls[state.currentIndex + 1],
-    ].filter(function (s) {
-      return !!s;
+    // The nearest slides that actually need a <video> (stills and GIFs
+    // don't), current first, scanning at most +/-3 (the populated range).
+    var desiredSlides = [];
+    [0, 1, -1, 2, -2, 3, -3].forEach(function (d) {
+      if (desiredSlides.length >= state.videos.length) return;
+      var s = state.slideEls[state.currentIndex + d];
+      if (s && s.poster && needsVideo(s.scene)) desiredSlides.push(s);
     });
 
     var freeVideos = state.videos.filter(function (v) {
@@ -2003,7 +2199,7 @@
       video.poster = slide.scene.paths.screenshot || "";
       video._reelsSlide = slide;
       video._reelsOnTranscode = !!app.codecNeedsTranscode[codec];
-      setVideoMuted(video, !state.unmuted, slide.scene, "assign");
+      setVideoMuted(video, videoMutedFor(state, slide.scene), slide.scene, "assign");
       video.loop = app.config.settings.endOfClip === "loop";
       attachVideoHandlers(video, slide, state);
 
@@ -2027,7 +2223,7 @@
       if (!video._reelsSlide) return;
       if (video._reelsSlide === currentSlide) {
         video.preload = "auto";
-        attemptPlayCurrent(currentSlide, state);
+        if (!isUserPaused(state, currentSlide)) attemptPlayCurrent(currentSlide, state);
       } else {
         video.preload = "metadata";
         video.pause();
@@ -2037,10 +2233,54 @@
         } catch (e) {}
       }
     });
+
+    updateImageWindow(state);
+  }
+
+  // Detaches the pooled <video> (if any) from a slide whose scene is about
+  // to be swapped, so the slide never keeps a video for the wrong item.
+  function releaseSlideVideo(slide) {
+    var v = slide.video;
+    if (!v) return;
+    if (slide.poster) slide.poster.style.display = "";
+    v._reelsSlide = null;
+    slide.video = null;
+    if (v.parentNode) v.parentNode.removeChild(v);
+    v.pause();
+  }
+
+  // Stills and GIFs show their small thumbnail until the slide is the
+  // current one or an immediate neighbour, then load the full image; they
+  // drop back to the thumbnail when they leave that window.
+  function setSlideFullImage(slide, full) {
+    if (!slide.poster || !!slide.imgFull === full) return;
+    var src = full ? slide.scene.paths.image : slide.scene.paths.thumbnail;
+    if (!src) return;
+    slide.imgFull = full;
+    if (full) slide.poster.loading = "eager";
+    slide.poster.src = src;
+  }
+
+  function updateImageWindow(state) {
+    var keep = [];
+    for (var d = -1; d <= 1; d++) {
+      var slide = state.slideEls[state.currentIndex + d];
+      if (slide && slide.poster && slide.scene.kind === "image" && !needsVideo(slide.scene)) {
+        setSlideFullImage(slide, true);
+        keep.push(slide);
+      }
+    }
+    (state.fullImageSlides || []).forEach(function (slide) {
+      if (keep.indexOf(slide) === -1) setSlideFullImage(slide, false);
+    });
+    state.fullImageSlides = keep;
   }
 
   function warmupFreeVideos(state) {
-    var fallback = state.scenes[state.currentIndex] || state.scenes[0];
+    var fallback = state.scenes[state.currentIndex];
+    if (!fallback || !needsVideo(fallback)) {
+      fallback = state.scenes.filter(needsVideo)[0];
+    }
     if (!fallback) return;
     state.videos.forEach(function (video) {
       if (video._reelsSlide || video.hasAttribute("src")) return;
@@ -2060,6 +2300,12 @@
 
     video.onended = function () {
       if (state.app.config.settings.endOfClip === "advance" && slide === state.slideEls[state.currentIndex]) {
+        // A short video image replays until it has been up for MIN_ITEM_MS.
+        if (slide.scene.kind === "image" && Date.now() - state.currentSince < MIN_ITEM_MS) {
+          video.currentTime = 0;
+          video.play().catch(function () {});
+          return;
+        }
         scrollToIndex(state, state.currentIndex + 1);
       }
     };
@@ -2068,6 +2314,12 @@
       var err = video.error;
       var code = err ? err.code : 0;
       if (code !== 3 && code !== 4) return;
+
+      // Images have no transcode URL and no unplayable tag; just report it.
+      if (slide.scene.kind === "image") {
+        showSlideError(slide, code);
+        return;
+      }
 
       var app = state.app;
       var codec = currentCodecKey(slide.scene);
@@ -2096,7 +2348,7 @@
           handleTagWriteFailure(app, err);
         });
         app.pool = app.pool.filter(function (s) {
-          return s.id !== slide.scene.id;
+          return s.key !== slide.scene.key;
         });
       }
       if (slide === state.slideEls[state.currentIndex]) {
@@ -2259,7 +2511,7 @@
     if (!slide || !slide.video) return;
     hideTapForSound(slide);
     var letter = slide.video._reelsLetter || "?";
-    setVideoMuted(slide.video, !state.unmuted, slide.scene, "attemptPlay");
+    setVideoMuted(slide.video, videoMutedFor(state, slide.scene), slide.scene, "attemptPlay");
     var playPromise = slide.video.play();
     if (playPromise && typeof playPromise.catch === "function") {
       playPromise.catch(function (err) {
@@ -2291,14 +2543,25 @@
     }
   }
 
-  function toggleCurrentPlayback(state) {
-    var slide = state.slideEls[state.currentIndex];
+  // True when the user paused this slide's item (tap or Space) and has not
+  // resumed it; programmatic re-assignment must not restart it.
+  function isUserPaused(state, slide) {
+    return !!(slide && state.userPausedKey && state.userPausedKey === slide.scene.key);
+  }
+
+  function togglePlaybackFor(state, slide) {
     if (!slide || !slide.video) return;
     if (slide.video.paused) {
+      state.userPausedKey = null;
       attemptPlayCurrent(slide, state);
     } else {
+      state.userPausedKey = slide.scene.key;
       slide.video.pause();
     }
+  }
+
+  function toggleCurrentPlayback(state) {
+    togglePlaybackFor(state, state.slideEls[state.currentIndex]);
   }
 
   function unlockSound(state) {
@@ -2310,7 +2573,8 @@
     state.videos.forEach(function (v) {
       if (!v.hasAttribute("src")) return;
       var scene = v._reelsSlide ? v._reelsSlide.scene : null;
-      setVideoMuted(v, false, scene, "unlock");
+      setVideoMuted(v, !!(scene && scene.kind === "image"), scene, "unlock");
+      if (v === currentVideo && isUserPaused(state, v._reelsSlide)) return;
       var p = v.play();
       if (p && typeof p.catch === "function") {
         p.catch(function (err) {
@@ -2353,9 +2617,14 @@
   function updateOpenLink(state) {
     var slide = state.slideEls[state.currentIndex];
     if (!slide || !state.openLink) return;
-    var href = "/scenes/" + slide.scene.id;
-    var t = slide.video && slide.video.currentTime ? Math.floor(slide.video.currentTime) : 0;
-    if (t > 0) href += "?t=" + t;
+    var href;
+    if (slide.scene.kind === "image") {
+      href = "/images/" + slide.scene.id;
+    } else {
+      href = "/scenes/" + slide.scene.id;
+      var t = slide.video && slide.video.currentTime ? Math.floor(slide.video.currentTime) : 0;
+      if (t > 0) href += "?t=" + t;
+    }
     state.openLink.setAttribute("href", href);
   }
 
@@ -2363,26 +2632,44 @@
     updateOpenLink(state);
     clearTimeout(state.seenTimer);
     clearTimeout(state.playTimer);
+    clearTimeout(state.advanceTimer);
+    state.currentSince = Date.now();
+    if (state.userPausedKey && (!slide || slide.scene.key !== state.userPausedKey)) state.userPausedKey = null;
     if (!slide) return;
     state.seenTimer = setTimeout(function () {
       if (!state.disposed) markSeen(state, slide.scene);
     }, SEEN_AFTER_MS);
-    state.playTimer = setTimeout(function () {
-      if (!state.disposed) maybeCountPlay(state, slide.scene);
-    }, PLAY_COUNT_AFTER_MS);
+    // Play counts are only ever written for scenes.
+    if (slide.scene.kind === "scene") {
+      state.playTimer = setTimeout(function () {
+        if (!state.disposed) maybeCountPlay(state, slide.scene);
+      }, PLAY_COUNT_AFTER_MS);
+    }
+    // Stills and GIFs have no video to end, so Auto-advance is timer-driven.
+    if (
+      state.app.config.settings.endOfClip === "advance" &&
+      slide.scene.kind === "image" &&
+      !needsVideo(slide.scene)
+    ) {
+      state.advanceTimer = setTimeout(function () {
+        if (state.disposed || state.hidden) return;
+        if (slide !== state.slideEls[state.currentIndex]) return;
+        scrollToIndex(state, state.currentIndex + 1);
+      }, imageAdvanceMs(state.app, slide.scene));
+    }
   }
 
   function markSeen(state, scene) {
     var cycle = state.app.config.cycle;
-    if (cycle.seen.indexOf(scene.id) !== -1) return;
-    cycle.seen.push(scene.id);
+    if (cycle.seen.indexOf(scene.key) !== -1) return;
+    cycle.seen.push(scene.key);
     state.newlySeenCount++;
 
-    var poolIds = state.app.pool.map(function (s) {
-      return s.id;
+    var poolKeys = state.app.pool.map(function (s) {
+      return s.key;
     });
-    var allSeen = poolIds.length > 0 && poolIds.every(function (id) {
-      return cycle.seen.indexOf(id) !== -1;
+    var allSeen = poolKeys.length > 0 && poolKeys.every(function (key) {
+      return cycle.seen.indexOf(key) !== -1;
     });
     if (allSeen) cycle.seen = [];
 
@@ -2428,7 +2715,7 @@
     if (sceneHasTag(scene, app.tags.liked)) return; // already liked, no-op
 
     scene.tags = (scene.tags || []).concat([{ id: app.tags.liked, name: TAG_NAMES.liked }]);
-    bulkUpdateTag([scene.id], app.tags.liked, "ADD").catch(function (err) {
+    bulkUpdateTag([scene.id], app.tags.liked, "ADD", scene.kind).catch(function (err) {
       handleTagWriteFailure(app, err);
     });
     applyScoreDelta(app, scene, 1);
@@ -2449,7 +2736,7 @@
     scene.tags = scene.tags.filter(function (t) {
       return t.id !== app.tags.liked;
     });
-    bulkUpdateTag([scene.id], app.tags.liked, "REMOVE").catch(function (err) {
+    bulkUpdateTag([scene.id], app.tags.liked, "REMOVE", scene.kind).catch(function (err) {
       handleTagWriteFailure(app, err);
     });
     applyScoreDelta(app, scene, -1);
@@ -2469,11 +2756,11 @@
 
     // Queued in this order: ADD zzz-reels-delete first, then one REMOVE
     // covering both Reels and (if liked) Reels-liked.
-    bulkUpdateTag([scene.id], app.tags.deleted, "ADD").catch(function (err) {
+    bulkUpdateTag([scene.id], app.tags.deleted, "ADD", scene.kind).catch(function (err) {
       handleTagWriteFailure(app, err);
     });
     var removeIds = wasLiked ? [app.tags.pool, app.tags.liked] : [app.tags.pool];
-    bulkUpdateTag([scene.id], removeIds, "REMOVE").catch(function (err) {
+    bulkUpdateTag([scene.id], removeIds, "REMOVE", scene.kind).catch(function (err) {
       handleTagWriteFailure(app, err);
     });
 
@@ -2481,7 +2768,7 @@
     applyScoreDelta(app, scene, -1); // the dislike itself
 
     app.pool = app.pool.filter(function (s) {
-      return s.id !== scene.id;
+      return s.key !== scene.key;
     });
 
     // removeSlideAt shows the undo toast itself once it knows whether the
@@ -2507,7 +2794,7 @@
       scene.tags = (scene.tags || []).filter(function (t) {
         return t.id !== app.tags.liked;
       });
-      bulkUpdateTag([scene.id], app.tags.liked, "REMOVE").catch(function (err) {
+      bulkUpdateTag([scene.id], app.tags.liked, "REMOVE", scene.kind).catch(function (err) {
         handleTagWriteFailure(app, err);
       });
       applyScoreDelta(app, scene, -action.delta);
@@ -2517,7 +2804,7 @@
       if (slide) refreshLikedBadge(app, state, slide);
     } else if (action.type === "unlike") {
       scene.tags = (scene.tags || []).concat([{ id: app.tags.liked, name: TAG_NAMES.liked }]);
-      bulkUpdateTag([scene.id], app.tags.liked, "ADD").catch(function (err) {
+      bulkUpdateTag([scene.id], app.tags.liked, "ADD", scene.kind).catch(function (err) {
         handleTagWriteFailure(app, err);
       });
       applyScoreDelta(app, scene, -action.delta); // delta is -1, so this adds the 1 back
@@ -2529,10 +2816,10 @@
       // Queued in this order: ADD Reels (and Reels-liked if it was
       // liked) first, then REMOVE zzz-reels-delete.
       var addIds = action.wasLiked ? [app.tags.pool, app.tags.liked] : [app.tags.pool];
-      bulkUpdateTag([scene.id], addIds, "ADD").catch(function (err) {
+      bulkUpdateTag([scene.id], addIds, "ADD", scene.kind).catch(function (err) {
         handleTagWriteFailure(app, err);
       });
-      bulkUpdateTag([scene.id], app.tags.deleted, "REMOVE").catch(function (err) {
+      bulkUpdateTag([scene.id], app.tags.deleted, "REMOVE", scene.kind).catch(function (err) {
         handleTagWriteFailure(app, err);
       });
       if (action.wasLiked) applyScoreDelta(app, scene, 1);
@@ -2666,14 +2953,18 @@
     if (tailStart >= state.slideEls.length) return;
     var tailScenes = state.scenes.slice(tailStart);
     var newOrder = buildFeedOrder(app, tailScenes, seedScene || null, true);
+    var released = false;
     for (var i = 0; i < newOrder.length; i++) {
       var slide = state.slideEls[tailStart + i];
-      var changed = !slide.scene || slide.scene.id !== newOrder[i].id;
+      var changed = !slide.scene || slide.scene.key !== newOrder[i].key;
+      if (changed && slide.video) released = true;
+      if (changed) releaseSlideVideo(slide);
       slide.scene = newOrder[i];
       if (changed) slide.dirty = true;
       state.scenes[tailStart + i] = newOrder[i];
     }
-    populateDirtySlidesNear(state);
+    if (released) assignVideosToWindow(state);
+    else populateDirtySlidesNear(state);
   }
 
   // like()/dislike() want their visual feedback (heart burst, badge, toast)
@@ -2746,7 +3037,7 @@
         return; // releasing a long-press is consumed, not a tap
       }
 
-      if (!state.soundUnlocked) {
+      if (!state.soundUnlocked && needsVideo(slide.scene)) {
         unlockSound(state);
         if (state.muteBtn) state.muteBtn.textContent = "🔊";
         // Open the same double-tap window as a normal single tap: a
@@ -2783,13 +3074,7 @@
       pendingTap = true;
       tapTimer = setTimeout(function () {
         pendingTap = false;
-        if (slide.video) {
-          if (slide.video.paused) {
-            attemptPlayCurrent(slide, state);
-          } else {
-            slide.video.pause();
-          }
-        }
+        togglePlaybackFor(state, slide);
       }, DOUBLE_TAP_MS);
     });
   }

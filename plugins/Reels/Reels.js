@@ -4,7 +4,7 @@
   }
   window._reelsPluginLoaded = true;
 
-  var REELS_VERSION = "0.4.1";
+  var REELS_VERSION = "0.4.2";
   var PLUGIN_ID = "Reels";
   var CANDIDATE_MAX_COUNT = 500;
   var CURRENT_HINT_VERSION = 2;
@@ -724,7 +724,10 @@
   // /reels, /reels#feed, <destination> and one back press returns to the
   // feed (see resumeApp).
   function leaveFeedForLink(state, path) {
-    if (state) state.historyEntryOpen = false;
+    if (state) {
+      state.historyEntryOpen = false;
+      state.app.lastScreenBeforeLeave = "feed";
+    }
     navigateTo(path);
   }
 
@@ -863,6 +866,27 @@
     });
   }
 
+  // Keeps the previous order, takes fresh data for items still in the pool,
+  // drops items that left it, and appends new ones (shuffled among
+  // themselves) at the end.
+  function mergePoolKeepingOrder(oldPool, fresh) {
+    if (!oldPool || !oldPool.length) return shuffle(fresh);
+    var freshByKey = {};
+    fresh.forEach(function (item) {
+      freshByKey[item.key] = item;
+    });
+    var seen = {};
+    var kept = [];
+    oldPool.forEach(function (item) {
+      seen[item.key] = true;
+      if (freshByKey[item.key]) kept.push(freshByKey[item.key]);
+    });
+    var added = fresh.filter(function (item) {
+      return !seen[item.key];
+    });
+    return kept.concat(shuffle(added));
+  }
+
   function refetchPoolAndCandidates(app) {
     var candidateExcludeIds = [app.tags.pool, app.tags.rejected, app.tags.deleted, app.tags.unplayable];
     var poolExcludeIds = [app.tags.deleted, app.tags.unplayable];
@@ -885,11 +909,11 @@
       }),
       imagePoolPromise,
     ]).then(function (results) {
-      // Shuffled once here (covers both the initial load and every
-      // refetch) and then left alone -- the cover grid's order must stay
-      // put across a feed round-trip. The feed does its own independent
-      // ordering each time it starts.
-      app.pool = shuffle(
+      // Shuffled on the first load only; a refetch keeps the existing order
+      // so the cover grid does not move (see mergePoolKeepingOrder). The
+      // feed does its own independent ordering each time it starts.
+      app.pool = mergePoolKeepingOrder(
+        app.pool,
         results[0].findScenes.scenes.map(normalizeScene).concat(results[2].findImages.images.map(normalizeImage))
       );
       app.candidates = results[1].findScenes.scenes;
@@ -897,9 +921,42 @@
     });
   }
 
-  function setScreen(app, screen) {
+  function setScreen(app, screen, why) {
     app.screen = screen;
+    if (app.resumeDebugEl) {
+      app.resumeDebugEvents.push(screen + "<-" + (why || "?"));
+      updateResumeDebug(app);
+    }
     render(app);
+  }
+
+  // On-screen resume diagnosis for devices without a console: shown for a
+  // few seconds after every resume, and extended by any later screen change.
+  function updateResumeDebug(app) {
+    var info = app.resumeDebugInfo;
+    if (!info || !app.resumeDebugEl) return;
+    app.resumeDebugEl.textContent =
+      "resume: hash=" + info.hash + " live=" + info.live + " last=" + info.last + " shown=" + app.screen +
+      (app.resumeDebugEvents.length ? " | " + app.resumeDebugEvents.join(" ") : "");
+  }
+
+  function showResumeDebug(app, info) {
+    if (!app.config || !app.config.settings.showDebugInfo) return;
+    removeResumeDebug(app);
+    app.resumeDebugInfo = info;
+    app.resumeDebugEvents = [];
+    app.resumeDebugEl = el("div", "reels-resume-debug");
+    document.body.appendChild(app.resumeDebugEl);
+    updateResumeDebug(app);
+    app.resumeDebugTimer = setTimeout(function () {
+      removeResumeDebug(app);
+    }, 15000);
+  }
+
+  function removeResumeDebug(app) {
+    clearTimeout(app.resumeDebugTimer);
+    if (app.resumeDebugEl && app.resumeDebugEl.parentNode) app.resumeDebugEl.parentNode.removeChild(app.resumeDebugEl);
+    app.resumeDebugEl = null;
   }
 
   function render(app) {
@@ -1579,8 +1636,14 @@
     enterFeedHistory(state);
     state.popstateHandler = function () {
       if (state.disposed || state.hidden) return;
+      // Landing on a #feed entry is never a close: if this runs after the
+      // route has already remounted and re-shown the feed, leave it alone.
+      if (location.hash === "#feed") {
+        console.log("Reels: popstate on #feed ignored");
+        return;
+      }
       hideFeedScreen(state);
-      setScreen(app, "start");
+      setScreen(app, "start", "popstate");
       if (state.pendingToastMessage) {
         var pendingMessage = state.pendingToastMessage;
         state.pendingToastMessage = null;
@@ -1871,32 +1934,51 @@
     app.videos.forEach(function (v) {
       v.pause();
     });
+    removeResumeDebug(app);
   }
 
   // Called when /reels mounts again with a persisted app.
   function resumeApp(app) {
     var live = !!(app._feedState && !app._feedState.disposed);
-    var atFeedHash = location.hash === "#feed";
-    console.log("Reels: app resumed (screen " + app.screen + ", live feed " + live + ", #feed " + atFeedHash + ")");
-    if (atFeedHash && !live) {
+    var hash = location.hash;
+    var last = app.lastScreenBeforeLeave || "-";
+    app.lastScreenBeforeLeave = null;
+    console.log("Reels: app resumed (screen " + app.screen + ", live feed " + live + ", hash '" + hash + "', last " + last + ")");
+    if (hash === "#feed" && !live) {
       // Stale #feed entry (no feed to show): normalise the URL, show the start screen.
       history.replaceState(history.state, "", location.pathname + location.search);
-      atFeedHash = false;
+      hash = "";
     }
-    if (atFeedHash) {
-      // Returned to the feed's own history entry (render re-uses it, no new push).
-      app.screen = "feed";
-    } else if (app.screen === "feed") {
-      // Plain /reels: start screen; the hidden feed stays alive for a cover tap.
-      app.screen = "start";
-    }
-    render(app);
-    var state = app._feedState;
-    if (app.screen === "feed" && state && !state.disposed) refreshResumedScene(app, state);
 
-    // Background refresh of the pool and candidates (the pool is reshuffled
-    // once, as always). Only the start screen is redrawn; a live feed is
-    // left alone and the new pool is used at its next rebuild.
+    // #feed + a live feed always means "show the feed" (render re-uses the
+    // entry, no new push). Plain /reels shows the start screen and the hidden
+    // feed stays alive for a cover tap.
+    function showResumed(wantFeed) {
+      if (wantFeed) app.screen = "feed";
+      else if (app.screen === "feed") app.screen = "start";
+      render(app);
+      var state = app._feedState;
+      if (app.screen === "feed" && state && !state.disposed) refreshResumedScene(app, state);
+    }
+    showResumed(live && hash === "#feed");
+    showResumeDebug(app, { hash: hash || "-", live: live, last: last });
+
+    // The route can mount before the URL reports #feed: look once more on
+    // the next frame and switch to the feed if we left it via a link.
+    if (live && last === "feed" && hash !== "#feed") {
+      requestAnimationFrame(function () {
+        if (!app.root.isConnected || location.hash !== "#feed") return;
+        if (!app._feedState || app._feedState.disposed || app.screen === "feed") return;
+        console.log("Reels: #feed seen on next frame, showing feed");
+        if (app.resumeDebugInfo) app.resumeDebugInfo.hash = "#feed(late)";
+        showResumed(true);
+        updateResumeDebug(app);
+      });
+    }
+
+    // Background refresh of the pool and candidates (existing pool order is
+    // kept; see mergePoolKeepingOrder). Only the start screen is redrawn; a
+    // live feed is left alone and the new pool is used at its next rebuild.
     refetchPoolAndCandidates(app)
       .then(function () {
         if (app.screen === "start" && app.root.isConnected) render(app);

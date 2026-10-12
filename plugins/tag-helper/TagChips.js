@@ -900,7 +900,7 @@
   // ---------------------------------------------------------------------
   // Main panel
   // ---------------------------------------------------------------------
-  function TagChipsPanel({ scene }) {
+  function TagChipsPanel({ scene, onChange }) {
     const [allTags, setAllTags] = React.useState([]);
     const [config, setConfig] = React.useState({ groups: [], categories: [], sortMode: "usage" });
     const [sceneTagIds, setSceneTagIds] = React.useState(
@@ -972,6 +972,7 @@
 
       try {
         await updateSceneTagIds(scene.id, Array.from(nextSet));
+        if (onChange) onChange(scene.id);
       } catch (e) {
         // revert on failure
         setSceneTagIds(sceneTagIds);
@@ -1043,6 +1044,7 @@
 
       try {
         await updateScene(scene.id, fields);
+        if (onChange) onChange(scene.id);
       } catch (e) {
         // revert on failure
         setSceneTagIds(prevTagIds);
@@ -1150,6 +1152,42 @@
         }),
     ]);
   }
+
+  // ---------------------------------------------------------------------
+  // Public API for other plugins (e.g. Reels): render the panel for one
+  // scene into any container. onChange(sceneId) fires after each
+  // successful save.
+  // ---------------------------------------------------------------------
+  const FIND_SCENE_FOR_PANEL =
+    "query TagChipsFindScene($id: ID!) { findScene(id: $id) { id tags { id name } performers { id name } studio { id name } } }";
+
+  function mountTagChips(containerEl, opts) {
+    const o = opts || {};
+    const handle = { containerEl, sceneId: o.sceneId, unmounted: false, rendered: false };
+    gql(FIND_SCENE_FOR_PANEL, { id: o.sceneId })
+      .then((data) => {
+        if (handle.unmounted) return;
+        if (!data.findScene) throw new Error("scene not found");
+        PluginApi.ReactDOM.render(
+          h(TagChipsPanel, { scene: data.findScene, onChange: o.onChange }),
+          containerEl
+        );
+        handle.rendered = true;
+      })
+      .catch((e) => {
+        if (handle.unmounted) return;
+        containerEl.textContent = "Failed to load tags: " + e.message;
+      });
+    return handle;
+  }
+
+  function unmountTagChips(handle) {
+    if (!handle || handle.unmounted) return;
+    handle.unmounted = true;
+    if (handle.rendered) PluginApi.ReactDOM.unmountComponentAtNode(handle.containerEl);
+  }
+
+  window.TagChipsAPI = { version: 1, mount: mountTagChips, unmount: unmountTagChips };
 
   // ---------------------------------------------------------------------
   // Wire into the Scene page tabs (v0.25+ PluginApi.patch.after pattern —

@@ -4,7 +4,7 @@
   }
   window._reelsPluginLoaded = true;
 
-  var REELS_VERSION = "0.4.2";
+  var REELS_VERSION = "0.4.3";
   var PLUGIN_ID = "Reels";
   var CANDIDATE_MAX_COUNT = 500;
   var CURRENT_HINT_VERSION = 2;
@@ -1173,6 +1173,7 @@
   }
 
   function unlikeFromGrid(app, scene) {
+    if (tagLocked(scene)) return;
     if (!sceneHasTag(scene, app.tags.liked)) return;
     scene.tags = scene.tags.filter(function (t) {
       return t.id !== app.tags.liked;
@@ -1636,6 +1637,8 @@
     enterFeedHistory(state);
     state.popstateHandler = function () {
       if (state.disposed || state.hidden) return;
+      // The tag sheet owns #tags entries (opening, closing, back gesture).
+      if (tagSheetOpen() || location.hash === "#tags") return;
       // Landing on a #feed entry is never a close: if this runs after the
       // route has already remounted and re-shown the feed, leave it alone.
       if (location.hash === "#feed") {
@@ -1700,6 +1703,16 @@
     container.appendChild(openLink);
     state.openLink = openLink;
 
+    var tagBtn = el("button", "reels-tag-btn", "🏷");
+    tagBtn.setAttribute("aria-label", "Edit tags");
+    tagBtn.setAttribute("title", "Edit tags");
+    tagBtn.hidden = true;
+    tagBtn.addEventListener("click", function () {
+      openTagSheet(app, state);
+    });
+    container.appendChild(tagBtn);
+    state.tagBtn = tagBtn;
+
     var muteBtn = el("button", "reels-mute-btn", state.unmuted ? "🔊" : "🔇");
     muteBtn.setAttribute("aria-label", "Mute / unmute");
     muteBtn.addEventListener("click", function () {
@@ -1753,10 +1766,28 @@
     });
 
     state.keyHandler = function (e) {
+      // Typing in any field (TagChips search box etc.) is never ours.
+      var t = e.target;
+      if (t && t.nodeType === 1) {
+        var tag = t.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || t.isContentEditable) return;
+      }
       if (state.hidden) return; // feed is live but not the visible screen
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       var key = e.key;
       var lowerKey = typeof key === "string" ? key.toLowerCase() : key;
+
+      if (tagSheetOpen()) {
+        // Everything but Escape belongs to the sheet; Escape closes it unless
+        // a TagChips modal is open (that modal handles its own Escape).
+        if (lowerKey === "escape" && !document.querySelector(".tc-modal-overlay")) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          requestCloseTagSheet(tagSheet);
+        }
+        return;
+      }
+      if (tagSheet) return; // sheet closed, refresh still pending: no tag shortcuts
 
       if (SUPPRESSED_KEYS.indexOf(lowerKey) !== -1) {
         e.preventDefault();
@@ -1840,6 +1871,7 @@
   // are so re-entering (same chip) resumes instantly instead of rebuilding.
   function hideFeedScreen(state) {
     if (state.hidden) return;
+    abortTagSheet();
     state.hidden = true;
     state.historyEntryOpen = false;
     state.videos.forEach(function (v) {
@@ -1879,8 +1911,20 @@
   function refreshResumedScene(app, state) {
     var slide = state.slideEls[state.currentIndex];
     if (!slide) return;
-    var item = slide.scene;
-    var key = item.key;
+    refreshItemInFeed(app, state, slide.scene.key).catch(logErr);
+  }
+
+  // Refetches one feed item by key and applies it to the slide and the pool,
+  // or drops it when it no longer belongs in the pool.
+  function refreshItemInFeed(app, state, key) {
+    var item = null;
+    for (var j = 0; j < state.scenes.length; j++) {
+      if (state.scenes[j].key === key) {
+        item = state.scenes[j];
+        break;
+      }
+    }
+    if (!item) return Promise.resolve();
     var request =
       item.kind === "image"
         ? gql(IMAGE_REFRESH_QUERY, { id: item.id }).then(function (data) {
@@ -1889,42 +1933,40 @@
         : gql(SCENE_REFRESH_QUERY, { id: item.id }).then(function (data) {
             return data.findScene ? normalizeScene(data.findScene) : null;
           });
-    request
-      .then(function (fresh) {
-        if (state.disposed || state.hidden) return;
-        var idx = -1;
-        for (var i = 0; i < state.scenes.length; i++) {
-          if (state.scenes[i].key === key) {
-            idx = i;
-            break;
-          }
+    return request.then(function (fresh) {
+      if (state.disposed || state.hidden) return;
+      var idx = -1;
+      for (var i = 0; i < state.scenes.length; i++) {
+        if (state.scenes[i].key === key) {
+          idx = i;
+          break;
         }
-        if (idx === -1 || idx < state.currentIndex) return;
+      }
+      if (idx === -1 || idx < state.currentIndex) return;
 
-        var inPool =
-          fresh &&
-          sceneHasTag(fresh, app.tags.pool) &&
-          !sceneHasTag(fresh, app.tags.deleted) &&
-          !sceneHasTag(fresh, app.tags.unplayable);
+      var inPool =
+        fresh &&
+        sceneHasTag(fresh, app.tags.pool) &&
+        !sceneHasTag(fresh, app.tags.deleted) &&
+        !sceneHasTag(fresh, app.tags.unplayable);
 
-        if (!inPool) {
-          app.pool = app.pool.filter(function (s) {
-            return s.key !== key;
-          });
-          removeSlideAt(state, idx, null);
-          return;
-        }
-
-        app.pool = app.pool.map(function (s) {
-          return s.key === key ? fresh : s;
+      if (!inPool) {
+        app.pool = app.pool.filter(function (s) {
+          return s.key !== key;
         });
-        state.scenes[idx] = fresh;
-        state.slideEls[idx].scene = fresh;
-        populateSlide(app, state.slideEls[idx], state);
-        updateImageWindow(state);
-        updateOpenLink(state);
-      })
-      .catch(logErr);
+        removeSlideAt(state, idx, null);
+        return;
+      }
+
+      app.pool = app.pool.map(function (s) {
+        return s.key === key ? fresh : s;
+      });
+      state.scenes[idx] = fresh;
+      state.slideEls[idx].scene = fresh;
+      populateSlide(app, state.slideEls[idx], state);
+      updateImageWindow(state);
+      updateOpenLink(state);
+    });
   }
 
   // Called when the /reels route unmounts: the app, its feed and its three
@@ -1944,6 +1986,11 @@
     var last = app.lastScreenBeforeLeave || "-";
     app.lastScreenBeforeLeave = null;
     console.log("Reels: app resumed (screen " + app.screen + ", live feed " + live + ", hash '" + hash + "', last " + last + ")");
+    if (hash === "#tags") {
+      // A #tags entry never outlives its sheet: treat it as plain /reels.
+      history.replaceState(history.state, "", location.pathname + location.search);
+      hash = "";
+    }
     if (hash === "#feed" && !live) {
       // Stale #feed entry (no feed to show): normalise the URL, show the start screen.
       history.replaceState(history.state, "", location.pathname + location.search);
@@ -2701,6 +2748,7 @@
 
   function scrollToIndex(state, index) {
     if (index < 0 || index >= state.slideEls.length) return;
+    if (tagSheetOpen()) return;
     state.slideEls[index].el.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
@@ -2708,6 +2756,7 @@
 
   // Stash's scene page reads ?t=SECONDS as the initial playback position.
   function updateOpenLink(state) {
+    updateTagBtn(state);
     var slide = state.slideEls[state.currentIndex];
     if (!slide || !state.openLink) return;
     var href;
@@ -2805,6 +2854,7 @@
 
   function like(app, state, slide) {
     var scene = slide.scene;
+    if (tagLocked(scene)) return;
     if (sceneHasTag(scene, app.tags.liked)) return; // already liked, no-op
 
     scene.tags = (scene.tags || []).concat([{ id: app.tags.liked, name: TAG_NAMES.liked }]);
@@ -2824,6 +2874,7 @@
   // toast/undo path as a like, just the reverse tag write and score delta.
   function unlikeFromFeed(app, state, slide) {
     var scene = slide.scene;
+    if (tagLocked(scene)) return;
     if (!sceneHasTag(scene, app.tags.liked)) return;
 
     scene.tags = scene.tags.filter(function (t) {
@@ -2844,6 +2895,7 @@
     var slide = state.slideEls[state.currentIndex];
     if (!slide) return;
     var scene = slide.scene;
+    if (tagLocked(scene)) return;
     var wasLiked = sceneHasTag(scene, app.tags.liked);
     var idx = state.currentIndex;
 
@@ -2879,6 +2931,7 @@
   function undoLastAction(app, state) {
     var action = state.lastAction;
     if (!action) return;
+    if (tagLocked(action.scene)) return;
     clearUndoToast(state);
     state.lastAction = null;
     var scene = action.scene;
@@ -2932,6 +2985,204 @@
         insertSlideAt(state, insertIndex, scene);
       }
     }
+  }
+
+  // --- Tag sheet (TagChips panel in a bottom sheet) -------------------------
+  //
+  // TagChips saves whole tag lists while Reels sends ADD/REMOVE, so while the
+  // sheet is open every Reels tag action for that clip is blocked (tagLocked),
+  // and the clip is refetched once the sheet is closed and pending Reels
+  // writes have settled. `tagSheet` stays set until that refresh is applied.
+
+  var tagSheet = null;
+
+  function tagSheetOpen() {
+    return !!(tagSheet && !tagSheet.uiClosed);
+  }
+
+  function tagLocked(item) {
+    return !!(tagSheet && item && item.key === tagSheet.key);
+  }
+
+  // Resolves once tagWriteChain has no more writes queued behind it.
+  function tagWritesSettled() {
+    var tail = tagWriteChain;
+    return tail.then(function () {
+      return tail === tagWriteChain ? undefined : tagWritesSettled();
+    });
+  }
+
+  function tagApiAvailable() {
+    return !!(window.TagChipsAPI && window.TagChipsAPI.version >= 1);
+  }
+
+  function updateTagBtn(state) {
+    if (!state.tagBtn) return;
+    var slide = state.slideEls[state.currentIndex];
+    var show = !!(slide && slide.scene.kind !== "image" && tagApiAvailable());
+    state.tagBtn.hidden = !show;
+  }
+
+  function openTagSheet(app, state) {
+    if (tagSheet || state.disposed || state.hidden || !tagApiAvailable()) return;
+    var slide = state.slideEls[state.currentIndex];
+    if (!slide || slide.scene.kind === "image") return;
+
+    var sheet = {
+      app: app,
+      state: state,
+      key: slide.scene.key,
+      sceneId: slide.scene.id,
+      changed: false,
+      uiClosed: false,
+      closing: false,
+      refreshed: false,
+      historyOpen: false,
+      handle: null,
+      popHandler: null,
+      vvHandler: null,
+    };
+    tagSheet = sheet;
+
+    var backdrop = el("div", "reels-tag-backdrop");
+    var box = el("div", "reels-tag-sheet");
+    box.setAttribute("role", "dialog");
+    box.setAttribute("aria-label", "Tags");
+    box.appendChild(el("div", "reels-tag-handle"));
+    var closeBtn = el("button", "reels-tag-close", "✕");
+    closeBtn.setAttribute("aria-label", "Close tags");
+    box.appendChild(closeBtn);
+    var body = el("div", "reels-tag-body");
+    var spinner = el("div", "reels-tag-spinner");
+    spinner.setAttribute("aria-label", "Saving changes…");
+    body.appendChild(spinner);
+    box.appendChild(body);
+    sheet.backdrop = backdrop;
+    sheet.box = box;
+    sheet.body = body;
+
+    backdrop.addEventListener("click", function () {
+      requestCloseTagSheet(sheet);
+    });
+    closeBtn.addEventListener("click", function () {
+      requestCloseTagSheet(sheet);
+    });
+    state.containerEl.appendChild(backdrop);
+    state.containerEl.appendChild(box);
+    state.containerEl.classList.add("reels-tag-open");
+
+    // Keep the sheet above the on-screen keyboard (the visual viewport
+    // shrinks while the layout viewport does not).
+    function fit() {
+      var vv = window.visualViewport;
+      var ih = window.innerHeight;
+      if (!vv) {
+        box.style.height = Math.round(ih * 0.55) + "px";
+        return;
+      }
+      var kbBottom = Math.max(0, ih - (vv.offsetTop + vv.height));
+      var keyboard = kbBottom > 80;
+      box.style.bottom = (keyboard ? kbBottom : 0) + "px";
+      box.style.height = Math.round(keyboard ? Math.max(120, vv.height - 12) : ih * 0.55) + "px";
+    }
+    sheet.vvHandler = fit;
+    fit();
+    if (window.visualViewport) {
+      window.visualViewport.addEventListener("resize", fit);
+      window.visualViewport.addEventListener("scroll", fit);
+    }
+
+    history.pushState({ reelsTags: true }, "", location.pathname + location.search + "#tags");
+    sheet.historyOpen = true;
+    sheet.popHandler = function () {
+      if (location.hash !== "#tags") finishCloseTagSheet(sheet);
+    };
+    window.addEventListener("popstate", sheet.popHandler);
+
+    // Mount only after queued Reels like/unlike/dislike writes are saved, so
+    // TagChips reads the clip's tags as they will be on the server.
+    tagWritesSettled()
+      .then(function () {
+        if (sheet.uiClosed) return;
+        if (!tagApiAvailable()) throw new Error("TagChips is not available");
+        clear(body);
+        var mountEl = el("div", "reels-tag-mount");
+        body.appendChild(mountEl);
+        sheet.handle = window.TagChipsAPI.mount(mountEl, {
+          sceneId: sheet.sceneId,
+          onChange: function () {
+            sheet.changed = true;
+            // A save that lands after the sheet closed and the refresh ran.
+            if (sheet.uiClosed && sheet.refreshed && !state.disposed && !state.hidden) {
+              refreshItemInFeed(app, state, sheet.key).catch(logErr);
+            }
+          },
+        });
+      })
+      .catch(function (err) {
+        logErr(err);
+        if (!sheet.uiClosed) {
+          clear(body);
+          body.appendChild(el("div", "reels-tag-error", "Couldn't load tags."));
+        }
+      });
+  }
+
+  // Button / backdrop / Esc: pop the #tags entry so every close goes through
+  // the popstate path; fall back to closing directly if the entry is gone.
+  function requestCloseTagSheet(sheet) {
+    if (!sheet || sheet.uiClosed || sheet.closing) return;
+    sheet.closing = true;
+    if (sheet.historyOpen && location.hash === "#tags") {
+      history.back();
+    } else {
+      finishCloseTagSheet(sheet);
+    }
+  }
+
+  function removeTagSheetUi(sheet) {
+    sheet.uiClosed = true;
+    sheet.historyOpen = false;
+    if (sheet.popHandler) window.removeEventListener("popstate", sheet.popHandler);
+    if (sheet.vvHandler && window.visualViewport) {
+      window.visualViewport.removeEventListener("resize", sheet.vvHandler);
+      window.visualViewport.removeEventListener("scroll", sheet.vvHandler);
+    }
+    try {
+      if (sheet.handle && window.TagChipsAPI) window.TagChipsAPI.unmount(sheet.handle);
+    } catch (err) {
+      logErr(err);
+    }
+    if (sheet.backdrop.parentNode) sheet.backdrop.parentNode.removeChild(sheet.backdrop);
+    if (sheet.box.parentNode) sheet.box.parentNode.removeChild(sheet.box);
+    if (sheet.state.containerEl) sheet.state.containerEl.classList.remove("reels-tag-open");
+  }
+
+  function finishCloseTagSheet(sheet) {
+    if (sheet.uiClosed) return;
+    removeTagSheetUi(sheet);
+    var app = sheet.app;
+    var state = sheet.state;
+    tagWritesSettled()
+      .then(function () {
+        if (sheet.changed && !state.disposed && !state.hidden) {
+          return refreshItemInFeed(app, state, sheet.key);
+        }
+      })
+      .catch(logErr)
+      .then(function () {
+        sheet.refreshed = true;
+        if (tagSheet === sheet) tagSheet = null;
+      });
+  }
+
+  // The feed went away under the sheet (route change): drop the sheet without
+  // history work; the resume refresh re-reads the clip.
+  function abortTagSheet() {
+    var sheet = tagSheet;
+    if (!sheet) return;
+    if (!sheet.uiClosed) removeTagSheetUi(sheet);
+    tagSheet = null;
   }
 
   // A standalone toast (no Undo button, not tied to feed state) for
@@ -3226,7 +3477,7 @@
       document.documentElement.classList.add("reels-html-lock");
 
       if (fresh) {
-        if (location.hash === "#feed") {
+        if (location.hash === "#feed" || location.hash === "#tags") {
           // Full page load on a #feed entry: there is no feed to show.
           history.replaceState(history.state, "", location.pathname + location.search);
         }

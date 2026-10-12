@@ -472,7 +472,8 @@ html.reels-html-lock body {
 
 .reels-dislike-btn,
 .reels-mute-btn,
-.reels-open-btn {
+.reels-open-btn,
+.reels-tag-btn {
   position: fixed;
   right: 12px;
   z-index: 10000;
@@ -504,10 +505,110 @@ html.reels-html-lock body {
   text-decoration: none;
 }
 
+/* Directly above the open button. */
+.reels-tag-btn {
+  bottom: calc(max(24px, env(safe-area-inset-bottom)) + 156px);
+}
+
+.reels-tag-btn[hidden] {
+  display: none;
+}
+
 .reels-dislike-btn:hover,
 .reels-mute-btn:hover,
-.reels-open-btn:hover {
+.reels-open-btn:hover,
+.reels-tag-btn:hover {
   background: rgba(0, 0, 0, 0.65);
+}
+
+/* --- Tag sheet ---------------------------------------------------------
+   No transform/filter on the sheet: TagChips' fixed Manage Tags modal lives
+   inside it and must keep the viewport as its containing block. */
+
+.reels-tag-open .reels-feed {
+  overflow: hidden;
+  touch-action: none;
+}
+
+.reels-tag-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10003;
+  background: rgba(0, 0, 0, 0.5);
+  touch-action: none;
+}
+
+.reels-tag-sheet {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 55vh;
+  height: 55dvh;
+  z-index: 10004;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  background: #1b1b1b;
+  color: #eee;
+  border-radius: 16px 16px 0 0;
+  box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.5);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.reels-tag-handle {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 4px;
+  margin: 8px auto 4px;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.35);
+}
+
+.reels-tag-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: #fff;
+  font-size: 18px;
+  cursor: pointer;
+}
+
+.reels-tag-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+  padding: 8px 12px 12px;
+}
+
+.reels-tag-spinner {
+  width: 28px;
+  height: 28px;
+  margin: 32px auto;
+  border: 3px solid rgba(255, 255, 255, 0.25);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: reels-tag-spin 0.8s linear infinite;
+}
+
+.reels-tag-error {
+  padding: 24px 8px;
+  text-align: center;
+  color: #f88;
+}
+
+@keyframes reels-tag-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .reels-converting-label {

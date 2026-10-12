@@ -35,6 +35,15 @@ html.reels-html-lock body {
   overflow: hidden;
 }
 
+/* Font Awesome SVG icons built by faIcon(): sized from the parent's font-size. */
+.reels-icon {
+  display: inline-block;
+  height: 1em;
+  width: auto;
+  vertical-align: -0.125em;
+  flex: 0 0 auto;
+}
+
 .reels-back,
 .reels-gear {
   position: absolute;
@@ -114,6 +123,9 @@ html.reels-html-lock body {
   color: #eee;
   font-size: 13px;
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .reels-cover-grid-scroll {
@@ -258,6 +270,10 @@ html.reels-html-lock body {
   align-items: center;
   justify-content: center;
   cursor: pointer;
+}
+
+.reels-select-badge .reels-icon {
+  height: 10px;
 }
 
 .reels-select-badge {
@@ -447,78 +463,99 @@ html.reels-html-lock body {
   pointer-events: none;
 }
 
-.reels-feed-back {
+/* Round icon buttons: back button + right-hand column. */
+.reels-feed-back,
+.reels-dislike-btn,
+.reels-mute-btn,
+.reels-open-btn,
+.reels-tag-btn {
   position: fixed;
-  top: max(8px, env(safe-area-inset-top));
-  left: 8px;
   z-index: 10000;
   width: 44px;
   height: 44px;
+  padding: 0;
   border-radius: 50%;
   border: none;
-  background: rgba(0, 0, 0, 0.45);
+  background: rgba(0, 0, 0, 0.35);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
   color: #fff;
-  font-size: 22px;
+  font-size: 20px;
   line-height: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  text-decoration: none;
+  transition: transform 120ms ease, background-color 120ms ease;
 }
 
-.reels-feed-back:hover {
-  background: rgba(0, 0, 0, 0.65);
+.reels-feed-back .reels-icon,
+.reels-dislike-btn .reels-icon,
+.reels-mute-btn .reels-icon,
+.reels-open-btn .reels-icon,
+.reels-tag-btn .reels-icon {
+  height: 20px;
+  width: auto;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6));
+}
+
+.reels-feed-back:active,
+.reels-dislike-btn:active,
+.reels-mute-btn:active,
+.reels-open-btn:active,
+.reels-tag-btn:active {
+  transform: scale(0.92);
+}
+
+.reels-feed-back {
+  top: max(8px, env(safe-area-inset-top));
+  left: 8px;
 }
 
 .reels-dislike-btn,
 .reels-mute-btn,
 .reels-open-btn,
 .reels-tag-btn {
-  position: fixed;
   right: 12px;
-  z-index: 10000;
-  width: 40px;
-  height: 40px;
-  border-radius: 50%;
-  border: none;
-  background: rgba(0, 0, 0, 0.45);
-  color: #fff;
-  font-size: 18px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
 }
 
+/* Column from the bottom up, 12px apart (44px buttons). */
 .reels-dislike-btn {
   bottom: max(24px, env(safe-area-inset-bottom));
 }
 
-/* Directly above the dislike button. */
 .reels-mute-btn {
-  bottom: calc(max(24px, env(safe-area-inset-bottom)) + 52px);
+  bottom: calc(max(24px, env(safe-area-inset-bottom)) + 56px);
 }
 
-/* Directly above the mute button. */
 .reels-open-btn {
-  bottom: calc(max(24px, env(safe-area-inset-bottom)) + 104px);
-  text-decoration: none;
+  bottom: calc(max(24px, env(safe-area-inset-bottom)) + 112px);
 }
 
-/* Directly above the open button. */
 .reels-tag-btn {
-  bottom: calc(max(24px, env(safe-area-inset-bottom)) + 156px);
+  bottom: calc(max(24px, env(safe-area-inset-bottom)) + 168px);
 }
 
 .reels-tag-btn[hidden] {
   display: none;
 }
 
-.reels-dislike-btn:hover,
-.reels-mute-btn:hover,
-.reels-open-btn:hover,
-.reels-tag-btn:hover {
-  background: rgba(0, 0, 0, 0.65);
+@media (hover: hover) {
+  .reels-feed-back:hover,
+  .reels-mute-btn:hover,
+  .reels-open-btn:hover,
+  .reels-tag-btn:hover {
+    background: rgba(0, 0, 0, 0.5);
+  }
+
+  .reels-dislike-btn:hover {
+    background: rgba(220, 53, 69, 0.55);
+  }
+}
+
+.reels-dislike-btn:active {
+  background: rgba(220, 53, 69, 0.55);
 }
 
 /* --- Tag sheet ---------------------------------------------------------
@@ -850,22 +887,6 @@ html.reels-html-lock body {
   font-size: 13px;
   line-height: 1.6;
   color: rgba(255, 255, 255, 0.85);
-}
-
-.reels-nav-link {
-  color: #eee !important;
-  text-decoration: none;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  padding: 1rem 0.5rem;
-  font-size: 0.95rem;
-}
-
-.reels-nav-link:hover {
-  color: #fff !important;
 }
 
 .reels-resume-debug {

@@ -4,7 +4,7 @@
   }
   window._reelsPluginLoaded = true;
 
-  var REELS_VERSION = "0.4.3";
+  var REELS_VERSION = "0.4.4";
   var PLUGIN_ID = "Reels";
   var CANDIDATE_MAX_COUNT = 500;
   var CURRENT_HINT_VERSION = 2;
@@ -750,21 +750,31 @@
     if (!itemContainer || !itemContainer.parentElement) return false;
 
     var wrapper = document.createElement("div");
-    wrapper.className = "col-4 col-sm-3 col-md-2 col-lg-auto";
+    wrapper.className = "col-4 col-sm-3 col-md-2 col-lg-auto nav-link";
 
     var link = document.createElement("a");
     link.id = "reels-nav-link";
     link.href = "/reels";
-    link.className = "reels-nav-link";
-    link.textContent = "Reels";
+    link.className =
+      "minimal p-4 p-xl-2 d-flex d-xl-inline-block flex-column justify-content-between align-items-center btn btn-primary";
+    link.appendChild(faIcon(faDef("faMobileScreenButton"), "fa-icon nav-menu-icon d-block d-xl-inline mb-2 mb-xl-0", ""));
+    link.appendChild(el("span", null, "Reels"));
     link.addEventListener("click", function (e) {
+      if (e.button !== 0 || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
       e.preventDefault();
       navigateTo("/reels");
     });
 
     wrapper.appendChild(link);
     itemContainer.parentElement.appendChild(wrapper);
+    updateNavActive();
     return true;
+  }
+
+  function updateNavActive() {
+    var link = document.getElementById("reels-nav-link");
+    if (!link) return;
+    link.classList.toggle("active", location.pathname.replace(/\/+$/, "") === "/reels");
   }
 
   // Runs once for the life of the plugin (started from waitForPluginApi
@@ -772,8 +782,10 @@
   function startNavLinkObserver() {
     function apply() {
       injectNavLink(navLinkEnabled);
+      updateNavActive();
     }
     apply();
+    window.addEventListener("popstate", updateNavActive);
     var observer = new MutationObserver(apply);
     observer.observe(document.body, { childList: true, subtree: true });
   }
@@ -789,6 +801,59 @@
 
   function clear(node) {
     while (node.firstChild) node.removeChild(node.firstChild);
+  }
+
+  // --- Font Awesome icons (Stash's own FontAwesomeSolid library) ---------
+
+  function faDef(name) {
+    try {
+      var lib = window.PluginApi && window.PluginApi.libraries && window.PluginApi.libraries.FontAwesomeSolid;
+      return (lib && lib[name]) || null;
+    } catch (err) {
+      return null;
+    }
+  }
+
+  // Inline <svg> from a Font Awesome definition; a text glyph when the
+  // definition is missing so nothing breaks.
+  function faIcon(def, extraClass, fallbackText) {
+    var data = def && def.icon;
+    if (!data || data.length < 5) {
+      var span = document.createElement("span");
+      span.className = "reels-icon-fallback" + (extraClass ? " " + extraClass : "");
+      span.textContent = fallbackText || "";
+      return span;
+    }
+    var NS = "http://www.w3.org/2000/svg";
+    var svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("class", "svg-inline--fa fa-" + def.iconName + (extraClass ? " " + extraClass : ""));
+    svg.setAttribute("viewBox", "0 0 " + data[0] + " " + data[1]);
+    svg.setAttribute("fill", "currentColor");
+    svg.setAttribute("aria-hidden", "true");
+    [].concat(data[4]).forEach(function (d) {
+      var path = document.createElementNS(NS, "path");
+      path.setAttribute("fill", "currentColor");
+      path.setAttribute("d", d);
+      svg.appendChild(path);
+    });
+    return svg;
+  }
+
+  // Replaces a node's content with one Font Awesome icon by library name.
+  function setIcon(node, name, fallbackText, extraClass) {
+    clear(node);
+    node.appendChild(faIcon(faDef(name), extraClass === undefined ? "reels-icon" : extraClass, fallbackText));
+  }
+
+  function iconButton(className, name, fallbackText) {
+    var b = document.createElement("button");
+    b.className = className;
+    setIcon(b, name, fallbackText);
+    return b;
+  }
+
+  function setMuteIcon(btn, unmuted) {
+    if (btn) setIcon(btn, unmuted ? "faVolumeHigh" : "faVolumeXmark", unmuted ? "🔊" : "🔇");
   }
 
   // Routes every mute-state change on a pool <video> through one place so
@@ -989,14 +1054,14 @@
     var bar = el("div", "reels-topbar");
 
     if (app.screen !== "start") {
-      var back = el("button", "reels-back", "←");
+      var back = iconButton("reels-back", "faArrowLeft", "←");
       back.setAttribute("aria-label", "Back");
       back.addEventListener("click", function () {
         setScreen(app, "start");
       });
       bar.appendChild(back);
     } else {
-      var close = el("button", "reels-back", "×");
+      var close = iconButton("reels-back", "faXmark", "×");
       close.setAttribute("aria-label", "Close");
       close.addEventListener("click", navigateLeaveFeed);
       bar.appendChild(close);
@@ -1005,7 +1070,7 @@
     bar.appendChild(el("div", "reels-version", "Reels v" + REELS_VERSION));
 
     if (app.screen === "start") {
-      var gear = el("button", "reels-gear", "⚙");
+      var gear = iconButton("reels-gear", "faGear", "⚙");
       gear.setAttribute("aria-label", "Settings");
       gear.addEventListener("click", function () {
         setScreen(app, "settings");
@@ -1093,7 +1158,8 @@
     });
     container.appendChild(chipsRow);
 
-    var shuffleBtn = el("button", "reels-shuffle-btn", "Shuffle");
+    var shuffleBtn = iconButton("reels-shuffle-btn", "faShuffle", "");
+    shuffleBtn.appendChild(el("span", null, "Shuffle"));
     shuffleBtn.addEventListener("click", function () {
       startFeed(app, null, true);
     });
@@ -1153,7 +1219,7 @@
         heartBadge = null;
       }
       if (sceneHasTag(scene, app.tags.liked)) {
-        heartBadge = el("button", "reels-heart-badge", "♥");
+        heartBadge = iconButton("reels-heart-badge", "faHeart", "♥");
         heartBadge.setAttribute("aria-label", "Unlike");
         heartBadge.addEventListener("click", function (e) {
           e.stopPropagation();
@@ -1292,7 +1358,9 @@
       img.src = scene.paths.screenshot || "";
       cell.appendChild(img);
 
-      cell.appendChild(el("div", "reels-select-badge", "✓"));
+      var selectBadge = el("div", "reels-select-badge");
+      setIcon(selectBadge, "faCheck", "✓");
+      cell.appendChild(selectBadge);
 
       var file = sceneFile(scene);
       if (file && file.duration) {
@@ -1300,7 +1368,7 @@
       }
 
       var previewVideo = null;
-      var playBtn = el("button", "reels-cell-play-btn", "▶");
+      var playBtn = iconButton("reels-cell-play-btn", "faPlay", "▶");
       playBtn.setAttribute("aria-label", "Preview");
 
       function startPreview() {
@@ -1314,7 +1382,7 @@
         previewVideo.src = scene.paths.stream;
         cell.appendChild(previewVideo);
         previewVideo.play().catch(function () {});
-        playBtn.textContent = "❚❚";
+        setIcon(playBtn, "faPause", "❚❚");
         activePreviewStop = stopPreview;
       }
       function stopPreview() {
@@ -1324,7 +1392,7 @@
         previewVideo.load();
         previewVideo.remove();
         previewVideo = null;
-        playBtn.textContent = "▶";
+        setIcon(playBtn, "faPlay", "▶");
         if (activePreviewStop === stopPreview) activePreviewStop = null;
       }
 
@@ -1560,7 +1628,9 @@
         .then(function () {
           app.config.scores = { performers: {}, studios: {}, tags: {} };
           app.config.cycle = { seen: [] };
-          resetBtn.textContent = "Reset ✓";
+          clear(resetBtn);
+          resetBtn.appendChild(document.createTextNode("Reset "));
+          resetBtn.appendChild(faIcon(faDef("faCheck"), "reels-icon", "✓"));
           setTimeout(function () {
             resetBtn.textContent = "Reset recommendations";
             resetBtn.disabled = false;
@@ -1668,21 +1738,22 @@
       container.appendChild(versionBadge);
     }
 
-    var backBtn = el("button", "reels-feed-back", "←");
+    var backBtn = iconButton("reels-feed-back", "faArrowLeft", "←");
     backBtn.setAttribute("aria-label", "Back");
     backBtn.addEventListener("click", function () {
       closeFeed(app, state);
     });
     container.appendChild(backBtn);
 
-    var dislikeBtn = el("button", "reels-dislike-btn", "👎");
+    var dislikeBtn = iconButton("reels-dislike-btn", "faThumbsDown", "👎");
     dislikeBtn.setAttribute("aria-label", "Dislike");
     dislikeBtn.addEventListener("click", function () {
       dislike(app, state);
     });
     container.appendChild(dislikeBtn);
 
-    var openLink = el("a", "reels-open-btn", "↗");
+    var openLink = el("a", "reels-open-btn");
+    setIcon(openLink, "faArrowUpRightFromSquare", "↗");
     openLink.setAttribute("aria-label", "Open in Stash");
     openLink.setAttribute("title", "Open in Stash");
     openLink.href = "/scenes";
@@ -1703,7 +1774,7 @@
     container.appendChild(openLink);
     state.openLink = openLink;
 
-    var tagBtn = el("button", "reels-tag-btn", "🏷");
+    var tagBtn = iconButton("reels-tag-btn", "faTags", "🏷");
     tagBtn.setAttribute("aria-label", "Edit tags");
     tagBtn.setAttribute("title", "Edit tags");
     tagBtn.hidden = true;
@@ -1713,7 +1784,8 @@
     container.appendChild(tagBtn);
     state.tagBtn = tagBtn;
 
-    var muteBtn = el("button", "reels-mute-btn", state.unmuted ? "🔊" : "🔇");
+    var muteBtn = el("button", "reels-mute-btn");
+    setMuteIcon(muteBtn, state.unmuted);
     muteBtn.setAttribute("aria-label", "Mute / unmute");
     muteBtn.addEventListener("click", function () {
       toggleFeedMute(state);
@@ -2536,7 +2608,7 @@
   }
 
   function buildLikedBadge(app, state, slide) {
-    var badge = el("button", "reels-liked-badge", "♥");
+    var badge = iconButton("reels-liked-badge", "faHeart", "♥");
     badge.setAttribute("aria-label", "Unlike");
     badge.addEventListener("click", function (e) {
       e.stopPropagation();
@@ -2742,7 +2814,7 @@
       });
     }
     if (state.muteBtn) {
-      state.muteBtn.textContent = state.unmuted ? "🔊" : "🔇";
+      setMuteIcon(state.muteBtn, state.unmuted);
     }
   }
 
@@ -2836,7 +2908,8 @@
   // --- Like / dislike / undo ------------------------------------------------
 
   function showHeartBurst(slide) {
-    var burst = el("div", "reels-heart-burst", "♥");
+    var burst = el("div", "reels-heart-burst");
+    setIcon(burst, "faHeart", "♥");
     slide.el.appendChild(burst);
     setTimeout(function () {
       burst.remove();
@@ -3049,7 +3122,7 @@
     box.setAttribute("role", "dialog");
     box.setAttribute("aria-label", "Tags");
     box.appendChild(el("div", "reels-tag-handle"));
-    var closeBtn = el("button", "reels-tag-close", "✕");
+    var closeBtn = iconButton("reels-tag-close", "faXmark", "✕");
     closeBtn.setAttribute("aria-label", "Close tags");
     box.appendChild(closeBtn);
     var body = el("div", "reels-tag-body");
@@ -3383,7 +3456,7 @@
 
       if (!state.soundUnlocked && needsVideo(slide.scene)) {
         unlockSound(state);
-        if (state.muteBtn) state.muteBtn.textContent = "🔊";
+        if (state.muteBtn) setMuteIcon(state.muteBtn, true);
         // Open the same double-tap window as a normal single tap: a
         // second tap within DOUBLE_TAP_MS likes the clip instead of
         // this unlock tap also toggling play/pause when its timer

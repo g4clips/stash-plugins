@@ -46,8 +46,9 @@ into a dev instance and iterate from real errors, not just review the diff.
       any existing studio. If the scene already has a different studio,
       the user is asked to confirm before the mutation fires.
   - `categories`: `[{ id, label, tagIds }]`. Array order = display order.
-    A tag belongs to at most one category; "Uncategorized" is not stored,
-    it's computed at render time as whatever isn't claimed by any category.
+    A tag can belong to any number of categories (and any number of groups)
+    and renders in each one; "Uncategorized" is not stored, it's computed at
+    render time as whatever isn't in at least one category.
   - `sortMode`: `"usage"` (default) or `"alpha"`. Controls the sort of tags
     *within* each section of the scene-tab grid (categories keep their own
     stored order regardless of sortMode). `"usage"` — sort by `scene_count`

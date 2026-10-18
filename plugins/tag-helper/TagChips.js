@@ -456,7 +456,7 @@
   // plus a tag-toggle picker. Persistence + delete are injected by the
   // caller (onPersist/onDelete) so this component stays storage-agnostic.
   // ---------------------------------------------------------------------
-  function CategoryOrGroupEditor({ allTags, item, noun, allGroups, allCategories, onCancel, onPersist, onSaved, onDelete, onDeleted }) {
+  function CategoryOrGroupEditor({ allTags, item, noun, onCancel, onPersist, onSaved, onDelete, onDeleted }) {
     const [label, setLabel] = React.useState(item ? item.label : "");
     const [selectedIds, setSelectedIds] = React.useState(new Set(item ? item.selectedIds : []));
     const [defaultCollapsed, setDefaultCollapsed] = React.useState(item ? !!item.defaultCollapsed : false);
@@ -466,35 +466,6 @@
     const [studioLabel, setStudioLabel] = React.useState(item ? item.studioLabel || "" : "");
     const [busy, setBusy] = React.useState(false);
     const [error, setError] = React.useState("");
-
-    // Tags already claimed by some *other* group/category don't show as
-    // available to pick here — makes it easier to see what's left
-    // unassigned when building either one. The item being edited never
-    // excludes its own current members (so re-opening it still shows its
-    // own tags); the two branches are otherwise the same self-exclusion
-    // logic, just sourced from a different array/field (groups store
-    // memberTagIds, categories store tagIds).
-    const claimedTagIds = React.useMemo(() => {
-      if (noun === "Group") {
-        if (!allGroups) return new Set();
-        const set = new Set();
-        allGroups.forEach((g) => {
-          if (item && g.id === item.id) return;
-          (g.memberTagIds || []).forEach((id) => set.add(id));
-        });
-        return set;
-      }
-      if (noun === "Category") {
-        if (!allCategories) return new Set();
-        const set = new Set();
-        allCategories.forEach((c) => {
-          if (item && c.id === item.id) return;
-          (c.tagIds || []).forEach((id) => set.add(id));
-        });
-        return set;
-      }
-      return new Set();
-    }, [noun, allGroups, allCategories, item]);
 
     function toggle(id) {
       setSelectedIds((prev) => {
@@ -614,31 +585,22 @@
         ]),
       error && h("div", { className: "tc-error-bar" }, error),
       (() => {
-        const availableTags = allTags.filter((t) => !selectedIds.has(t.id) && !claimedTagIds.has(t.id));
+        // A tag may belong to any number of categories/groups; only the
+        // item being edited removes a tag from "Available".
+        const availableTags = allTags.filter((t) => !selectedIds.has(t.id));
         const usedTags = allTags.filter((t) => selectedIds.has(t.id));
-        const hiddenByOtherContainers = allTags.filter(
-          (t) => !selectedIds.has(t.id) && claimedTagIds.has(t.id)
-        ).length;
         return h(React.Fragment, null, [
-          availableTags.length > 0
-            ? h(React.Fragment, { key: "available" }, [
-                h("div", { key: "hd", className: "tc-section-label" }, "Available"),
-                h(
-                  "div",
-                  { key: "grid", className: "tc-grid" },
-                  availableTags.map((t) =>
-                    h(Chip, { key: t.id, label: t.name, active: false, onClick: () => toggle(t.id) })
-                  )
-                ),
-              ])
-            : hiddenByOtherContainers > 0 &&
+          availableTags.length > 0 &&
+            h(React.Fragment, { key: "available" }, [
+              h("div", { key: "hd", className: "tc-section-label" }, "Available"),
               h(
                 "div",
-                { key: "none-left", style: { color: "#888", fontSize: ".8rem" } },
-                `No unassigned tags left — every remaining tag is already in another ${
-                  noun === "Category" ? "category" : "group"
-                }.`
+                { key: "grid", className: "tc-grid" },
+                availableTags.map((t) =>
+                  h(Chip, { key: t.id, label: t.name, active: false, onClick: () => toggle(t.id) })
+                )
               ),
+            ]),
           usedTags.length > 0 &&
             h(React.Fragment, { key: "used" }, [
               h("hr", { key: "hr", className: "tc-cat-divider" }),
@@ -685,7 +647,6 @@
         allTags,
         item,
         noun: "Category",
-        allCategories: categories,
         onCancel: () => setEditing(undefined),
         onPersist: (data) => saveCategory(data),
         onSaved: () => {
@@ -778,7 +739,6 @@
         allTags,
         item,
         noun: "Group",
-        allGroups: groups,
         onCancel: () => setEditing(undefined),
         onPersist: (data) =>
           saveGroup({

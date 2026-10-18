@@ -1797,8 +1797,13 @@
     grid.querySelectorAll(".ss-tag-chip").forEach(chip => {
       chip.addEventListener("click", () => {
         const id = chip.dataset.id;
-        if (_selectedTagIds.has(id)) { _selectedTagIds.delete(id); chip.classList.remove("ss-chip-on"); }
-        else { _selectedTagIds.add(id); chip.classList.add("ss-chip-on"); }
+        const on = !_selectedTagIds.has(id);
+        if (on) _selectedTagIds.add(id); else _selectedTagIds.delete(id);
+        // The same tag can sit in several TagChips categories, so keep
+        // every chip for this id in sync, not just the one clicked.
+        grid.querySelectorAll(".ss-tag-chip").forEach(c => {
+          if (c.dataset.id === id) c.classList.toggle("ss-chip-on", on);
+        });
       });
     });
   }

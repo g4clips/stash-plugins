@@ -175,29 +175,21 @@
   }
 
   // ---------------------------------------------------------------------
-  // Category persistence (config-store based). A tag may only belong to
-  // one category: saving a category strips its tagIds out of every other
-  // category first, then applies, in a single writeConfig call.
+  // Category persistence (config-store based). A tag may belong to any
+  // number of categories; saving one category never touches the others.
   // ---------------------------------------------------------------------
-  function stripFromOtherCategories(categories, exceptId, tagIds) {
-    const tagSet = new Set(tagIds);
-    return categories.map((c) =>
-      c.id === exceptId ? c : { ...c, tagIds: c.tagIds.filter((t) => !tagSet.has(t)) }
-    );
-  }
-
   async function saveCategory({ id, label, tagIds, defaultCollapsed }) {
     const current = await readConfig();
     const dc = !!defaultCollapsed;
     let categories;
     if (id) {
-      categories = stripFromOtherCategories(current.categories, id, tagIds).map((c) =>
+      categories = current.categories.map((c) =>
         c.id === id ? { ...c, label: label.trim(), tagIds, defaultCollapsed: dc } : c
       );
     } else {
       const newId = genId("cat");
       categories = [
-        ...stripFromOtherCategories(current.categories, newId, tagIds),
+        ...current.categories,
         { id: newId, label: label.trim(), tagIds, defaultCollapsed: dc },
       ];
     }

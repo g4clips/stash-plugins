@@ -102,7 +102,18 @@
   // fields untouched (unlike tag_ids/performer_ids, which are whole-array
   // replace when present, per RelationshipUpdateModeSet).
   // ---------------------------------------------------------------------
-  async function updateSceneTagIds(sceneId, tagIds) {
+  // Both take an optional trailing isImage flag: images use imageUpdate
+  // (ImageUpdateInput has the same tag_ids / performer_ids / studio_id).
+  async function updateSceneTagIds(sceneId, tagIds, isImage) {
+    if (isImage) {
+      await gql(
+        `mutation TagChipsImageUpdate($input: ImageUpdateInput!) {
+           imageUpdate(input: $input) { id tags { id } }
+         }`,
+        { input: { id: sceneId, tag_ids: tagIds } }
+      );
+      return;
+    }
     await gql(
       `mutation TagChipsSceneUpdate($input: SceneUpdateInput!) {
          sceneUpdate(input: $input) { id tags { id } }
@@ -111,7 +122,16 @@
     );
   }
 
-  async function updateScene(sceneId, fields) {
+  async function updateScene(sceneId, fields, isImage) {
+    if (isImage) {
+      await gql(
+        `mutation TagChipsImageUpdate2($input: ImageUpdateInput!) {
+           imageUpdate(input: $input) { id tags { id } performers { id } studio { id } }
+         }`,
+        { input: { id: sceneId, ...fields } }
+      );
+      return;
+    }
     await gql(
       `mutation TagChipsSceneUpdate2($input: SceneUpdateInput!) {
          sceneUpdate(input: $input) { id tags { id } performers { id } studio { id } }
@@ -852,7 +872,7 @@
   // ---------------------------------------------------------------------
   // Main panel
   // ---------------------------------------------------------------------
-  function TagChipsPanel({ scene, onChange }) {
+  function TagChipsPanel({ scene, onChange, isImage }) {
     const [allTags, setAllTags] = React.useState([]);
     const [config, setConfig] = React.useState({ groups: [], categories: [], sortMode: "usage" });
     const [sceneTagIds, setSceneTagIds] = React.useState(
@@ -923,7 +943,7 @@
       setError("");
 
       try {
-        await updateSceneTagIds(scene.id, Array.from(nextSet));
+        await updateSceneTagIds(scene.id, Array.from(nextSet), isImage);
         if (onChange) onChange(scene.id);
       } catch (e) {
         // revert on failure
@@ -995,7 +1015,7 @@
       if (changeStudio) fields.studio_id = group.studioId;
 
       try {
-        await updateScene(scene.id, fields);
+        await updateScene(scene.id, fields, isImage);
         if (onChange) onChange(scene.id);
       } catch (e) {
         // revert on failure
@@ -1107,21 +1127,27 @@
 
   // ---------------------------------------------------------------------
   // Public API for other plugins (e.g. Reels): render the panel for one
-  // scene into any container. onChange(sceneId) fires after each
-  // successful save.
+  // scene (opts.sceneId) or image (opts.imageId) into any container.
+  // onChange(id) fires after each successful save.
   // ---------------------------------------------------------------------
   const FIND_SCENE_FOR_PANEL =
     "query TagChipsFindScene($id: ID!) { findScene(id: $id) { id tags { id name } performers { id name } studio { id name } } }";
 
+  const FIND_IMAGE_FOR_PANEL =
+    "query TagChipsFindImage($id: ID!) { findImage(id: $id) { id tags { id name } performers { id name } studio { id name } } }";
+
   function mountTagChips(containerEl, opts) {
     const o = opts || {};
-    const handle = { containerEl, sceneId: o.sceneId, unmounted: false, rendered: false };
-    gql(FIND_SCENE_FOR_PANEL, { id: o.sceneId })
+    const isImage = o.imageId != null && o.sceneId == null;
+    const id = isImage ? o.imageId : o.sceneId;
+    const handle = { containerEl, sceneId: o.sceneId, imageId: o.imageId, unmounted: false, rendered: false };
+    gql(isImage ? FIND_IMAGE_FOR_PANEL : FIND_SCENE_FOR_PANEL, { id })
       .then((data) => {
         if (handle.unmounted) return;
-        if (!data.findScene) throw new Error("scene not found");
+        const item = isImage ? data.findImage : data.findScene;
+        if (!item) throw new Error(isImage ? "image not found" : "scene not found");
         PluginApi.ReactDOM.render(
-          h(TagChipsPanel, { scene: data.findScene, onChange: o.onChange }),
+          h(TagChipsPanel, { scene: item, onChange: o.onChange, isImage }),
           containerEl
         );
         handle.rendered = true;
@@ -1139,7 +1165,7 @@
     if (handle.rendered) PluginApi.ReactDOM.unmountComponentAtNode(handle.containerEl);
   }
 
-  window.TagChipsAPI = { version: 1, mount: mountTagChips, unmount: unmountTagChips };
+  window.TagChipsAPI = { version: 1, images: true, mount: mountTagChips, unmount: unmountTagChips };
 
   // ---------------------------------------------------------------------
   // Wire into the Scene page tabs (v0.25+ PluginApi.patch.after pattern —

@@ -3089,23 +3089,30 @@
     return !!(window.TagChipsAPI && window.TagChipsAPI.version >= 1);
   }
 
+  // Older TagChips builds are scene-only; the button stays hidden on real
+  // images when the installed one does not advertise image support.
+  function tagApiImages() {
+    return !!(window.TagChipsAPI && window.TagChipsAPI.images);
+  }
+
   function updateTagBtn(state) {
     if (!state.tagBtn) return;
     var slide = state.slideEls[state.currentIndex];
-    var show = !!(slide && slide.scene.kind !== "image" && tagApiAvailable());
+    var show = !!(slide && tagApiAvailable() && (slide.scene.kind !== "image" || tagApiImages()));
     state.tagBtn.hidden = !show;
   }
 
   function openTagSheet(app, state) {
     if (tagSheet || state.disposed || state.hidden || !tagApiAvailable()) return;
     var slide = state.slideEls[state.currentIndex];
-    if (!slide || slide.scene.kind === "image") return;
+    if (!slide || (slide.scene.kind === "image" && !tagApiImages())) return;
 
     var sheet = {
       app: app,
       state: state,
       key: slide.scene.key,
       sceneId: slide.scene.id,
+      isImage: slide.scene.kind === "image",
       changed: false,
       uiClosed: false,
       closing: false,
@@ -3181,8 +3188,7 @@
         clear(body);
         var mountEl = el("div", "reels-tag-mount");
         body.appendChild(mountEl);
-        sheet.handle = window.TagChipsAPI.mount(mountEl, {
-          sceneId: sheet.sceneId,
+        var mountOpts = {
           onChange: function () {
             sheet.changed = true;
             // A save that lands after the sheet closed and the refresh ran.
@@ -3190,7 +3196,10 @@
               refreshItemInFeed(app, state, sheet.key).catch(logErr);
             }
           },
-        });
+        };
+        if (sheet.isImage) mountOpts.imageId = sheet.sceneId;
+        else mountOpts.sceneId = sheet.sceneId;
+        sheet.handle = window.TagChipsAPI.mount(mountEl, mountOpts);
       })
       .catch(function (err) {
         logErr(err);

@@ -4,7 +4,7 @@
   }
   window._reelsPluginLoaded = true;
 
-  var REELS_VERSION = "0.4.4";
+  var REELS_VERSION = "0.5.0";
   var PLUGIN_ID = "Reels";
   var CANDIDATE_MAX_COUNT = 500;
   var CURRENT_HINT_VERSION = 2;
@@ -164,6 +164,47 @@
 
   var IMAGE_REFRESH_QUERY =
     "query ReelsImageRefresh($id: ID!) { findImage(id: $id) { " + IMAGE_FIELDS + " } }";
+
+  // Custom field that opts a scene / image into the feed without the Reels
+  // tag. The criterion is inlined rather than passed as a variable so no
+  // input type name has to be guessed. No orientation / duration limits.
+  var CAPTIONS_FIELD = "Captions";
+  var CAPTIONS_VALUE = "Yes";
+
+  var CAPTIONED_SCENE_POOL_QUERY =
+    "query ReelsCaptionedScenePool($exclude: [ID!]) {" +
+    "  findScenes(" +
+    "    filter: { per_page: -1 }" +
+    "    scene_filter: {" +
+    "      custom_fields: [{ field: \"" + CAPTIONS_FIELD + "\", value: [\"" + CAPTIONS_VALUE + "\"], modifier: EQUALS }]" +
+    "      tags: { value: $exclude, modifier: EXCLUDES }" +
+    "    }" +
+    "  ) {" +
+    "    count" +
+    "    scenes {" +
+    "      id title" +
+    "      paths { screenshot stream }" +
+    "      files { width height duration video_codec audio_codec }" +
+    "      performers { id name }" +
+    "      studio { id name image_path }" +
+    "      tags { id name }" +
+    "    }" +
+    "  }" +
+    "}";
+
+  var CAPTIONED_IMAGE_POOL_QUERY =
+    "query ReelsCaptionedImagePool($exclude: [ID!]) {" +
+    "  findImages(" +
+    "    filter: { per_page: -1 }" +
+    "    image_filter: {" +
+    "      custom_fields: [{ field: \"" + CAPTIONS_FIELD + "\", value: [\"" + CAPTIONS_VALUE + "\"], modifier: EQUALS }]" +
+    "      tags: { value: $exclude, modifier: EXCLUDES }" +
+    "    }" +
+    "  ) {" +
+    "    count" +
+    "    images { " + IMAGE_FIELDS + " }" +
+    "  }" +
+    "}";
 
   var CONFIGURATION_QUERY =
     "query ReelsConfiguration { configuration { plugins } }";
@@ -952,6 +993,26 @@
     return kept.concat(shuffle(added));
   }
 
+  // Appends captioned items to the tag pool, deduplicated by key. An item in
+  // both is kept once (the tag-pool copy). Every captioned item is flagged
+  // so refreshItemInFeed knows the field, not the tag, keeps it in the feed.
+  function addCaptioned(base, captioned) {
+    var byKey = {};
+    base.forEach(function (item) {
+      byKey[item.key] = item;
+    });
+    captioned.forEach(function (item) {
+      if (byKey[item.key]) {
+        byKey[item.key].captioned = true;
+      } else {
+        item.captioned = true;
+        byKey[item.key] = item;
+        base.push(item);
+      }
+    });
+    return base;
+  }
+
   function refetchPoolAndCandidates(app) {
     var candidateExcludeIds = [app.tags.pool, app.tags.rejected, app.tags.deleted, app.tags.unplayable];
     var poolExcludeIds = [app.tags.deleted, app.tags.unplayable];
@@ -960,6 +1021,17 @@
 
     // A failing image query must not take the clip pool down with it.
     var imagePoolPromise = gql(IMAGE_POOL_QUERY, { reels: [app.tags.pool], exclude: poolExcludeIds }).catch(function (err) {
+      logErr(err);
+      return { findImages: { images: [] } };
+    });
+
+    // Same for the Captions-field queries: if Stash rejects the custom_fields
+    // criterion, log it and carry on with the tag pool alone.
+    var captionedScenePromise = gql(CAPTIONED_SCENE_POOL_QUERY, { exclude: poolExcludeIds }).catch(function (err) {
+      logErr(err);
+      return { findScenes: { scenes: [] } };
+    });
+    var captionedImagePromise = gql(CAPTIONED_IMAGE_POOL_QUERY, { exclude: poolExcludeIds }).catch(function (err) {
       logErr(err);
       return { findImages: { images: [] } };
     });
@@ -973,13 +1045,18 @@
         orientation: { value: orientationValues },
       }),
       imagePoolPromise,
+      captionedScenePromise,
+      captionedImagePromise,
     ]).then(function (results) {
       // Shuffled on the first load only; a refetch keeps the existing order
       // so the cover grid does not move (see mergePoolKeepingOrder). The
       // feed does its own independent ordering each time it starts.
       app.pool = mergePoolKeepingOrder(
         app.pool,
-        results[0].findScenes.scenes.map(normalizeScene).concat(results[2].findImages.images.map(normalizeImage))
+        addCaptioned(
+          results[0].findScenes.scenes.map(normalizeScene).concat(results[2].findImages.images.map(normalizeImage)),
+          results[3].findScenes.scenes.map(normalizeScene).concat(results[4].findImages.images.map(normalizeImage))
+        )
       );
       app.candidates = results[1].findScenes.scenes;
       app.candidatesCount = results[1].findScenes.count;
@@ -2016,9 +2093,11 @@
       }
       if (idx === -1 || idx < state.currentIndex) return;
 
+      // Captioned items have no Reels tag to check; the flag set at load stands in.
+      if (fresh && item.captioned) fresh.captioned = true;
       var inPool =
         fresh &&
-        sceneHasTag(fresh, app.tags.pool) &&
+        (sceneHasTag(fresh, app.tags.pool) || item.captioned) &&
         !sceneHasTag(fresh, app.tags.deleted) &&
         !sceneHasTag(fresh, app.tags.unplayable);
 
@@ -2556,7 +2635,7 @@
       );
       showSlideError(slide, code);
       if (app.config.settings.tagUnplayable) {
-        bulkUpdateTag([slide.scene.id], app.tags.unplayable, "ADD").catch(function (err) {
+        bulkUpdateTag([slide.scene.id], app.tags.unplayable, "ADD", slide.scene.kind).catch(function (err) {
           handleTagWriteFailure(app, err);
         });
         app.pool = app.pool.filter(function (s) {

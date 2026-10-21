@@ -4,7 +4,7 @@
   }
   window._reelsPluginLoaded = true;
 
-  var REELS_VERSION = "0.7.0";
+  var REELS_VERSION = "0.7.1";
   var PLUGIN_ID = "Reels";
   var CANDIDATE_MAX_COUNT = 500;
   var CURRENT_HINT_VERSION = 2;
@@ -1173,6 +1173,8 @@
       body.appendChild(buildStartScreen(app));
     } else if (app.screen === "review") {
       body.appendChild(buildReviewScreen(app));
+    } else if (app.screen === "gallery") {
+      body.appendChild(buildGalleryScreen(app));
     } else if (app.screen === "settings") {
       body.appendChild(buildSettingsScreen(app));
     } else if (app.screen === "feed") {
@@ -1193,7 +1195,8 @@
       var back = iconButton("reels-back", "faArrowLeft", "←");
       back.setAttribute("aria-label", "Back");
       back.addEventListener("click", function () {
-        setScreen(app, "start");
+        if (app.screen === "gallery") leaveGalleryFeed(app);
+        else setScreen(app, "start");
       });
       bar.appendChild(back);
     } else {
@@ -1343,7 +1346,7 @@
     return container;
   }
 
-  function buildCoverCell(app, scene) {
+  function buildCoverCell(app, scene, onOpen) {
     var cell = el("div", "reels-cover-cell");
     cell.addEventListener("contextmenu", function (e) {
       e.preventDefault();
@@ -1381,7 +1384,8 @@
     renderHeartBadge();
 
     cell.addEventListener("click", function () {
-      startFeed(app, scene.key);
+      if (onOpen) onOpen();
+      else startFeed(app, scene.key);
     });
 
     return cell;
@@ -1819,7 +1823,7 @@
         })[0]
       : null;
     var built = galleryFeed
-      ? { order: pool, fastOrderBoundary: null }
+      ? { order: galleryOrder(pool, app.feedSeedKey, app.galleryShuffle), fastOrderBoundary: null }
       : buildInitialFeedOrder(app, pool, seedScene);
     console.log("Reels: feed built (" + (app.feedReason || "unspecified") + ")");
     app.feedReason = null;
@@ -1873,7 +1877,7 @@
       }
       hideFeedScreen(state);
       if (state.galleryId) {
-        leaveGalleryFeed(app, state);
+        setScreen(app, "gallery", "popstate");
         return;
       }
       setScreen(app, "start", "popstate");
@@ -1911,6 +1915,16 @@
       dislike(app, state);
     });
     if (!state.galleryId) container.appendChild(dislikeBtn);
+
+    if (state.galleryId) {
+      var shuffleFeedBtn = iconButton("reels-dislike-btn reels-gallery-shuffle-btn", "faShuffle", "🔀");
+      shuffleFeedBtn.setAttribute("aria-label", "Shuffle remaining images");
+      shuffleFeedBtn.setAttribute("title", "Shuffle remaining images");
+      shuffleFeedBtn.addEventListener("click", function () {
+        shuffleUpcoming(state);
+      });
+      container.appendChild(shuffleFeedBtn);
+    }
 
     var openLink = el("a", "reels-open-btn");
     setIcon(openLink, "faArrowUpRightFromSquare", "↗");
@@ -2094,7 +2108,7 @@
     } else {
       hideFeedScreen(state);
       if (state.galleryId) {
-        leaveGalleryFeed(app, state);
+        setScreen(app, "gallery");
         return;
       }
       setScreen(app, "start");
@@ -2111,11 +2125,7 @@
         if (!items.length) throw new Error("gallery " + galleryId + " has no images");
         invalidateFeedState(app);
         app.galleryFeed = { id: galleryId, items: items };
-        app.feedChipId = "gallery:" + galleryId;
-        app.feedSeedKey = null;
-        app.feedReason = "gallery";
-        setScreen(app, "feed", "gallery");
-        if (app.unmuted && app._feedState) unlockSound(app._feedState);
+        setScreen(app, "gallery", "gallery");
       })
       .catch(function (err) {
         logErr(err);
@@ -2124,9 +2134,9 @@
       });
   }
 
-  // Closing a gallery feed goes back to the gallery page, not Reels' start screen.
-  function leaveGalleryFeed(app, state) {
-    var path = "/galleries/" + state.galleryId;
+  // Back from the gallery cover grid returns to the gallery page.
+  function leaveGalleryFeed(app) {
+    var path = "/galleries/" + app.galleryFeed.id;
     invalidateFeedState(app);
     app.galleryFeed = null;
     app.screen = "start";
@@ -2142,6 +2152,78 @@
     history.replaceState(history.state, "", location.pathname + location.hash);
     openGalleryFeed(app, id);
     return true;
+  }
+
+  function buildGalleryScreen(app) {
+    var container = el("div", "reels-start");
+    var shuffleBtn = iconButton("reels-shuffle-btn", "faShuffle", "");
+    shuffleBtn.appendChild(el("span", null, "Shuffle"));
+    shuffleBtn.addEventListener("click", function () {
+      startGalleryFeed(app, null, true);
+    });
+    container.appendChild(shuffleBtn);
+
+    var gridScroll = el("div", "reels-cover-grid-scroll");
+    var grid = el("div", "reels-cover-grid");
+    app.galleryFeed.items.forEach(function (item) {
+      grid.appendChild(
+        buildCoverCell(app, item, function () {
+          startGalleryFeed(app, item.key, false);
+        })
+      );
+    });
+    gridScroll.appendChild(grid);
+    container.appendChild(gridScroll);
+    return container;
+  }
+
+  // Gallery order, optionally shuffled. A seed (tapped cover) goes first: in
+  // gallery order the list is rotated to start there; shuffled, it is moved
+  // to the front.
+  function galleryOrder(items, seedKey, shuffled) {
+    var list = shuffled ? shuffle(items) : items.slice();
+    var idx = -1;
+    if (seedKey) {
+      for (var i = 0; i < list.length; i++) {
+        if (list[i].key === seedKey) {
+          idx = i;
+          break;
+        }
+      }
+    }
+    if (idx > 0) {
+      if (shuffled) list.unshift(list.splice(idx, 1)[0]);
+      else list = list.slice(idx).concat(list.slice(0, idx));
+    }
+    return list;
+  }
+
+  function startGalleryFeed(app, seedKey, shuffled) {
+    var g = app.galleryFeed;
+    var chip = "gallery:" + g.id;
+    var existing = app._feedState;
+    var live =
+      !shuffled &&
+      existing &&
+      !existing.disposed &&
+      existing.chipId === chip &&
+      (!seedKey ||
+        existing.scenes.some(function (s) {
+          return s.key === seedKey;
+        }));
+    app.feedChipId = chip;
+    if (live) {
+      setScreen(app, "feed", "gallery-resume");
+      if (seedKey) jumpToSceneInFeed(app, existing, seedKey);
+      if (app.unmuted) unlockSound(existing);
+      return;
+    }
+    invalidateFeedState(app);
+    app.galleryShuffle = !!shuffled;
+    app.feedSeedKey = seedKey;
+    app.feedReason = "gallery";
+    setScreen(app, "feed", "gallery");
+    if (app.unmuted && app._feedState) unlockSound(app._feedState);
   }
 
   // Leaving the feed for the start/review/settings screens while staying
@@ -2283,7 +2365,7 @@
     // feed stays alive for a cover tap.
     function showResumed(wantFeed) {
       if (wantFeed) app.screen = "feed";
-      else if (app.screen === "feed") app.screen = "start";
+      else if (app.screen === "feed" || app.screen === "gallery") app.screen = "start";
       render(app);
       var state = app._feedState;
       if (app.screen === "feed" && state && !state.disposed) refreshResumedScene(app, state);
@@ -3591,6 +3673,27 @@
     if (tailStart >= state.slideEls.length) return;
     var tailScenes = state.scenes.slice(tailStart);
     var newOrder = buildFeedOrder(app, tailScenes, seedScene || null, true);
+    var released = false;
+    for (var i = 0; i < newOrder.length; i++) {
+      var slide = state.slideEls[tailStart + i];
+      var changed = !slide.scene || slide.scene.key !== newOrder[i].key;
+      if (changed && slide.video) released = true;
+      if (changed) releaseSlideVideo(slide);
+      slide.scene = newOrder[i];
+      if (changed) slide.dirty = true;
+      state.scenes[tailStart + i] = newOrder[i];
+    }
+    if (released) assignVideosToWindow(state);
+    else populateDirtySlidesNear(state);
+  }
+
+  // Gallery feed's shuffle button: randomises everything after the 3-video
+  // window (current slide and the next one stay put), same slide-swapping
+  // approach as reorderUpcoming.
+  function shuffleUpcoming(state) {
+    var tailStart = state.currentIndex + 2;
+    if (tailStart >= state.slideEls.length) return;
+    var newOrder = shuffle(state.scenes.slice(tailStart));
     var released = false;
     for (var i = 0; i < newOrder.length; i++) {
       var slide = state.slideEls[tailStart + i];

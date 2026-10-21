@@ -541,6 +541,12 @@ html.reels-html-lock body {
   display: none;
 }
 
+/* Gallery feed: shuffle takes the dislike button's slot, minus its red hover. */
+.reels-dislike-btn.reels-gallery-shuffle-btn:hover,
+.reels-dislike-btn.reels-gallery-shuffle-btn:active {
+  background: rgba(0, 0, 0, 0.5);
+}
+
 @media (hover: hover) {
   .reels-feed-back:hover,
   .reels-mute-btn:hover,

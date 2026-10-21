@@ -1503,6 +1503,124 @@
 
   PluginApi.Event.addEventListener("stash:location", onDomLocation);
 
+
+  // ---------------------------------------------------------------------
+  // Lightbox (full-screen image viewer / slideshow). It is a plain React
+  // component with no patch points, so a "Tags" button is DOM-injected into
+  // its (empty) footer-right slot and the panel opens as a bottom sheet over
+  // it. The current image id is read from the footer's image link
+  // (a.image-link -> /images/<id>); images without an id get no button.
+  // ---------------------------------------------------------------------
+  const LB_BTN_ID = "tc-lb-btn";
+  let lbSheet = null; // { box, body, handle, imageId }
+
+  function lbCurrentImageId() {
+    const a = document.querySelector(".Lightbox .Lightbox-footer-center a.image-link");
+    const m = a && (a.getAttribute("href") || "").match(/\/images\/(\d+)/);
+    return m ? m[1] : null;
+  }
+
+  function lbCloseSheet() {
+    if (!lbSheet) return;
+    if (lbSheet.handle) unmountTagChips(lbSheet.handle);
+    if (lbSheet.box.parentNode) lbSheet.box.parentNode.removeChild(lbSheet.box);
+    document.removeEventListener("keydown", lbSheet.onKeyCapture, true);
+    lbSheet = null;
+    const btn = document.getElementById(LB_BTN_ID);
+    if (btn) btn.classList.remove("tc-lb-btn-on");
+  }
+
+  function lbMountPanel(imageId) {
+    if (!lbSheet) return;
+    if (lbSheet.handle) { unmountTagChips(lbSheet.handle); lbSheet.handle = null; }
+    lbSheet.body.textContent = "";
+    lbSheet.imageId = imageId;
+    if (!imageId) {
+      lbSheet.body.textContent = "This image has no id (not a library image).";
+      return;
+    }
+    const mountEl = document.createElement("div");
+    lbSheet.body.appendChild(mountEl);
+    lbSheet.handle = mountTagChips(mountEl, { imageId });
+  }
+
+  function lbOpenSheet() {
+    if (lbSheet) return;
+    const box = document.createElement("div");
+    box.className = "tc-lb-sheet";
+    const head = document.createElement("div");
+    head.className = "tc-lb-sheet-head";
+    const title = document.createElement("span");
+    title.textContent = "Tag Chips";
+    const close = document.createElement("button");
+    close.className = "tc-modal-close";
+    close.textContent = "✕";
+    close.addEventListener("click", lbCloseSheet);
+    head.appendChild(title);
+    head.appendChild(close);
+    const body = document.createElement("div");
+    body.className = "tc-lb-sheet-body";
+    box.appendChild(head);
+    box.appendChild(body);
+
+    // The lightbox listens for keys on document (arrows change image, Esc
+    // closes it, "d d" opens delete). Typing in our filter box must not leak
+    // there, and Esc should close just the sheet first.
+    box.addEventListener("keydown", (e) => e.stopPropagation());
+    box.addEventListener("keyup", (e) => e.stopPropagation());
+    const onKeyCapture = (e) => {
+      if (e.key === "Escape" && lbSheet) {
+        e.stopImmediatePropagation();
+        e.preventDefault();
+        lbCloseSheet();
+      }
+    };
+    document.addEventListener("keydown", onKeyCapture, true);
+
+    document.body.appendChild(box);
+    lbSheet = { box, body, handle: null, imageId: null, onKeyCapture };
+    const btn = document.getElementById(LB_BTN_ID);
+    if (btn) btn.classList.add("tc-lb-btn-on");
+    lbMountPanel(lbCurrentImageId());
+  }
+
+  function lbSync() {
+    const lb = document.querySelector(".Lightbox");
+    if (!lb) {
+      if (lbSheet) lbCloseSheet(); // viewer closed
+      return;
+    }
+    const slot = lb.querySelector(".Lightbox-footer-right");
+    if (slot && !document.getElementById(LB_BTN_ID)) {
+      const btn = document.createElement("button");
+      btn.id = LB_BTN_ID;
+      btn.className = "tc-lb-btn";
+      btn.textContent = "🏷 Tags";
+      btn.title = "Tag Chips";
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation(); // don't trip the lightbox's click-to-close
+        lbSheet ? lbCloseSheet() : lbOpenSheet();
+      });
+      slot.appendChild(btn);
+      if (lbSheet) btn.classList.add("tc-lb-btn-on");
+    }
+    // Image changed (arrows / slideshow): re-point the open panel.
+    if (lbSheet) {
+      const id = lbCurrentImageId();
+      if (id !== lbSheet.imageId) lbMountPanel(id);
+    }
+  }
+
+  let lbScheduled = false;
+  new MutationObserver(() => {
+    if (lbScheduled) return;
+    lbScheduled = true;
+    requestAnimationFrame(() => {
+      lbScheduled = false;
+      lbSync();
+    });
+  }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["href"] });
+
   // ---------------------------------------------------------------------
   // Wire into the Scene page tabs (v0.25+ PluginApi.patch.after pattern —
   // see project docs section 8. patch.after, not register.component.)

@@ -4,7 +4,7 @@
   }
   window._reelsPluginLoaded = true;
 
-  var REELS_VERSION = "0.6.0";
+  var REELS_VERSION = "0.7.0";
   var PLUGIN_ID = "Reels";
   var CANDIDATE_MAX_COUNT = 500;
   var CURRENT_HINT_VERSION = 2;
@@ -164,6 +164,18 @@
 
   var IMAGE_REFRESH_QUERY =
     "query ReelsImageRefresh($id: ID!) { findImage(id: $id) { " + IMAGE_FIELDS + " } }";
+
+  // "Open in Reels" from a gallery page: that gallery's images only, in
+  // gallery (path) order. Independent of the Reels tag / Captions field.
+  var GALLERY_IMAGES_QUERY =
+    "query ReelsGalleryImages($gallery: [ID!]) {" +
+    "  findImages(" +
+    "    filter: { per_page: -1, sort: \"path\", direction: ASC }" +
+    "    image_filter: { galleries: { value: $gallery, modifier: INCLUDES_ALL } }" +
+    "  ) {" +
+    "    images { " + IMAGE_FIELDS + " }" +
+    "  }" +
+    "}";
 
   // Custom field that opts a scene / image into the feed without the Reels
   // tag. The criterion is inlined rather than passed as a variable so no
@@ -829,6 +841,53 @@
     window.addEventListener("popstate", updateNavActive);
     var observer = new MutationObserver(apply);
     observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  // --- Gallery page: "Open in Reels" in the ⋮ menu -----------------------------
+
+  var GALLERY_PATH_RE = /\/galleries\/(\d+)(?:\/|$)/;
+  var GALLERY_MENU_ITEM_ID = "reels-gallery-menu-item";
+
+  function injectGalleryMenuItem() {
+    var m = location.pathname.match(GALLERY_PATH_RE);
+    if (!m) return;
+    var menu = document.querySelector('.dropdown-menu[aria-labelledby="operation-menu"]');
+    if (!menu) return;
+    var existing = menu.querySelector("#" + GALLERY_MENU_ITEM_ID);
+    if (existing) {
+      if (existing.dataset.galleryId === m[1]) return;
+      existing.remove();
+    }
+    var galleryId = m[1];
+    var item = el("a", "dropdown-item bg-secondary text-white", "Open in Reels");
+    item.id = GALLERY_MENU_ITEM_ID;
+    item.href = "#";
+    item.setAttribute("role", "button");
+    item.dataset.galleryId = galleryId;
+    item.addEventListener("click", function (e) {
+      e.preventDefault();
+      var toggle = document.getElementById("operation-menu");
+      if (toggle && toggle.getAttribute("aria-expanded") === "true") toggle.click();
+      navigateTo("/reels?gallery=" + galleryId);
+    });
+    menu.appendChild(item);
+  }
+
+  // The ⋮ menu only mounts on first open, so watch for it (one check per frame).
+  function startGalleryMenuObserver() {
+    var scheduled = false;
+    new MutationObserver(function () {
+      if (scheduled || !GALLERY_PATH_RE.test(location.pathname)) return;
+      scheduled = true;
+      requestAnimationFrame(function () {
+        scheduled = false;
+        try {
+          injectGalleryMenuItem();
+        } catch (err) {
+          logErr(err);
+        }
+      });
+    }).observe(document.body, { childList: true, subtree: true });
   }
 
   // --- DOM helpers ----------------------------------------------------
@@ -1741,10 +1800,14 @@
   // =========================================================================
 
   function mountFeedScreen(app) {
-    var pool = app.pool.filter(function (s) {
-      return poolMatchesChip(app, s, app.feedChipId);
-    });
-    if (app.config.settings.landscapeClips === "hide") {
+    var galleryFeed =
+      app.galleryFeed && app.feedChipId === "gallery:" + app.galleryFeed.id ? app.galleryFeed : null;
+    var pool = galleryFeed
+      ? galleryFeed.items.slice()
+      : app.pool.filter(function (s) {
+          return poolMatchesChip(app, s, app.feedChipId);
+        });
+    if (!galleryFeed && app.config.settings.landscapeClips === "hide") {
       pool = pool.filter(function (s) {
         return !isLandscape(s);
       });
@@ -1755,13 +1818,16 @@
           return s.key === app.feedSeedKey;
         })[0]
       : null;
-    var built = buildInitialFeedOrder(app, pool, seedScene);
+    var built = galleryFeed
+      ? { order: pool, fastOrderBoundary: null }
+      : buildInitialFeedOrder(app, pool, seedScene);
     console.log("Reels: feed built (" + (app.feedReason || "unspecified") + ")");
     app.feedReason = null;
 
     var state = {
       app: app,
       chipId: app.feedChipId,
+      galleryId: galleryFeed ? galleryFeed.id : null,
       scenes: built.order,
       fastOrderBoundary: built.fastOrderBoundary,
       slideEls: [],
@@ -1806,6 +1872,10 @@
         return;
       }
       hideFeedScreen(state);
+      if (state.galleryId) {
+        leaveGalleryFeed(app, state);
+        return;
+      }
       setScreen(app, "start", "popstate");
       if (state.pendingToastMessage) {
         var pendingMessage = state.pendingToastMessage;
@@ -1840,7 +1910,7 @@
     dislikeBtn.addEventListener("click", function () {
       dislike(app, state);
     });
-    container.appendChild(dislikeBtn);
+    if (!state.galleryId) container.appendChild(dislikeBtn);
 
     var openLink = el("a", "reels-open-btn");
     setIcon(openLink, "faArrowUpRightFromSquare", "↗");
@@ -2023,8 +2093,55 @@
       history.back();
     } else {
       hideFeedScreen(state);
+      if (state.galleryId) {
+        leaveGalleryFeed(app, state);
+        return;
+      }
       setScreen(app, "start");
     }
+  }
+
+  // --- Gallery feed ("Open in Reels" from a gallery page) --------------------
+
+  function openGalleryFeed(app, galleryId) {
+    setScreen(app, "loading", "gallery");
+    gql(GALLERY_IMAGES_QUERY, { gallery: [galleryId] })
+      .then(function (data) {
+        var items = data.findImages.images.map(normalizeImage);
+        if (!items.length) throw new Error("gallery " + galleryId + " has no images");
+        invalidateFeedState(app);
+        app.galleryFeed = { id: galleryId, items: items };
+        app.feedChipId = "gallery:" + galleryId;
+        app.feedSeedKey = null;
+        app.feedReason = "gallery";
+        setScreen(app, "feed", "gallery");
+        if (app.unmuted && app._feedState) unlockSound(app._feedState);
+      })
+      .catch(function (err) {
+        logErr(err);
+        setScreen(app, "start", "gallery-failed");
+        showErrorToast(app, "Couldn't open that gallery in Reels.");
+      });
+  }
+
+  // Closing a gallery feed goes back to the gallery page, not Reels' start screen.
+  function leaveGalleryFeed(app, state) {
+    var path = "/galleries/" + state.galleryId;
+    invalidateFeedState(app);
+    app.galleryFeed = null;
+    app.screen = "start";
+    var h = getReactHistory();
+    if (h && typeof h.replace === "function") h.replace(path);
+    else window.location.href = path;
+  }
+
+  // /reels?gallery=<id> -> gallery feed. Returns true when it took over.
+  function consumeGalleryParam(app) {
+    var id = new URLSearchParams(location.search).get("gallery");
+    if (!id || !/^\d+$/.test(id)) return false;
+    history.replaceState(history.state, "", location.pathname + location.hash);
+    openGalleryFeed(app, id);
+    return true;
   }
 
   // Leaving the feed for the start/review/settings screens while staying
@@ -2110,7 +2227,7 @@
       if (fresh && item.captioned) fresh.captioned = true;
       var inPool =
         fresh &&
-        (sceneHasTag(fresh, app.tags.pool) || item.captioned) &&
+        (sceneHasTag(fresh, app.tags.pool) || item.captioned || state.galleryId) &&
         !sceneHasTag(fresh, app.tags.deleted) &&
         !sceneHasTag(fresh, app.tags.unplayable);
 
@@ -2966,6 +3083,7 @@
   }
 
   function markSeen(state, scene) {
+    if (state.galleryId) return;
     var cycle = state.app.config.cycle;
     if (cycle.seen.indexOf(scene.key) !== -1) return;
     cycle.seen.push(scene.key);
@@ -3057,6 +3175,7 @@
   }
 
   function dislike(app, state) {
+    if (state.galleryId) return;
     var slide = state.slideEls[state.currentIndex];
     if (!slide) return;
     var scene = slide.scene;
@@ -3467,6 +3586,7 @@
   // only which scene each one shows is swapped, so scroll-snap and the
   // IntersectionObserver are untouched.
   function reorderUpcoming(app, state, seedScene) {
+    if (state.galleryId) return;
     var tailStart = state.currentIndex + 2;
     if (tailStart >= state.slideEls.length) return;
     var tailScenes = state.scenes.slice(tailStart);
@@ -3659,7 +3779,7 @@
         root.appendChild(el("div", "reels-loading", "Loading…"));
         loadAll(app)
           .then(function () {
-            setScreen(app, "start");
+            if (!consumeGalleryParam(app)) setScreen(app, "start");
           })
           .catch(function (err) {
             console.error("Reels: failed to load.", err);
@@ -3669,6 +3789,7 @@
           });
       } else {
         resumeApp(app);
+        consumeGalleryParam(app);
       }
 
       return function () {
@@ -3690,6 +3811,7 @@
       })
       .then(function () {
         startNavLinkObserver();
+        startGalleryMenuObserver();
       });
 
     PluginApi.register.route("/reels", ReelsPage);

@@ -4,7 +4,7 @@
   }
   window._reelsPluginLoaded = true;
 
-  var REELS_VERSION = "0.5.0";
+  var REELS_VERSION = "0.6.0";
   var PLUGIN_ID = "Reels";
   var CANDIDATE_MAX_COUNT = 500;
   var CURRENT_HINT_VERSION = 2;
@@ -1166,6 +1166,7 @@
     if (!imageAllowed(app, scene)) return false;
     if (chipId === "all") return true;
     if (chipId === "images") return scene.kind === "image";
+    if (chipId === "captions") return !!scene.captioned;
     if (chipId === "liked") return sceneHasTag(scene, app.tags.liked);
     var category = app.chipsCategories.filter(function (c) {
       return c.id === chipId;
@@ -1210,6 +1211,7 @@
       { id: "all", label: "All" },
       { id: "liked", label: "Liked" },
       { id: "images", label: "Images" },
+      { id: "captions", label: "Captions" },
     ].concat(
       app.chipsCategories.map(function (c) {
         return { id: c.id, label: c.label };
@@ -1220,7 +1222,7 @@
       var matching = app.pool.filter(function (s) {
         return poolMatchesChip(app, s, chip.id);
       });
-      if (chip.id !== "all" && chip.id !== "liked" && matching.length === 0) return;
+      if (chip.id !== "all" && chip.id !== "liked" && chip.id !== "captions" && matching.length === 0) return;
 
       var chipEl = el(
         "button",
@@ -1238,6 +1240,14 @@
     var shuffleBtn = iconButton("reels-shuffle-btn", "faShuffle", "");
     shuffleBtn.appendChild(el("span", null, "Shuffle"));
     shuffleBtn.addEventListener("click", function () {
+      if (
+        app.activeChipId === "captions" &&
+        !app.pool.some(function (s) {
+          return poolMatchesChip(app, s, "captions");
+        })
+      ) {
+        return;
+      }
       startFeed(app, null, true);
     });
     container.appendChild(shuffleBtn);
@@ -1261,6 +1271,9 @@
     filtered.forEach(function (scene) {
       grid.appendChild(buildCoverCell(app, scene));
     });
+    if (app.activeChipId === "captions" && !filtered.length) {
+      grid.appendChild(el("div", "reels-empty-state", "No clips here yet."));
+    }
     gridScroll.appendChild(grid);
     container.appendChild(gridScroll);
 

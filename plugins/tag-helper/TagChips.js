@@ -1,5 +1,5 @@
 // TagChips.js
-// Adds a "Tags" tab to the Scene page: click chips to toggle tags on the
+// Adds a "Tag Chips" tab to the Scene, Image and Gallery pages: click chips to toggle tags on the
 // current scene in real time, plus preset "groups" of tags applied in one
 // click, plus "categories" that section the main tag grid.
 //
@@ -65,6 +65,11 @@
       // default sort; "alpha" is the only other mode. Anything else in the
       // stored config (unset, corrupt) also falls back to "usage".
       sortMode: cfg.sortMode === "alpha" ? "alpha" : "usage",
+      // Custom-field toggle buttons: [{id, label, key, value, entities}]
+      // entities is a subset of ["scene","image","gallery"].
+      fieldButtons: Array.isArray(cfg.fieldButtons)
+        ? cfg.fieldButtons.map((b) => ({ entities: ["scene", "image", "gallery"], ...b }))
+        : [],
     };
   }
 
@@ -104,41 +109,71 @@
   // ---------------------------------------------------------------------
   // Both take an optional trailing isImage flag: images use imageUpdate
   // (ImageUpdateInput has the same tag_ids / performer_ids / studio_id).
-  async function updateSceneTagIds(sceneId, tagIds, isImage) {
-    if (isImage) {
-      await gql(
-        `mutation TagChipsImageUpdate($input: ImageUpdateInput!) {
-           imageUpdate(input: $input) { id tags { id } }
-         }`,
-        { input: { id: sceneId, tag_ids: tagIds } }
-      );
-      return;
-    }
-    await gql(
-      `mutation TagChipsSceneUpdate($input: SceneUpdateInput!) {
-         sceneUpdate(input: $input) { id tags { id } }
+  // kind: "scene" | "image" | "gallery". Legacy callers pass a boolean
+  // (true = image), which kindOf() still understands.
+  const KINDS = {
+    scene: { mutation: "sceneUpdate", input: "SceneUpdateInput", find: "findScene", path: "scenes" },
+    image: { mutation: "imageUpdate", input: "ImageUpdateInput", find: "findImage", path: "images" },
+    gallery: { mutation: "galleryUpdate", input: "GalleryUpdateInput", find: "findGallery", path: "galleries" },
+  };
+  function kindOf(k) {
+    if (k === true) return "image";
+    if (typeof k === "string" && KINDS[k]) return k;
+    return "scene";
+  }
+
+  async function updateItem(kind, id, fields, selection) {
+    const k = KINDS[kindOf(kind)];
+    return gql(
+      `mutation TagChipsUpdate($input: ${k.input}!) {
+         ${k.mutation}(input: $input) { id ${selection || "tags { id }"} }
        }`,
-      { input: { id: sceneId, tag_ids: tagIds } }
+      { input: { id, ...fields } }
     );
   }
 
-  async function updateScene(sceneId, fields, isImage) {
-    if (isImage) {
-      await gql(
-        `mutation TagChipsImageUpdate2($input: ImageUpdateInput!) {
-           imageUpdate(input: $input) { id tags { id } performers { id } studio { id } }
-         }`,
-        { input: { id: sceneId, ...fields } }
-      );
-      return;
-    }
-    await gql(
-      `mutation TagChipsSceneUpdate2($input: SceneUpdateInput!) {
-         sceneUpdate(input: $input) { id tags { id } performers { id } studio { id } }
-       }`,
-      { input: { id: sceneId, ...fields } }
-    );
+  async function updateSceneTagIds(id, tagIds, kind) {
+    await updateItem(kind, id, { tag_ids: tagIds });
   }
+
+  async function updateScene(id, fields, kind) {
+    await updateItem(kind, id, fields, "tags { id } performers { id } studio { id }");
+  }
+
+  // ---------------------------------------------------------------------
+  // Custom fields. CustomFieldsInput's exact member names are introspected
+  // once (expected: partial / remove / full) so a Stash version that names
+  // them differently fails soft instead of silently writing nothing.
+  // ---------------------------------------------------------------------
+  let cfInputShape = null;
+  async function getCfShape() {
+    if (cfInputShape) return cfInputShape;
+    let names = [];
+    try {
+      const d = await gql(`{ __type(name: "CustomFieldsInput") { inputFields { name } } }`);
+      names = ((d.__type && d.__type.inputFields) || []).map((f) => f.name);
+    } catch (e) {
+      /* fall through to defaults */
+    }
+    cfInputShape = {
+      set: names.includes("partial") ? "partial" : names.includes("set") ? "set" : "partial",
+      remove: "remove",
+    };
+    return cfInputShape;
+  }
+
+  async function fetchCustomFields(kind, id) {
+    const k = KINDS[kindOf(kind)];
+    const d = await gql(`query TagChipsCF($id: ID!) { ${k.find}(id: $id) { id custom_fields } }`, { id });
+    return (d[k.find] && d[k.find].custom_fields) || {};
+  }
+
+  async function setCustomField(kind, id, key, value, on) {
+    const shape = await getCfShape();
+    const cf = on ? { [shape.set]: { [key]: value } } : { [shape.remove]: [key] };
+    await updateItem(kind, id, { custom_fields: cf }, "custom_fields");
+  }
+
 
   // ---------------------------------------------------------------------
   // Performer / studio search, for the group editor's picker (name-filter
@@ -236,6 +271,23 @@
   }
 
   // ---------------------------------------------------------------------
+  // Custom-field button persistence.
+  // ---------------------------------------------------------------------
+  async function saveFieldButton({ id, label, key, value, entities }) {
+    const current = await readConfig();
+    const data = { label: label.trim(), key: key.trim(), value: String(value), entities };
+    const fieldButtons = id
+      ? current.fieldButtons.map((b) => (b.id === id ? { ...b, ...data } : b))
+      : [...current.fieldButtons, { id: genId("fld"), ...data }];
+    return writeConfig({ fieldButtons });
+  }
+
+  async function deleteFieldButton(id) {
+    const current = await readConfig();
+    return writeConfig({ fieldButtons: current.fieldButtons.filter((b) => b.id !== id) });
+  }
+
+  // ---------------------------------------------------------------------
   // Category grouping for the scene-tab grid.
   // Order: categories in stored array order, Uncategorized last.
   // Within each section: sorted per sortMode ("usage" = scene_count desc,
@@ -270,6 +322,7 @@
     const cls = [
       "tc-chip",
       variant === "group" ? "tc-chip-group" : "",
+      variant === "field" ? "tc-chip-field" : "",
       active ? "tc-chip-on" : "",
       pending ? "tc-chip-pending" : "",
       error ? "tc-chip-error" : "",
@@ -810,6 +863,104 @@
   }
 
   // ---------------------------------------------------------------------
+  // Fields tab (Manage Tags modal) — CRUD for custom-field toggle buttons.
+  // ---------------------------------------------------------------------
+  const ENTITY_LABELS = { scene: "Scenes", image: "Images", gallery: "Galleries" };
+
+  function FieldButtonEditor({ item, onCancel, onSaved, onDeleted }) {
+    const [label, setLabel] = React.useState(item ? item.label : "");
+    const [key, setKey] = React.useState(item ? item.key : "");
+    const [value, setValue] = React.useState(item ? item.value : "Yes");
+    const [entities, setEntities] = React.useState(item ? item.entities : ["scene", "image", "gallery"]);
+    const [err, setErr] = React.useState("");
+
+    function toggleEntity(e) {
+      setEntities((prev) => (prev.includes(e) ? prev.filter((x) => x !== e) : [...prev, e]));
+    }
+
+    async function save() {
+      if (!key.trim()) return setErr("Field name is required.");
+      if (entities.length === 0) return setErr("Pick at least one of scenes / images / galleries.");
+      try {
+        await saveFieldButton({
+          id: item && item.id,
+          label: label.trim() || key.trim(),
+          key,
+          value,
+          entities,
+        });
+        onSaved();
+      } catch (e) {
+        setErr(e.message);
+      }
+    }
+
+    async function del() {
+      try {
+        await deleteFieldButton(item.id);
+        onDeleted();
+      } catch (e) {
+        setErr(e.message);
+      }
+    }
+
+    return h("div", { className: "tc-panel" }, [
+      h("div", { key: "t", className: "tc-section-label" }, item ? "Edit field button" : "New field button"),
+      err && h("div", { key: "err", className: "tc-error-bar" }, err),
+      h("input", { key: "label", className: "tc-search", placeholder: "Button label (optional)", value: label, onChange: (e) => setLabel(e.target.value) }),
+      h("input", { key: "key", className: "tc-search", placeholder: "Custom field name, e.g. Captions", value: key, onChange: (e) => setKey(e.target.value) }),
+      h("input", { key: "val", className: "tc-search", placeholder: "Value, e.g. Yes", value: value, onChange: (e) => setValue(e.target.value) }),
+      h(
+        "div",
+        { key: "ents", className: "tc-editor-row" },
+        Object.keys(ENTITY_LABELS).map((e) =>
+          h("label", { key: e, className: "tc-checkbox-row" }, [
+            h("input", { key: "cb", type: "checkbox", checked: entities.includes(e), onChange: () => toggleEntity(e) }),
+            " " + ENTITY_LABELS[e],
+          ])
+        )
+      ),
+      h("div", { key: "act", className: "tc-editor-row" }, [
+        h("button", { key: "save", className: "btn btn-primary btn-sm", onClick: save }, "Save"),
+        h("button", { key: "cancel", className: "btn btn-secondary btn-sm", onClick: onCancel }, "Cancel"),
+        item && h("button", { key: "del", className: "btn btn-danger btn-sm", onClick: del }, "Delete"),
+      ]),
+    ]);
+  }
+
+  function FieldsTab({ buttons, onReload }) {
+    const [editing, setEditing] = React.useState(undefined);
+    if (editing !== undefined) {
+      return h(FieldButtonEditor, {
+        item: editing,
+        onCancel: () => setEditing(undefined),
+        onSaved: () => { setEditing(undefined); onReload(); },
+        onDeleted: () => { setEditing(undefined); onReload(); },
+      });
+    }
+    return h("div", { className: "tc-panel" }, [
+      h("div", { key: "hdr", className: "tc-editor-row" }, [
+        h("span", { key: "lbl", className: "tc-section-label", style: { margin: 0 } }, "Field buttons"),
+        h("button", { key: "new", className: "tc-group-manage-btn", onClick: () => setEditing(null) }, "+ new field button"),
+      ]),
+      buttons.length === 0
+        ? h("div", { key: "empty", style: { color: "#888", fontSize: ".8rem" } }, "No field buttons yet.")
+        : h(
+            "div",
+            { key: "list", className: "tc-cat-list" },
+            buttons.map((b) =>
+              h("div", { key: b.id, className: "tc-cat-row" }, [
+                h("span", { key: "label", className: "tc-cat-label" }, b.label),
+                h("span", { key: "kv", className: "tc-entity-badge" }, `${b.key} = ${b.value}`),
+                h("span", { key: "ents", className: "tc-cat-count" }, b.entities.map((e) => ENTITY_LABELS[e]).join(", ")),
+                h("button", { key: "edit", className: "tc-group-manage-btn", onClick: () => setEditing(b) }, "edit"),
+              ])
+            )
+          ),
+    ]);
+  }
+
+  // ---------------------------------------------------------------------
   // Manage Tags modal — position:fixed overlay + backdrop-click-to-close,
   // header with close button, Categories/Groups tabs. Structural skeleton
   // matches Data18StashDB's modal (see TagChips.css .tc-modal-*).
@@ -857,12 +1008,23 @@
             },
             "Groups"
           ),
+          h(
+            "button",
+            {
+              key: "fld",
+              className: "tc-modal-tab" + (activeTab === "fields" ? " tc-modal-tab-active" : ""),
+              onClick: () => setActiveTab("fields"),
+            },
+            "Fields"
+          ),
         ]),
         h(
           "div",
           { key: "body", className: "tc-modal-body" },
           activeTab === "categories"
             ? h(CategoriesTab, { allTags, categories: config.categories, onReload })
+            : activeTab === "fields"
+            ? h(FieldsTab, { buttons: config.fieldButtons, onReload })
             : h(GroupsTab, { allTags, groups: config.groups, onReload })
         ),
       ])
@@ -872,9 +1034,13 @@
   // ---------------------------------------------------------------------
   // Main panel
   // ---------------------------------------------------------------------
-  function TagChipsPanel({ scene, onChange, isImage }) {
+  function TagChipsPanel({ scene, onChange, isImage, kind: kindProp }) {
+    const kind = kindOf(kindProp || isImage);
     const [allTags, setAllTags] = React.useState([]);
-    const [config, setConfig] = React.useState({ groups: [], categories: [], sortMode: "usage" });
+    const [config, setConfig] = React.useState({ groups: [], categories: [], sortMode: "usage", fieldButtons: [] });
+    const [customFields, setCustomFields] = React.useState({});
+    const [pendingFieldIds, setPendingFieldIds] = React.useState(new Set());
+    const [errorFieldIds, setErrorFieldIds] = React.useState(new Set());
     const [sceneTagIds, setSceneTagIds] = React.useState(
       () => new Set((scene.tags || []).map((t) => t.id))
     );
@@ -905,6 +1071,16 @@
     React.useEffect(() => {
       loadAll();
     }, [loadAll]);
+
+    // Custom fields are fetched by the panel itself (the host page's item
+    // object doesn't necessarily carry them).
+    React.useEffect(() => {
+      let cancelled = false;
+      fetchCustomFields(kind, scene.id)
+        .then((cf) => { if (!cancelled) setCustomFields(cf); })
+        .catch((e) => { if (!cancelled) setError(e.message); });
+      return () => { cancelled = true; };
+    }, [kind, scene.id]);
 
     // Keep local state in sync if the user edits tags/performers/studio
     // elsewhere and comes back
@@ -943,7 +1119,7 @@
       setError("");
 
       try {
-        await updateSceneTagIds(scene.id, Array.from(nextSet), isImage);
+        await updateSceneTagIds(scene.id, Array.from(nextSet), kind);
         if (onChange) onChange(scene.id);
       } catch (e) {
         // revert on failure
@@ -952,6 +1128,28 @@
         setError(`Failed to update tag: ${e.message}`);
       } finally {
         markPending(tagId, false);
+      }
+    }
+
+    async function toggleField(btn) {
+      const isOn = customFields[btn.key] !== undefined && String(customFields[btn.key]) === btn.value;
+      const prev = customFields;
+      const next = { ...customFields };
+      if (isOn) delete next[btn.key];
+      else next[btn.key] = btn.value;
+      setCustomFields(next); // optimistic
+      setPendingFieldIds((p) => new Set(p).add(btn.id));
+      setErrorFieldIds((p) => { const n = new Set(p); n.delete(btn.id); return n; });
+      setError("");
+      try {
+        await setCustomField(kind, scene.id, btn.key, btn.value, !isOn);
+        if (onChange) onChange(scene.id);
+      } catch (e) {
+        setCustomFields(prev);
+        setErrorFieldIds((p) => new Set(p).add(btn.id));
+        setError(`Failed to update field "${btn.key}": ${e.message}`);
+      } finally {
+        setPendingFieldIds((p) => { const n = new Set(p); n.delete(btn.id); return n; });
       }
     }
 
@@ -1015,7 +1213,7 @@
       if (changeStudio) fields.studio_id = group.studioId;
 
       try {
-        await updateScene(scene.id, fields, isImage);
+        await updateScene(scene.id, fields, kind);
         if (onChange) onChange(scene.id);
       } catch (e) {
         // revert on failure
@@ -1103,6 +1301,27 @@
                 })
               )
         ),
+
+        config.fieldButtons.filter((b) => b.entities.includes(kind)).length > 0 &&
+          h("div", { key: "fh", className: "tc-section-label" }, "Fields"),
+        config.fieldButtons.filter((b) => b.entities.includes(kind)).length > 0 &&
+          h(
+            "div",
+            { key: "fg", className: "tc-grid" },
+            config.fieldButtons
+              .filter((b) => b.entities.includes(kind))
+              .map((b) =>
+                h(Chip, {
+                  key: b.id,
+                  label: b.label,
+                  variant: "field",
+                  active: customFields[b.key] !== undefined && String(customFields[b.key]) === b.value,
+                  pending: pendingFieldIds.has(b.id),
+                  error: errorFieldIds.has(b.id),
+                  onClick: () => toggleField(b),
+                })
+              )
+          ),
       ]),
 
       h(CategorizedTagGrid, {
@@ -1130,24 +1349,24 @@
   // scene (opts.sceneId) or image (opts.imageId) into any container.
   // onChange(id) fires after each successful save.
   // ---------------------------------------------------------------------
-  const FIND_SCENE_FOR_PANEL =
-    "query TagChipsFindScene($id: ID!) { findScene(id: $id) { id tags { id name } performers { id name } studio { id name } } }";
+  function findForPanel(kind) {
+    const k = KINDS[kind];
+    return `query TagChipsFind($id: ID!) { ${k.find}(id: $id) { id tags { id name } performers { id name } studio { id name } } }`;
+  }
 
-  const FIND_IMAGE_FOR_PANEL =
-    "query TagChipsFindImage($id: ID!) { findImage(id: $id) { id tags { id name } performers { id name } studio { id name } } }";
-
+  // opts: { sceneId | imageId | galleryId, onChange }
   function mountTagChips(containerEl, opts) {
     const o = opts || {};
-    const isImage = o.imageId != null && o.sceneId == null;
-    const id = isImage ? o.imageId : o.sceneId;
-    const handle = { containerEl, sceneId: o.sceneId, imageId: o.imageId, unmounted: false, rendered: false };
-    gql(isImage ? FIND_IMAGE_FOR_PANEL : FIND_SCENE_FOR_PANEL, { id })
+    const kind = o.galleryId != null ? "gallery" : o.imageId != null && o.sceneId == null ? "image" : "scene";
+    const id = kind === "gallery" ? o.galleryId : kind === "image" ? o.imageId : o.sceneId;
+    const handle = { containerEl, sceneId: o.sceneId, imageId: o.imageId, galleryId: o.galleryId, unmounted: false, rendered: false };
+    gql(findForPanel(kind), { id })
       .then((data) => {
         if (handle.unmounted) return;
-        const item = isImage ? data.findImage : data.findScene;
-        if (!item) throw new Error(isImage ? "image not found" : "scene not found");
+        const item = data[KINDS[kind].find];
+        if (!item) throw new Error(kind + " not found");
         PluginApi.ReactDOM.render(
-          h(TagChipsPanel, { scene: item, onChange: o.onChange, isImage }),
+          h(TagChipsPanel, { scene: item, onChange: o.onChange, kind }),
           containerEl
         );
         handle.rendered = true;
@@ -1165,7 +1384,124 @@
     if (handle.rendered) PluginApi.ReactDOM.unmountComponentAtNode(handle.containerEl);
   }
 
-  window.TagChipsAPI = { version: 1, images: true, mount: mountTagChips, unmount: unmountTagChips };
+  window.TagChipsAPI = { version: 2, images: true, galleries: true, fields: true, mount: mountTagChips, unmount: unmountTagChips };
+
+
+  // ---------------------------------------------------------------------
+  // Image and Gallery pages have no PluginApi patch points (their tab
+  // strips are plain JSX in Image.tsx / Gallery.tsx), so the tab is DOM-
+  // injected on stash:location, per project notes 2026-07-26 approach B.
+  // The panel itself is the same React component, mounted into the pane.
+  // ---------------------------------------------------------------------
+  const NAV_ID = "tagchips-nav-tab";
+  const PANE_ID = "tagchips-dom-pane";
+  let domHandle = null;
+  let domObserver = null;
+
+  function currentDomTarget() {
+    const m = window.location.pathname.match(/^\/(images|galleries)\/(\d+)(?:\/|$)/);
+    if (!m) return null;
+    return { kind: m[1] === "images" ? "image" : "gallery", id: m[2] };
+  }
+
+  function teardownDomTab() {
+    if (domObserver) { domObserver.disconnect(); domObserver = null; }
+    if (domHandle) { unmountTagChips(domHandle); domHandle = null; }
+    const nav = document.getElementById(NAV_ID);
+    if (nav) nav.remove();
+    const pane = document.getElementById(PANE_ID);
+    if (pane) pane.remove();
+  }
+
+  function tryInjectDomTab(target) {
+    if (document.getElementById(NAV_ID)) return true;
+    const tabParent = document.querySelector("div[role='tablist']");
+    if (!tabParent) return false;
+    // Tab.Container renders: <div>{Nav}</div><div class="tab-content">; the
+    // first tablist on both pages is the left-hand details strip.
+    let tabContent = tabParent.parentElement && tabParent.parentElement.nextElementSibling;
+    if (!tabContent || !tabContent.classList.contains("tab-content")) {
+      tabContent = document.querySelector(".tab-content");
+    }
+    if (!tabContent) return false;
+
+    const navItem = document.createElement("div");
+    navItem.className = "nav-item";
+    navItem.id = NAV_ID;
+    navItem.innerHTML = '<a role="tab" data-rb-event-key="tagchips-panel" aria-selected="false" class="nav-link" href="#">Tag Chips</a>';
+
+    const pane = document.createElement("div");
+    pane.id = PANE_ID;
+    pane.setAttribute("role", "tabpanel");
+    pane.className = "fade tab-pane";
+
+    tabParent.appendChild(navItem);
+    tabContent.appendChild(pane);
+
+    const link = navItem.querySelector("a");
+    function show() {
+      tabParent.querySelectorAll(".nav-link").forEach((a) => { a.classList.remove("active"); a.setAttribute("aria-selected", "false"); });
+      Array.from(tabContent.children).forEach((d) => d.classList.remove("show", "active"));
+      link.classList.add("active");
+      link.setAttribute("aria-selected", "true");
+      pane.classList.add("show", "active");
+    }
+    function hide() {
+      link.classList.remove("active");
+      link.setAttribute("aria-selected", "false");
+      pane.classList.remove("show", "active");
+    }
+    link.addEventListener("click", (e) => { e.preventDefault(); show(); });
+    // React-bootstrap owns the other tabs; hide ours whenever one is clicked.
+    tabParent.addEventListener("click", (e) => {
+      const a = e.target.closest && e.target.closest(".nav-link");
+      if (a && a !== link) hide();
+    });
+
+    const opts = target.kind === "image" ? { imageId: target.id } : { galleryId: target.id };
+    domHandle = mountTagChips(pane, opts);
+    return true;
+  }
+
+  function onDomLocation() {
+    teardownDomTab();
+    const target = currentDomTarget();
+    if (!target) return;
+    if (tryInjectDomTab(target)) {
+      // React may re-render the strip and drop our nodes: re-inject if so.
+      watchForRemoval(target);
+      return;
+    }
+    const deadline = Date.now() + 10000;
+    domObserver = new MutationObserver(() => {
+      if (tryInjectDomTab(target)) {
+        domObserver.disconnect();
+        domObserver = null;
+        watchForRemoval(target);
+      } else if (Date.now() > deadline) {
+        domObserver.disconnect();
+        domObserver = null;
+      }
+    });
+    domObserver.observe(document.body, { childList: true, subtree: true });
+  }
+
+  function watchForRemoval(target) {
+    let scheduled = false;
+    domObserver = new MutationObserver(() => {
+      if (scheduled) return;
+      scheduled = true;
+      requestAnimationFrame(() => {
+        scheduled = false;
+        if (!currentDomTarget() || document.getElementById(NAV_ID)) return;
+        if (domHandle) { unmountTagChips(domHandle); domHandle = null; }
+        tryInjectDomTab(target);
+      });
+    });
+    domObserver.observe(document.body, { childList: true, subtree: true });
+  }
+
+  PluginApi.Event.addEventListener("stash:location", onDomLocation);
 
   // ---------------------------------------------------------------------
   // Wire into the Scene page tabs (v0.25+ PluginApi.patch.after pattern —
@@ -1186,8 +1522,12 @@
     const pane = h(
       Tab.Pane,
       { key: "tagchips-pane", eventKey: "tagchips-panel" },
-      h(TagChipsPanel, { scene })
+      h(TagChipsPanel, { scene, kind: "scene" })
     );
     return [...React.Children.toArray(children), pane];
   });
+
+  // After the patches (they must be registered before any render). The
+  // initial call covers a hard load straight onto an image/gallery page.
+  onDomLocation();
 })();

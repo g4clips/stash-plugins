@@ -393,3 +393,20 @@
   flex: 1;
   overflow-y: auto;
 }
+
+/* Custom-field toggle chips — amber, squared, so they read as metadata
+   rather than tags. Active state reuses the green "on" treatment. */
+.tc-chip.tc-chip-field {
+  padding: .4rem .9rem;
+  border-radius: 6px;
+  background: rgba(255,193,7,.12);
+  border: 1px dashed rgba(255,193,7,.5);
+  color: #ffd75e;
+  font-weight: 600;
+}
+.tc-chip.tc-chip-field.tc-chip-on {
+  background: rgba(25,135,84,.25);
+  border: 1px solid #75b798;
+  color: #9fe0b8;
+}
+.tc-chip.tc-chip-field.tc-chip-error { border-color: #dc3545; color: #f8a0a8; }

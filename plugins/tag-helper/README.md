@@ -140,3 +140,18 @@ TagChips.js    — all logic: GraphQL helpers, Chip/GroupEditor/TagChipsPanel
 TagChips.css   — hardcoded dark-theme tokens (Stash CSS vars unreliable
                  outside the main React tree per project notes §13)
 ```
+
+## v0.8.0 — images, galleries, custom-field buttons
+
+- **Images / galleries:** these pages have no PluginApi patch points
+  (tab strips are plain JSX in `Image.tsx` / `Gallery.tsx`), so a "Tag Chips"
+  tab is DOM-injected on `stash:location` (same approach as EasyTag). Scenes
+  still use `patch.after`. The same panel component renders in all three;
+  `kind` = `scene | image | gallery`.
+- **Custom-field buttons:** Manage Tags → **Fields** tab. Each button is
+  `{label, key, value, entities}`; clicking toggles `custom_fields[key] = value`
+  on the current item (set via `custom_fields: {partial: {key: value}}`, removed
+  via `{remove: [key]}`). Active when the stored value equals the button's value.
+  Stored in plugin config under `fieldButtons`. `CustomFieldsInput` member names
+  are introspected at runtime.
+- `window.TagChipsAPI` is now version 2: `mount(el, {sceneId|imageId|galleryId})`.

@@ -155,3 +155,12 @@ TagChips.css   — hardcoded dark-theme tokens (Stash CSS vars unreliable
   Stored in plugin config under `fieldButtons`. `CustomFieldsInput` member names
   are introspected at runtime.
 - `window.TagChipsAPI` is now version 2: `mount(el, {sceneId|imageId|galleryId})`.
+
+## v0.9.0 — lightbox button
+
+The full-screen image viewer (`hooks/Lightbox/Lightbox.tsx`) has no patch
+points, so a "🏷 Tags" button is DOM-injected into `.Lightbox-footer-right`
+and opens the panel as a bottom sheet (`.tc-lb-sheet`, z-index above the
+lightbox). Current image id = `a.image-link` href in the footer. The panel
+re-mounts when the image changes (arrows/slideshow). Keydown inside the sheet
+is stopped from reaching the lightbox; Esc closes the sheet first.

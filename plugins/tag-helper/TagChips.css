@@ -410,3 +410,43 @@
   color: #9fe0b8;
 }
 .tc-chip.tc-chip-field.tc-chip-error { border-color: #dc3545; color: #f8a0a8; }
+
+/* ---- Lightbox integration ---- */
+.tc-lb-btn {
+  background: rgba(255,255,255,.08);
+  border: 1px solid #555;
+  border-radius: 6px;
+  color: #ddd;
+  padding: .25rem .7rem;
+  cursor: pointer;
+}
+.tc-lb-btn:hover, .tc-lb-btn.tc-lb-btn-on { background: rgba(25,135,84,.3); border-color: #75b798; color: #9fe0b8; }
+
+/* Above the lightbox (z-index 1040/1045) */
+.tc-lb-sheet {
+  position: fixed;
+  left: 50%;
+  bottom: 0;
+  transform: translateX(-50%);
+  width: min(960px, 100vw);
+  height: 55vh;
+  z-index: 1060;
+  display: flex;
+  flex-direction: column;
+  background: #1a1a1a;
+  border: 1px solid #444;
+  border-bottom: none;
+  border-radius: 10px 10px 0 0;
+  color: #eee;
+  box-shadow: 0 -8px 30px rgba(0,0,0,.6);
+}
+.tc-lb-sheet-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: .5rem .9rem;
+  border-bottom: 1px solid #333;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.tc-lb-sheet-body { flex: 1; overflow: auto; padding: .5rem .9rem; }

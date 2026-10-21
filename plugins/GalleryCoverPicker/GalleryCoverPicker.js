@@ -1,12 +1,12 @@
 /**
  * Gallery Cover Picker
  *
- * Adds two entry points on a gallery page, mirroring how scenes expose their
- * cover controls:
+ * Adds three entry points, mirroring how scenes expose their cover controls:
  *   1. A "Set cover…" button under "Cover Image" on the gallery Edit tab
  *   2. A "Set cover…" item in the gallery's ellipsis (operations) menu
+ *   3. A "Set as gallery cover" item in an image page's ellipsis menu
  *
- * Both open a picker showing the gallery's own images. Choosing one calls
+ * (1) and (2) open a picker showing the gallery's own images. Choosing one calls
  * Stash's existing setGalleryCover mutation (the same one behind the Images
  * tab's "Set cover" bulk action). No backend / Python task is needed.
  *
@@ -20,6 +20,10 @@
   const LOG = "[GalleryCoverPicker]";
   const PER_PAGE = 48;
   const GALLERY_PATH_RE = /\/galleries\/(\d+)(?:\/|$)/;
+  const IMAGE_PATH_RE = /\/images\/(\d+)(?:\/|$)/;
+  const OPS_MENU_SELECTOR = '.dropdown-menu[aria-labelledby="operation-menu"]';
+  const IMAGE_ITEM_CLASS = "gcp-image-menu-item";
+  const GALLERY_CACHE_TTL_MS = 30000;
 
   const EDIT_ACTIONS_ID = "gcp-edit-actions";
   const MENU_ITEM_ID = "gcp-menu-item";
@@ -28,6 +32,11 @@
 
   function currentGalleryId() {
     const m = window.location.pathname.match(GALLERY_PATH_RE);
+    return m ? m[1] : null;
+  }
+
+  function currentImageId() {
+    const m = window.location.pathname.match(IMAGE_PATH_RE);
     return m ? m[1] : null;
   }
 
@@ -64,12 +73,16 @@
     return node;
   }
 
-  function toast(message) {
+  function toast(message, isError) {
     const old = document.getElementById("gcp-toast");
     if (old) old.remove();
-    const t = h("div", { id: "gcp-toast", text: message });
+    const t = h("div", {
+      id: "gcp-toast",
+      class: isError ? "gcp-toast-error" : "",
+      text: message,
+    });
     document.body.appendChild(t);
-    setTimeout(() => t.remove(), 2500);
+    setTimeout(() => t.remove(), isError ? 5000 : 2500);
   }
 
   // ------------------------------------------------------------ data access
@@ -94,6 +107,14 @@
   const M_SET_COVER = `
     mutation GCPSetCover($input: GallerySetCoverInput!) {
       setGalleryCover(input: $input)
+    }`;
+
+  const Q_IMAGE_GALLERIES = `
+    query GCPImageGalleries($id: ID!) {
+      findImage(id: $id) {
+        id
+        galleries { id title files { path } folder { path } }
+      }
     }`;
 
   function bustCoverImages(galleryId) {
@@ -376,9 +397,7 @@
 
   // Ellipsis menu: item right after the native "Reset cover" entry.
   function injectMenuItem(galleryId) {
-    const menu = document.querySelector(
-      '.dropdown-menu[aria-labelledby="operation-menu"]'
-    );
+    const menu = document.querySelector(OPS_MENU_SELECTOR);
     if (!menu || menu.querySelector("#" + MENU_ITEM_ID)) return;
 
     const item = h("a", {
@@ -398,25 +417,126 @@
       openPicker(galleryId);
     });
 
+    // Native label varies by Stash version ("Reset cover" / "Restore Default Cover").
     const reset = Array.from(menu.querySelectorAll(".dropdown-item")).find(
-      (el) => /reset cover/i.test(el.textContent || "")
+      (el) => /reset cover|restore default cover/i.test(el.textContent || "")
     );
     if (reset) reset.insertAdjacentElement("afterend", item);
     else menu.prepend(item);
   }
 
+  // Image page: imageId -> { loading, at, galleries }. Looked up once per
+  // image (30s TTL).
+  const imageGalleries = new Map();
+
+  function galleryLabel(g) {
+    if (g.title) return g.title;
+    const p =
+      (g.files && g.files[0] && g.files[0].path) ||
+      (g.folder && g.folder.path) ||
+      "";
+    const name = p.split(/[\\/]/).filter(Boolean).pop();
+    return name || "Gallery " + g.id;
+  }
+
+  // Returns the galleries array, or null while the lookup is still running.
+  function ensureImageGalleries(imageId) {
+    const hit = imageGalleries.get(imageId);
+    if (hit && !hit.loading && Date.now() - hit.at < GALLERY_CACHE_TTL_MS) {
+      return hit.galleries;
+    }
+    if (hit && hit.loading) return null;
+
+    imageGalleries.set(imageId, {
+      loading: true,
+      at: Date.now(),
+      galleries: [],
+    });
+    gql(Q_IMAGE_GALLERIES, { id: imageId })
+      .then((d) => (d.findImage && d.findImage.galleries) || [])
+      .catch((e) => {
+        console.warn(LOG, "image gallery lookup failed", e);
+        return []; // cache the failure for the TTL so we never retry in a loop
+      })
+      .then((galleries) => {
+        imageGalleries.set(imageId, {
+          loading: false,
+          at: Date.now(),
+          galleries,
+        });
+        inject();
+      });
+    return null;
+  }
+
+  // Image page ⋮ menu: "Set as gallery cover" (one item per gallery).
+  function injectImageMenuItems(imageId) {
+    const menu = document.querySelector(OPS_MENU_SELECTOR);
+    if (!menu) return;
+
+    // Remove items left over from a previously viewed image.
+    menu.querySelectorAll("." + IMAGE_ITEM_CLASS).forEach((el) => {
+      if (el.dataset.imageId !== imageId) el.remove();
+    });
+    if (menu.querySelector("." + IMAGE_ITEM_CLASS)) return;
+
+    const galleries = ensureImageGalleries(imageId);
+    if (!galleries || !galleries.length) return;
+
+    const items = galleries.map((g) => {
+      const name = galleryLabel(g);
+      const item = h("a", {
+        href: "#",
+        role: "button",
+        class: "dropdown-item bg-secondary text-white " + IMAGE_ITEM_CLASS,
+        "data-image-id": imageId,
+        text:
+          galleries.length === 1
+            ? "Set as gallery cover"
+            : `Set as cover of "${name}"`,
+      });
+      item.addEventListener("click", async (e) => {
+        e.preventDefault();
+        const toggle = document.getElementById("operation-menu");
+        if (toggle && toggle.getAttribute("aria-expanded") === "true") {
+          toggle.click();
+        }
+        try {
+          await setCover(g.id, imageId);
+          toast(`Cover set for ${name}`);
+        } catch (err) {
+          toast(err.message || String(err), true);
+        }
+      });
+      return item;
+    });
+
+    const generate = Array.from(menu.querySelectorAll(".dropdown-item")).find(
+      (el) => /^generate/i.test((el.textContent || "").trim())
+    );
+    let anchor = generate;
+    for (const item of items) {
+      if (anchor) anchor.insertAdjacentElement("afterend", item);
+      else menu.appendChild(item);
+      anchor = item;
+    }
+  }
+
   function inject() {
     const galleryId = currentGalleryId();
-    if (!galleryId) return;
-    injectEditButton(galleryId);
-    injectMenuItem(galleryId);
+    if (galleryId) {
+      injectEditButton(galleryId);
+      injectMenuItem(galleryId);
+    }
+    const imageId = currentImageId();
+    if (imageId) injectImageMenuItems(imageId);
   }
 
   // The menu mounts lazily and React may rebuild parts of the page, so keep
   // one persistent observer (throttled to one check per animation frame).
   let scheduled = false;
   const observer = new MutationObserver(() => {
-    if (scheduled || !currentGalleryId()) return;
+    if (scheduled || (!currentGalleryId() && !currentImageId())) return;
     scheduled = true;
     requestAnimationFrame(() => {
       scheduled = false;

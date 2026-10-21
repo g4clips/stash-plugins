@@ -5,6 +5,8 @@ points scenes use for their cover:
 
 - **Edit tab:** a **Set cover…** button under *Cover Image*.
 - **Ellipsis menu:** a **Set cover…** item next to *Reset cover*.
+- **Image page:** a **Set as gallery cover** item in an image's ⋮ menu
+  (one item per gallery if the image is in several).
 
 Both open a paginated thumbnail picker for the gallery's images. Click to
 select then **Set as cover**, or double-click to apply immediately. The current

@@ -1,6 +1,6 @@
 name: GalleryCoverPicker
 description: Choose a gallery's cover image from its own images, via a button on the gallery edit page and an entry in the gallery's ellipsis menu
-version: "0.1.0"
+version: "0.2.0"
 
 interface: raw
 

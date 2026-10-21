@@ -1,0 +1,167 @@
+/* Gallery Cover Picker — all selectors prefixed with gcp- */
+
+#gcp-edit-actions {
+  margin-top: 0.5rem;
+}
+
+#gcp-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.65);
+  z-index: 1060;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#gcp-box {
+  background: #1e1e2e;
+  border: 1px solid #444;
+  border-radius: 8px;
+  width: 880px;
+  max-width: calc(100vw - 2rem);
+  height: 85vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: #eee;
+}
+
+#gcp-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.7rem 1rem;
+  background: #16161e;
+  border-bottom: 1px solid #3a3a4a;
+}
+
+#gcp-title {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#gcp-close {
+  background: none;
+  border: none;
+  color: #aaa;
+  font-size: 1.1rem;
+  cursor: pointer;
+}
+
+#gcp-close:hover {
+  color: #fff;
+}
+
+#gcp-error {
+  display: none;
+  margin: 0.5rem 1rem 0;
+  padding: 0.4rem 0.7rem;
+  border-radius: 4px;
+  background: rgba(220, 53, 69, 0.15);
+  border: 1px solid rgba(220, 53, 69, 0.3);
+  color: #f8a0a8;
+  font-size: 0.85rem;
+}
+
+#gcp-hint {
+  padding: 0.5rem 1rem 0;
+  color: #999;
+  font-size: 0.8rem;
+}
+
+#gcp-body {
+  flex: 1 1 0;
+  min-height: 0; /* lets the grid scroll while header/footer stay fixed */
+  overflow-y: auto;
+  padding: 0.8rem 1rem;
+}
+
+#gcp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 0.6rem;
+}
+
+#gcp-empty {
+  color: #999;
+  text-align: center;
+  padding: 2rem 0;
+}
+
+.gcp-thumb {
+  position: relative;
+  aspect-ratio: 3 / 4;
+  background: #12121a;
+  border: 2px solid #3a3a4a;
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: pointer;
+  padding: 0;
+}
+
+.gcp-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.gcp-thumb:hover {
+  border-color: #6ea8fe;
+}
+
+.gcp-thumb.gcp-selected {
+  border-color: #0d6efd;
+  box-shadow: 0 0 0 2px rgba(13, 110, 253, 0.5);
+}
+
+.gcp-badge {
+  position: absolute;
+  bottom: 4px;
+  left: 4px;
+  background: rgba(0, 0, 0, 0.75);
+  color: #75b798;
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+}
+
+#gcp-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.7rem 1rem;
+  background: #16161e;
+  border-top: 1px solid #3a3a4a;
+}
+
+#gcp-pager {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #aaa;
+  font-size: 0.85rem;
+}
+
+#gcp-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+#gcp-toast {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1070;
+  background: #198754;
+  color: #fff;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}

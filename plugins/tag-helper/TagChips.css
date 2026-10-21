@@ -412,14 +412,26 @@
 .tc-chip.tc-chip-field.tc-chip-error { border-color: #dc3545; color: #f8a0a8; }
 
 /* ---- Lightbox integration ---- */
+/* Footer-right is an empty flex:1 slot; push the button to the far right */
+.Lightbox-footer-right {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding-right: 1.25rem;
+}
 .tc-lb-btn {
   background: rgba(255,255,255,.08);
   border: 1px solid #555;
   border-radius: 6px;
   color: #ddd;
-  padding: .25rem .7rem;
+  width: 2.4rem;
+  height: 2.4rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   cursor: pointer;
 }
+.tc-lb-btn svg { width: 1.2rem; height: 1.2rem; }
 .tc-lb-btn:hover, .tc-lb-btn.tc-lb-btn-on { background: rgba(25,135,84,.3); border-color: #75b798; color: #9fe0b8; }
 
 /* Above the lightbox (z-index 1040/1045) */

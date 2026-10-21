@@ -1,6 +1,6 @@
 name: TagChips
 description: Click-to-toggle tag chips, preset groups and custom-field buttons on Scene, Image and Gallery pages
-version: "0.9.0"
+version: "0.9.1"
 
 interface: raw
 

@@ -1584,6 +1584,32 @@
     lbMountPanel(lbCurrentImageId());
   }
 
+  // Same icon Reels uses for its tag button: Stash's own FontAwesomeSolid
+  // faTags, as an inline SVG; emoji only if the library is missing.
+  function lbTagIcon() {
+    const lib = PluginApi.libraries && PluginApi.libraries.FontAwesomeSolid;
+    const def = lib && lib.faTags;
+    const data = def && def.icon;
+    if (!data || data.length < 5) {
+      const span = document.createElement("span");
+      span.textContent = "🏷";
+      return span;
+    }
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("class", "svg-inline--fa fa-tags");
+    svg.setAttribute("viewBox", "0 0 " + data[0] + " " + data[1]);
+    svg.setAttribute("fill", "currentColor");
+    svg.setAttribute("aria-hidden", "true");
+    [].concat(data[4]).forEach((d) => {
+      const path = document.createElementNS(NS, "path");
+      path.setAttribute("fill", "currentColor");
+      path.setAttribute("d", d);
+      svg.appendChild(path);
+    });
+    return svg;
+  }
+
   function lbSync() {
     const lb = document.querySelector(".Lightbox");
     if (!lb) {
@@ -1595,8 +1621,9 @@
       const btn = document.createElement("button");
       btn.id = LB_BTN_ID;
       btn.className = "tc-lb-btn";
-      btn.textContent = "🏷 Tags";
-      btn.title = "Tag Chips";
+      btn.appendChild(lbTagIcon());
+      btn.title = "Edit tags";
+      btn.setAttribute("aria-label", "Edit tags");
       btn.addEventListener("click", (e) => {
         e.stopPropagation(); // don't trip the lightbox's click-to-close
         lbSheet ? lbCloseSheet() : lbOpenSheet();
